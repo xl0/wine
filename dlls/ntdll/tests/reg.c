@@ -2570,7 +2570,7 @@ static void test_NtRegLoadKeyEx(void)
     InitializeObjectAttributes(&file_attr, &hivefile_pathW, 0, NULL, NULL);
     key_attr.ObjectName = &key_pathW;
     status = pNtLoadKeyEx(&key_attr, &file_attr, 0, NULL, NULL, KEY_READ, &key, NULL);
-    todo_wine ok(status == STATUS_INVALID_PARAMETER_7 || broken(status == STATUS_INVALID_PARAMETER_6) /* win7 */, "got 0x%lx\n", status);
+    ok(status == STATUS_INVALID_PARAMETER_7 || broken(status == STATUS_INVALID_PARAMETER_6) /* win7 */, "got 0x%lx\n", status);
     if (status == STATUS_INVALID_PARAMETER_6)
     {
         win_skip("NtLoadKeyEx has a different order of parameters in this windows version\n");
@@ -2586,8 +2586,8 @@ static void test_NtRegLoadKeyEx(void)
     /* Test for roothandle parameter with REG_APP_HIVE */
     RtlCreateUnicodeString(&key_pathW, L"\\REGISTRY\\A\\TestKey");
     status = pNtLoadKeyEx(&key_attr, &file_attr, REG_APP_HIVE, NULL, NULL, KEY_READ, &key, NULL);
-    todo_wine ok(status == STATUS_SUCCESS, "got 0x%lx\n", status);
-    todo_wine ok(key != NULL, "key is null\n");
+    ok(status == STATUS_SUCCESS, "got 0x%lx\n", status);
+    ok(key != NULL, "key is null\n");
     if (key) pNtClose(key);
     RtlFreeUnicodeString(&key_pathW);
 

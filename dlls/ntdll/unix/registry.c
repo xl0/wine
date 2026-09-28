@@ -725,12 +725,12 @@ NTSTATUS WINAPI NtLoadKeyEx( const OBJECT_ATTRIBUTES *attr, OBJECT_ATTRIBUTES *f
     TRACE( "(%p,%p,0x%x,%p,%p,0x%x,%p,%p)\n",
            attr, file, flags, trustkey, event, access, roothandle, iostatus );
 
-    if (flags) FIXME( "flags %x not handled\n", flags );
+    if (flags & ~REG_APP_HIVE) FIXME( "flags %x not handled\n", flags );
     if (trustkey) FIXME("trustkey parameter not supported\n");
     if (event) FIXME("event parameter not supported\n");
-    if (access) FIXME("access parameter not supported\n");
-    if (roothandle) FIXME("roothandle is not filled\n");
     if (iostatus) FIXME("iostatus is not filled\n");
+
+    if (roothandle && !(flags & REG_APP_HIVE)) return STATUS_INVALID_PARAMETER_7;
 
     if (!(ret = get_nt_and_unix_names( &new_attr, &nt_name, &unix_name, FILE_OPEN, FALSE )))
     {
@@ -747,7 +747,8 @@ NTSTATUS WINAPI NtLoadKeyEx( const OBJECT_ATTRIBUTES *attr, OBJECT_ATTRIBUTES *f
 
     SERVER_START_REQ( load_registry )
     {
-        req->file = wine_server_obj_handle( key );
+        req->file  = wine_server_obj_handle( key );
+        req->flags = flags;
         wine_server_add_data( req, objattr, len );
         ret = wine_server_call( req );
         if (ret == STATUS_OBJECT_NAME_EXISTS) ret = STATUS_SUCCESS;
@@ -756,6 +757,7 @@ NTSTATUS WINAPI NtLoadKeyEx( const OBJECT_ATTRIBUTES *attr, OBJECT_ATTRIBUTES *f
 
     NtClose( key );
     free( objattr );
+    if (!ret && roothandle) ret = NtOpenKeyEx( roothandle, access, attr, 0 );
     return ret;
 }
 

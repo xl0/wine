@@ -1709,7 +1709,7 @@ static void test_reg_load_app_key(void)
     ok(appkey != NULL, "got a null key\n");
 
     ret = RegSetValueExA(appkey, "testkey", 0, REG_BINARY, test_data, sizeof(test_data));
-    todo_wine ok(ret == ERROR_SUCCESS, "couldn't set key value %lx\n", ret);
+    ok(ret == ERROR_SUCCESS, "couldn't set key value %lx\n", ret);
     RegCloseKey(appkey);
 
     wait_file_available(hivefilepath);
@@ -1931,6 +1931,15 @@ static void test_reg_load_key_hive(void)
     ret = RegUnLoadKeyA(HKEY_LOCAL_MACHINE, "Test");
     ok(ret == ERROR_SUCCESS, "RegUnLoadKey failed: %ld\n", ret);
 
+    ret = RegLoadAppKeyA(path, &key, KEY_READ, 0, 0);
+    ok(ret == ERROR_SUCCESS, "RegLoadAppKey failed: %ld\n", ret);
+    size = sizeof(data);
+    ret = RegGetValueA(key, "Sub", "dword", RRF_RT_REG_DWORD, NULL, &data, &size);
+    ok(ret == ERROR_SUCCESS, "RegGetValue failed: %ld\n", ret);
+    ok(data == 0x12345678, "got %#lx\n", data);
+    RegCloseKey(key);
+    wait_file_available(path);
+
     /* root cell out of bounds */
     *(DWORD *)(hive + 0x24) = 0xa000;
     for (i = sum = 0; i < 127; i++) sum ^= ((DWORD *)hive)[i];
@@ -1943,6 +1952,9 @@ static void test_reg_load_key_hive(void)
     if (!ret) RegUnLoadKeyA(HKEY_LOCAL_MACHINE, "Test");
     ret = RegOpenKeyExA(HKEY_LOCAL_MACHINE, "Test", 0, KEY_READ, &key);
     ok(ret == ERROR_FILE_NOT_FOUND, "got %ld\n", ret);
+    ret = RegLoadAppKeyA(path, &key, KEY_READ, 0, 0);
+    ok(ret == ERROR_BADDB, "got %ld\n", ret);
+    if (!ret) RegCloseKey(key);
 
     set_privileges(SE_RESTORE_NAME, FALSE);
     set_privileges(SE_BACKUP_NAME, FALSE);

@@ -3212,13 +3212,16 @@ cleanup:
  */
 LSTATUS WINAPI RegLoadAppKeyA(const char *file, HKEY *result, REGSAM sam, DWORD options, DWORD reserved)
 {
-    FIXME("%s %p %lu %lu %lu: stub\n", wine_dbgstr_a(file), result, sam, options, reserved);
+    UNICODE_STRING fileW;
+    LSTATUS ret;
 
     if (!file || reserved)
         return ERROR_INVALID_PARAMETER;
 
-    *result = (HKEY)0xdeadbeef;
-    return ERROR_SUCCESS;
+    if (!RtlCreateUnicodeStringFromAsciiz( &fileW, file )) return ERROR_NOT_ENOUGH_MEMORY;
+    ret = RegLoadAppKeyW( fileW.Buffer, result, sam, options, reserved );
+    RtlFreeUnicodeString( &fileW );
+    return ret;
 }
 
 /******************************************************************************
@@ -3227,13 +3230,31 @@ LSTATUS WINAPI RegLoadAppKeyA(const char *file, HKEY *result, REGSAM sam, DWORD 
  */
 LSTATUS WINAPI RegLoadAppKeyW(const WCHAR *file, HKEY *result, REGSAM sam, DWORD options, DWORD reserved)
 {
-    FIXME("%s %p %lu %lu %lu: stub\n", wine_dbgstr_w(file), result, sam, options, reserved);
+    OBJECT_ATTRIBUTES destkey, fileattr;
+    UNICODE_STRING keyW, fileW;
+    WCHAR name[32];
+    NTSTATUS status;
+    LUID luid;
+
+    TRACE("%s %p %#lx %#lx %lu\n", debugstr_w(file), result, sam, options, reserved);
 
     if (!file || reserved)
         return ERROR_INVALID_PARAMETER;
+    if (options) FIXME("options %#lx not supported\n", options);
 
-    *result = (HKEY)0xdeadbeef;
-    return ERROR_SUCCESS;
+    /* each application hive gets a unique key name, it is unloaded when its root key is closed */
+    NtAllocateLocallyUniqueId( &luid );
+    swprintf( name, ARRAY_SIZE(name), L"\\Registry\\A\\%08lx%08lx", luid.HighPart, luid.LowPart );
+    RtlInitUnicodeString( &keyW, name );
+    InitializeObjectAttributes( &destkey, &keyW, OBJ_CASE_INSENSITIVE, 0, NULL );
+
+    if (!RtlDosPathNameToNtPathName_U( file, &fileW, NULL, NULL ))
+        return ERROR_INVALID_PARAMETER;
+    InitializeObjectAttributes( &fileattr, &fileW, OBJ_CASE_INSENSITIVE, 0, NULL );
+
+    status = NtLoadKeyEx( &destkey, &fileattr, REG_APP_HIVE, 0, 0, sam, (HANDLE *)result, NULL );
+    RtlFreeUnicodeString( &fileW );
+    return RtlNtStatusToDosError( status );
 }
 
 

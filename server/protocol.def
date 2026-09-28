@@ -2183,6 +2183,7 @@ struct process_info
 /* Load a registry branch from a file */
 @REQ(load_registry)
     obj_handle_t file;         /* file to load from */
+    unsigned int flags;        /* REG_* load flags */
     VARARG(objattr,object_attributes); /* object attributes */
 @END
 

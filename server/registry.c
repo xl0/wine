@@ -102,6 +102,7 @@ struct key
 #define KEY_SYMLINK  0x0008  /* key is a symbolic link */
 #define KEY_WOWSHARE 0x0010  /* key is a Wow64 shared key (used for Software\Classes) */
 #define KEY_PREDEF   0x0020  /* key is marked as predefined */
+#define KEY_APP_HIVE 0x0040  /* key is the root of an application hive, unloaded on last handle close */
 
 #define OBJ_KEY_WOW64 0x100000 /* magic flag added to attributes for WoW64 redirection */
 
@@ -135,6 +136,7 @@ static const struct unicode_str symlink_str = { symlink_value, sizeof(symlink_va
 
 static void set_periodic_save_timer(void);
 static struct key_value *find_value( const struct key *key, struct unicode_str name, int *index );
+static int delete_key( struct key *key, int recurse );
 
 /* information about where to save a registry branch */
 struct save_branch_info
@@ -689,6 +691,7 @@ static int key_close_handle( struct object *obj, struct process *process, obj_ha
     struct key * key = (struct key *) obj;
     struct notify *notify = find_notify( key, process, handle );
     if (notify) do_notification( key, notify, 1 );
+    if ((key->flags & KEY_APP_HIVE) && obj->handle_count == 1) delete_key( key, 1 );
     return 1;  /* ok to close */
 }
 
@@ -2086,6 +2089,7 @@ void init_registry(void)
     static const WCHAR REGISTRY[] = {'\\','R','E','G','I','S','T','R','Y'};
     static const WCHAR HKLM[] = { 'M','a','c','h','i','n','e' };
     static const WCHAR HKU_default[] = { 'U','s','e','r','\\','.','D','e','f','a','u','l','t' };
+    static const WCHAR app[] = { 'A' };
     static const WCHAR classes_i386[] = {'S','o','f','t','w','a','r','e','\\',
                                          'C','l','a','s','s','e','s','\\',
                                          'W','o','w','6','4','3','2','N','o','d','e'};
@@ -2107,6 +2111,7 @@ void init_registry(void)
     static const struct unicode_str root_name = { REGISTRY, sizeof(REGISTRY) };
     static const struct unicode_str HKLM_name = { HKLM, sizeof(HKLM) };
     static const struct unicode_str HKU_name = { HKU_default, sizeof(HKU_default) };
+    static const struct unicode_str app_name = { app, sizeof(app) };
     static const struct unicode_str perflib_name = { perflib, sizeof(perflib) };
     static const struct unicode_str controlset_name = { controlset, sizeof(controlset) };
 
@@ -2159,6 +2164,11 @@ void init_registry(void)
         fatal_error( "could not create User\\.Default registry key\n" );
 
     load_init_registry_from_file( "userdef.reg", key );
+    release_object( key );
+
+    /* Registry\A holds the application hives (RegLoadAppKey) */
+    if (!(key = create_key_recursive( root_key, app_name, current_time )))
+        fatal_error( "could not create A registry key\n" );
     release_object( key );
 
     /* load user.reg into HKEY_CURRENT_USER */
@@ -2555,7 +2565,7 @@ DECL_HANDLER(load_registry)
     if (!get_req_object_attributes( &params )) return;
     if (params.root) release_object( params.root );
 
-    if (!thread_single_check_privilege( current, SeRestorePrivilege ))
+    if (!(req->flags & REG_APP_HIVE) && !thread_single_check_privilege( current, SeRestorePrivilege ))
     {
         set_error( STATUS_PRIVILEGE_NOT_HELD );
         return;
@@ -2576,7 +2586,13 @@ DECL_HANDLER(load_registry)
         {
             if (!status) delete_key( key, 1 );
         }
-        else set_error( status );
+        else
+        {
+            set_error( status );
+            /* only take ownership (delete on last handle close) of a key we created ourselves,
+             * never of a pre-existing key whose contents would otherwise be destroyed */
+            if (!status && (req->flags & REG_APP_HIVE)) key->flags |= KEY_APP_HIVE;
+        }
         release_object( key );
     }
     if (parent) release_object( parent );

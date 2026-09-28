@@ -2754,7 +2754,9 @@ struct load_registry_request
 {
     struct request_header __header;
     obj_handle_t file;
+    unsigned int flags;
     /* VARARG(objattr,object_attributes); */
+    char __pad_20[4];
 };
 struct load_registry_reply
 {
@@ -7184,6 +7186,6 @@ union generic_reply
     struct alpc_create_port_reply alpc_create_port_reply;
 };
 
-#define SERVER_PROTOCOL_VERSION 962
+#define SERVER_PROTOCOL_VERSION 963
 
 #endif /* __WINE_WINE_SERVER_PROTOCOL_H */
