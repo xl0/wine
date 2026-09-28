@@ -618,6 +618,18 @@ exit:
 }
 
 /*************************************************************************
+ * CreateAppContainerToken    (kernelbase.@)
+ */
+BOOL WINAPI CreateAppContainerToken( HANDLE token, SECURITY_CAPABILITIES *caps, HANDLE *ret )
+{
+    TRACE( "token %p, caps %p, ret %p\n", token, caps, ret );
+
+    if (!token) token = GetCurrentProcessToken();
+    return set_ntstatus( NtCreateLowBoxToken( ret, token, TOKEN_ALL_ACCESS, NULL, caps->AppContainerSid,
+                                              caps->CapabilityCount, caps->Capabilities, 0, NULL ));
+}
+
+/*************************************************************************
  * CreateRestrictedToken    (kernelbase.@)
  */
 BOOL WINAPI CreateRestrictedToken( HANDLE token, DWORD flags,
