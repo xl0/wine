@@ -1875,7 +1875,7 @@ static void test_DeleteFileA( void )
 {
     BOOL ret;
     char temp_path[MAX_PATH], temp_file[MAX_PATH];
-    HANDLE hfile, mapping;
+    HANDLE hfile, hfile2, mapping;
     char **argv;
 
     ret = DeleteFileA(NULL);
@@ -1908,6 +1908,17 @@ static void test_DeleteFileA( void )
     SetLastError(0xdeadbeef);
     ret = DeleteFileA(temp_file);
     ok(ret, "DeleteFile error %ld\n", GetLastError());
+
+    /* the name goes away at once, while the file is still open */
+    hfile2 = CreateFileA(temp_file, GENERIC_WRITE, 0, NULL, CREATE_NEW, 0, 0);
+    ok(hfile2 != INVALID_HANDLE_VALUE || broken(GetLastError() == ERROR_ACCESS_DENIED) /* older Windows */,
+       "CreateFile error %ld\n", GetLastError());
+    if (hfile2 != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(hfile2);
+        ret = DeleteFileA(temp_file);
+        ok(ret, "DeleteFile error %ld\n", GetLastError());
+    }
 
     SetLastError(0xdeadbeef);
     ret = CloseHandle(hfile);

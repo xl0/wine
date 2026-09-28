@@ -448,6 +448,7 @@ static void test_RemoveDirectoryA(void)
 {
     char curdir[MAX_PATH];
     char tmpdir[MAX_PATH];
+    HANDLE change;
     BOOL ret;
 
     GetTempPathA(MAX_PATH, tmpdir);
@@ -469,6 +470,19 @@ static void test_RemoveDirectoryA(void)
     SetCurrentDirectoryA(curdir);
     ret = RemoveDirectoryA(tmpdir);
     ok(ret == TRUE, "RemoveDirectoryA should always succeed\n");
+
+    /* the name goes away at once, while a change notification is still open on it */
+    ret = CreateDirectoryA(tmpdir, NULL);
+    ok(ret, "CreateDirectoryA failed, error %lu\n", GetLastError());
+    change = FindFirstChangeNotificationA(tmpdir, FALSE, FILE_NOTIFY_CHANGE_FILE_NAME);
+    ok(change != INVALID_HANDLE_VALUE, "FindFirstChangeNotificationA failed, error %lu\n", GetLastError());
+    ret = RemoveDirectoryA(tmpdir);
+    ok(ret, "RemoveDirectoryA failed, error %lu\n", GetLastError());
+    ret = CreateDirectoryA(tmpdir, NULL);
+    ok(ret || broken(GetLastError() == ERROR_ACCESS_DENIED) /* older Windows */,
+       "CreateDirectoryA failed, error %lu\n", GetLastError());
+    FindCloseChangeNotification(change);
+    RemoveDirectoryA(tmpdir);
 
     lstrcatA(tmpdir, "?");
     ret = RemoveDirectoryA(tmpdir);

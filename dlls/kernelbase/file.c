@@ -1134,12 +1134,17 @@ BOOL WINAPI DECLSPEC_HOTPATCH DeleteFileW( LPCWSTR path )
     }
 
     InitializeObjectAttributes( &attr, &nameW, OBJ_CASE_INSENSITIVE, 0, NULL );
-    status = NtCreateFile( &hFile, SYNCHRONIZE | DELETE, &attr, &io, NULL, 0,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN,
-                           FILE_DELETE_ON_CLOSE | FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT, NULL, 0 );
-    if (status == STATUS_SUCCESS) status = NtClose(hFile);
-
+    status = NtOpenFile( &hFile, SYNCHRONIZE | DELETE, &attr, &io,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT );
     RtlFreeUnicodeString( &nameW );
+
+    if (!status)
+    {
+        FILE_DISPOSITION_INFORMATION_EX info = { FILE_DISPOSITION_DELETE | FILE_DISPOSITION_POSIX_SEMANTICS };
+        status = NtSetInformationFile( hFile, &io, &info, sizeof(info), FileDispositionInformationEx );
+        NtClose( hFile );
+    }
     return set_ntstatus( status );
 }
 
@@ -3764,8 +3769,8 @@ BOOL WINAPI DECLSPEC_HOTPATCH RemoveDirectoryW( LPCWSTR path )
 
     if (!status)
     {
-        FILE_DISPOSITION_INFORMATION info = { TRUE };
-        status = NtSetInformationFile( handle, &io, &info, sizeof(info), FileDispositionInformation );
+        FILE_DISPOSITION_INFORMATION_EX info = { FILE_DISPOSITION_DELETE | FILE_DISPOSITION_POSIX_SEMANTICS };
+        status = NtSetInformationFile( handle, &io, &info, sizeof(info), FileDispositionInformationEx );
         NtClose( handle );
     }
     return set_ntstatus( status );

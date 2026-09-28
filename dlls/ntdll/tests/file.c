@@ -3638,13 +3638,10 @@ static void test_file_disposition_information(void)
     todo_wine
     ok(fsi.DeletePending, "Handle should be marked for deletion\n");
     res = nt_get_file_attrs( buffer, &fdi2 );
-    todo_wine
     ok( res == STATUS_OBJECT_NAME_NOT_FOUND || broken(res == STATUS_DELETE_PENDING), "got %#lx\n", res );
     /* can't open the deleted file */
     handle2 = CreateFileA(buffer, DELETE, FILE_SHARE_DELETE | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, 0);
-    todo_wine
     ok( handle2 == INVALID_HANDLE_VALUE, "CreateFile should fail\n" );
-    todo_wine
     ok( GetLastError() == ERROR_FILE_NOT_FOUND || broken(GetLastError() == ERROR_ACCESS_DENIED), "got %lu\n", GetLastError());
     if (handle2 != INVALID_HANDLE_VALUE)
         CloseHandle( handle2);
@@ -3695,13 +3692,10 @@ static void test_file_disposition_information(void)
     todo_wine
     ok(fsi.DeletePending, "Handle should be marked for deletion\n");
     res = nt_get_file_attrs( buffer, &fdi2 );
-    todo_wine
     ok( res == STATUS_OBJECT_NAME_NOT_FOUND || broken(res == STATUS_DELETE_PENDING), "got %#lx\n", res );
     /* can't open the deleted directory */
     handle2 = CreateFileA(buffer, DELETE, FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, 0);
-    todo_wine
     ok( handle2 == INVALID_HANDLE_VALUE, "CreateFile should fail\n" );
-    todo_wine
     ok(GetLastError() == ERROR_FILE_NOT_FOUND || broken(GetLastError() == ERROR_ACCESS_DENIED), "got %lu\n", GetLastError());
     if (handle2 != INVALID_HANDLE_VALUE) CloseHandle( handle2 );
     CloseHandle( handle );
@@ -7067,8 +7061,8 @@ static void test_reparse_points(void)
 
     handle2 = CreateFileW( path2, GENERIC_ALL, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, 0 );
-    todo_wine ok( handle2 == INVALID_HANDLE_VALUE, "expected failure\n" );
-    todo_wine ok( GetLastError() == ERROR_FILE_NOT_FOUND, "got error %lu\n", GetLastError() );
+    ok( handle2 == INVALID_HANDLE_VALUE, "expected failure\n" );
+    ok( GetLastError() == ERROR_FILE_NOT_FOUND, "got error %lu\n", GetLastError() );
     if (handle2 != INVALID_HANDLE_VALUE) CloseHandle( handle2 );
 
     handle2 = CreateFileW( path2, GENERIC_ALL, 0, NULL, CREATE_ALWAYS, 0, 0 );
@@ -7292,7 +7286,7 @@ static void test_reparse_points(void)
 
     ret = ReadFile( handle2, buffer, sizeof(buffer), &size, NULL );
     ok( ret == TRUE, "got error %lu\n", GetLastError() );
-    todo_wine ok( size == 5, "got size %lu\n", size );
+    ok( size == 5, "got size %lu\n", size );
     ok( !memcmp( buffer, "file2", size ), "got data %s\n", debugstr_an( buffer, size ));
 
     NtClose( handle2 );
