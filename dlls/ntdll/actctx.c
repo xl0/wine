@@ -2860,6 +2860,35 @@ static NTSTATUS parse_manifest_buffer( struct actctx_loader* acl, struct assembl
     return STATUS_SUCCESS;
 }
 
+/* convert a manifest or config file to a newly allocated WCHAR buffer */
+static WCHAR *get_xml_text( const void *buffer, SIZE_T size, const WCHAR **end )
+{
+    int unicode_tests = IS_TEXT_UNICODE_SIGNATURE | IS_TEXT_UNICODE_REVERSE_SIGNATURE;
+    const WCHAR *buf = buffer;
+    WCHAR *text;
+    DWORD i, len = size;
+
+    if (RtlIsTextUnicode( buffer, size, &unicode_tests ))
+    {
+        if (!(text = RtlAllocateHeap( GetProcessHeap(), 0, len ))) return NULL;
+        memcpy( text, buffer, len );
+    }
+    else if (unicode_tests & IS_TEXT_UNICODE_REVERSE_SIGNATURE)
+    {
+        if (!(text = RtlAllocateHeap( GetProcessHeap(), 0, len ))) return NULL;
+        for (i = 0; i < len / sizeof(WCHAR); i++) text[i] = RtlUshortByteSwap( buf[i] );
+    }
+    else
+    {
+        /* let's assume utf-8 for now */
+        RtlUTF8ToUnicodeN( NULL, 0, &len, buffer, size );
+        if (!(text = RtlAllocateHeap( GetProcessHeap(), 0, len ))) return NULL;
+        RtlUTF8ToUnicodeN( text, len, &len, buffer, size );
+    }
+    *end = text + len / sizeof(WCHAR);
+    return text;
+}
+
 static NTSTATUS parse_manifest( struct actctx_loader* acl, struct assembly_identity* ai,
                                 LPCWSTR filename, HANDLE module, LPCWSTR directory, BOOL shared,
                                 const void *buffer, SIZE_T size )
@@ -2867,7 +2896,7 @@ static NTSTATUS parse_manifest( struct actctx_loader* acl, struct assembly_ident
     xmlbuf_t xmlbuf;
     NTSTATUS status;
     struct assembly *assembly;
-    int unicode_tests;
+    WCHAR *text;
 
     TRACE( "parsing manifest loaded from %s base dir %s\n", debugstr_w(filename), debugstr_w(directory) );
 
@@ -2888,42 +2917,10 @@ static NTSTATUS parse_manifest( struct actctx_loader* acl, struct assembly_ident
     assembly->manifest.type = assembly->manifest.info ? ACTIVATION_CONTEXT_PATH_TYPE_WIN32_FILE
                                                       : ACTIVATION_CONTEXT_PATH_TYPE_NONE;
 
-    unicode_tests = IS_TEXT_UNICODE_SIGNATURE | IS_TEXT_UNICODE_REVERSE_SIGNATURE;
-    if (RtlIsTextUnicode( buffer, size, &unicode_tests ))
-    {
-        xmlbuf.ptr = buffer;
-        xmlbuf.end = xmlbuf.ptr + size / sizeof(WCHAR);
-        status = parse_manifest_buffer( acl, assembly, ai, &xmlbuf );
-    }
-    else if (unicode_tests & IS_TEXT_UNICODE_REVERSE_SIGNATURE)
-    {
-        const WCHAR *buf = buffer;
-        WCHAR *new_buff;
-        unsigned int i;
-
-        if (!(new_buff = RtlAllocateHeap( GetProcessHeap(), 0, size )))
-            return STATUS_NO_MEMORY;
-        for (i = 0; i < size / sizeof(WCHAR); i++)
-            new_buff[i] = RtlUshortByteSwap( buf[i] );
-        xmlbuf.ptr = new_buff;
-        xmlbuf.end = xmlbuf.ptr + size / sizeof(WCHAR);
-        status = parse_manifest_buffer( acl, assembly, ai, &xmlbuf );
-        RtlFreeHeap( GetProcessHeap(), 0, new_buff );
-    }
-    else
-    {
-        DWORD len;
-        WCHAR *new_buff;
-
-        /* let's assume utf-8 for now */
-        RtlUTF8ToUnicodeN( NULL, 0, &len, buffer, size );
-        if (!(new_buff = RtlAllocateHeap( GetProcessHeap(), 0, len ))) return STATUS_NO_MEMORY;
-        RtlUTF8ToUnicodeN( new_buff, len, &len, buffer, size );
-        xmlbuf.ptr = new_buff;
-        xmlbuf.end = xmlbuf.ptr + len / sizeof(WCHAR);
-        status = parse_manifest_buffer( acl, assembly, ai, &xmlbuf );
-        RtlFreeHeap( GetProcessHeap(), 0, new_buff );
-    }
+    if (!(text = get_xml_text( buffer, size, &xmlbuf.end ))) return STATUS_NO_MEMORY;
+    xmlbuf.ptr = text;
+    status = parse_manifest_buffer( acl, assembly, ai, &xmlbuf );
+    RtlFreeHeap( GetProcessHeap(), 0, text );
     return status;
 }
 
