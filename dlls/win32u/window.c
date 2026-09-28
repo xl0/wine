@@ -2384,6 +2384,9 @@ static BOOL apply_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags, stru
     if (ret)
     {
         update_surface_region( surface_win );
+        /* a surface owned by another process has to exclude our client surface too */
+        if (win->clip_clients && surface_win && !is_current_process_window( surface_win ))
+            NtUserPostMessage( surface_win, WM_WINE_UPDATEWINDOWSTATE, 0, 0 );
         if (((swp_flags & SWP_AGG_NOPOSCHANGE) != SWP_AGG_NOPOSCHANGE) ||
             (swp_flags & (SWP_HIDEWINDOW | SWP_SHOWWINDOW | SWP_STATECHANGED | SWP_FRAMECHANGED)))
             invalidate_dce( win, &old_rects.window );
