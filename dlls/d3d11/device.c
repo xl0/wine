@@ -4579,7 +4579,10 @@ static HRESULT d3d11_deferred_context_create(struct d3d_device *device,
         return E_OUTOFMEMORY;
     d3d11_device_context_init(object, device, D3D11_DEVICE_CONTEXT_DEFERRED);
 
-    if (FAILED(hr = wined3d_deferred_context_create(device->wined3d_device, &object->wined3d_context)))
+    wined3d_mutex_lock();
+    hr = wined3d_deferred_context_create(device->wined3d_device, &object->wined3d_context);
+    wined3d_mutex_unlock();
+    if (FAILED(hr))
     {
         WARN("Failed to create wined3d deferred context, hr %#lx.\n", hr);
         free(object);

@@ -33592,6 +33592,49 @@ static void test_deferred_context_swap_state(void)
     release_test_context(&test_context);
 }
 
+static DWORD WINAPI clear_state_thread(void *arg)
+{
+    ID3D11DeviceContext *immediate = arg;
+    unsigned int i;
+
+    for (i = 0; i < 1000; ++i)
+        ID3D11DeviceContext_ClearState(immediate);
+
+    return 0;
+}
+
+static void test_deferred_context_multithread(void)
+{
+    ID3D11DeviceContext *immediate, *deferred;
+    unsigned int failures = 0;
+    ID3D11Device *device;
+    HANDLE thread;
+    HRESULT hr;
+
+    if (!(device = create_device(NULL)))
+    {
+        skip("Failed to create device.\n");
+        return;
+    }
+    ID3D11Device_GetImmediateContext(device, &immediate);
+
+    thread = CreateThread(NULL, 0, clear_state_thread, immediate, 0, NULL);
+    ok(!!thread, "Failed to create thread.\n");
+    while (WaitForSingleObject(thread, 0) == WAIT_TIMEOUT)
+    {
+        hr = ID3D11Device_CreateDeferredContext(device, 0, &deferred);
+        if (hr == S_OK)
+            ID3D11DeviceContext_Release(deferred);
+        else
+            ++failures;
+    }
+    CloseHandle(thread);
+    ok(!failures, "CreateDeferredContext() failed %u times.\n", failures);
+
+    ID3D11DeviceContext_Release(immediate);
+    ID3D11Device_Release(device);
+}
+
 static void test_deferred_context_rendering(void)
 {
     ID3D11BlendState *red_blend, *green_blend, *blue_blend, *ret_blend;
@@ -37888,6 +37931,7 @@ START_TEST(d3d11)
     queue_test(test_dual_source_blend);
     queue_test(test_deferred_context_state);
     queue_test(test_deferred_context_swap_state);
+    queue_test(test_deferred_context_multithread);
     queue_test(test_deferred_context_rendering);
     queue_test(test_deferred_context_map);
     queue_test(test_deferred_context_queries);
