@@ -1277,6 +1277,8 @@ typedef struct tagTLBContext
 	void *mapping;        /* memory mapping */
 	MSFT_SegDir * pTblDir;
 	ITypeLibImpl* pLibInfo;
+	TLBString **names;    /* name table entries by offset / 4 */
+	TLBString **strings;  /* string table entries by offset / 4 */
 } TLBContext;
 
 
@@ -2130,6 +2132,9 @@ static HRESULT MSFT_ReadAllNames(TLBContext *pcx)
     INT16 len_piece;
     int offs = 0, lengthInChars;
 
+    if (!(pcx->names = calloc(pcx->pTblDir->pNametab.length / 4 + 1, sizeof(*pcx->names))))
+        return E_OUTOFMEMORY;
+
     MSFT_Seek(pcx, pcx->pTblDir->pNametab.offset);
     while (1) {
         TLBString *tlbstr;
@@ -2165,6 +2170,7 @@ static HRESULT MSFT_ReadAllNames(TLBContext *pcx)
         free(string);
 
         list_add_tail(&pcx->pLibInfo->name_list, &tlbstr->entry);
+        pcx->names[offs / 4] = tlbstr;
 
         offs += len_piece;
     }
@@ -2174,28 +2180,22 @@ static TLBString *MSFT_ReadName( TLBContext *pcx, int offset)
 {
     TLBString *tlbstr;
 
-    LIST_FOR_EACH_ENTRY(tlbstr, &pcx->pLibInfo->name_list, TLBString, entry) {
-        if (tlbstr->offset == offset) {
-            TRACE_(typelib)("%s\n", debugstr_w(tlbstr->str));
-            return tlbstr;
-        }
-    }
-
-    return NULL;
+    if (offset < 0 || offset >= pcx->pTblDir->pNametab.length || offset % 4 || !pcx->names)
+        return NULL;
+    if ((tlbstr = pcx->names[offset / 4]))
+        TRACE_(typelib)("%s\n", debugstr_w(tlbstr->str));
+    return tlbstr;
 }
 
 static TLBString *MSFT_ReadString( TLBContext *pcx, int offset)
 {
     TLBString *tlbstr;
 
-    LIST_FOR_EACH_ENTRY(tlbstr, &pcx->pLibInfo->string_list, TLBString, entry) {
-        if (tlbstr->offset == offset) {
-            TRACE_(typelib)("%s\n", debugstr_w(tlbstr->str));
-            return tlbstr;
-        }
-    }
-
-    return NULL;
+    if (offset < 0 || offset >= pcx->pTblDir->pStringtab.length || offset % 4 || !pcx->strings)
+        return NULL;
+    if ((tlbstr = pcx->strings[offset / 4]))
+        TRACE_(typelib)("%s\n", debugstr_w(tlbstr->str));
+    return tlbstr;
 }
 
 /*
@@ -2762,6 +2762,9 @@ static HRESULT MSFT_ReadAllStrings(TLBContext *pcx)
     INT16 len_str, len_piece;
     int offs = 0, lengthInChars;
 
+    if (!(pcx->strings = calloc(pcx->pTblDir->pStringtab.length / 4 + 1, sizeof(*pcx->strings))))
+        return E_OUTOFMEMORY;
+
     MSFT_Seek(pcx, pcx->pTblDir->pStringtab.offset);
     while (1) {
         TLBString *tlbstr;
@@ -2796,6 +2799,7 @@ static HRESULT MSFT_ReadAllStrings(TLBContext *pcx)
         free(string);
 
         list_add_tail(&pcx->pLibInfo->string_list, &tlbstr->entry);
+        pcx->strings[offs / 4] = tlbstr;
 
         offs += len_piece;
     }
@@ -3478,6 +3482,7 @@ static ITypeLib2* ITypeLib2_Constructor_MSFT(LPVOID pLib, DWORD dwTLBLength)
 	return NULL;
     }
 
+    cx.names = cx.strings = NULL;
     MSFT_ReadAllNames(&cx);
     MSFT_ReadAllStrings(&cx);
     MSFT_ReadAllGuids(&cx);
@@ -3639,6 +3644,9 @@ static ITypeLib2* ITypeLib2_Constructor_MSFT(LPVOID pLib, DWORD dwTLBLength)
         for(i = 0; i < pTypeLibImpl->TypeInfoCount; ++i)
             TLB_fix_typeinfo_ptr_size(pTypeLibImpl->typeinfos[i]);
     }
+
+    free(cx.names);
+    free(cx.strings);
 
     TRACE("(%p)\n", pTypeLibImpl);
     return &pTypeLibImpl->ITypeLib2_iface;
