@@ -40,6 +40,7 @@ struct winstation
 {
     struct object      obj;                /* object header */
     unsigned int       flags;              /* winstation flags */
+    unsigned int       session_id;         /* session id of the creator */
     struct list        entry;              /* entry in global winstation list */
     struct list        desktops;           /* list of desktops of this winstation */
     struct desktop    *input_desktop;      /* desktop receiving user input */

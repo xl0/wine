@@ -135,6 +135,7 @@ static bool winstation_init( struct object *obj, const void *init_data )
     if (!(winstation->desktop_names = create_namespace( 7 ))) return false;
 
     winstation->flags = data->flags;
+    winstation->session_id = current->process->session_id;
     winstation->input_desktop = NULL;
     winstation->clipboard = NULL;
     winstation->atom_table = NULL;
@@ -196,7 +197,7 @@ struct winstation *get_visible_winstation(void)
 {
     struct winstation *winstation;
     LIST_FOR_EACH_ENTRY( winstation, &winstation_list, struct winstation, entry )
-        if (winstation->flags & WSF_VISIBLE) return winstation;
+        if ((winstation->flags & WSF_VISIBLE) && winstation->session_id == default_session_id) return winstation;
     return NULL;
 }
 
@@ -970,6 +971,7 @@ DECL_HANDLER(enum_winstation)
         LIST_FOR_EACH_ENTRY( winstation, &winstation_list, struct winstation, entry )
         {
             unsigned int access = WINSTA_ENUMERATE;
+            if (winstation->session_id != current->process->session_id) continue;
             if (!(name = winstation->obj.name)) continue;
             if (!check_object_access( NULL, &winstation->obj, &access )) continue;
             reply->count++;
