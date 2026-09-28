@@ -1804,7 +1804,7 @@ DECL_HANDLER(grant_process_admin_token)
         return;
 
     if ((token = token_create_admin( TRUE, SecurityIdentification,
-                                     TokenElevationTypeDefault, default_session_id )))
+                                     TokenElevationTypeDefault, process->session_id )))
     {
         release_object( process->token );
         process->token = token;
