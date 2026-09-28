@@ -412,7 +412,7 @@ static HRESULT WINAPI disp_obj_QueryInterface(ISomethingFromDispatch *iface, REF
 
     if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IDispatch)
             || IsEqualGUID(iid, &IID_ISomethingFromDispatch)
-            || IsEqualGUID(iid, &DIID_ItestIF4))
+            || IsEqualGUID(iid, &DIID_ItestIF4) || IsEqualGUID(iid, &IID_ItestIF7))
     {
         *out = iface;
         ISomethingFromDispatch_AddRef(iface);
@@ -3765,12 +3765,13 @@ static void test_marshal_dispinterface(void)
 
     ISomethingFromDispatch *disp_obj = create_disp_obj2(false);
     ITypeInfo *typeinfo = NULL;
-    IDispatch *proxy_disp;
-    IStream *stream;
-    HANDLE thread;
+    IDispatch *proxy_disp, *proxy_dual;
+    IStream *stream, *stream2;
+    HANDLE thread, thread2;
+    DWORD tid, tid2;
+    LSTATUS ret;
     HRESULT hr;
     ULONG ref;
-    DWORD tid;
 
     CreateStreamOnHGlobal(NULL, TRUE, &stream);
     tid = start_host_object(stream, &DIID_ItestIF4, (IUnknown *)disp_obj, MSHLFLAGS_NORMAL, &thread);
@@ -3780,6 +3781,23 @@ static void test_marshal_dispinterface(void)
 
     hr = IDispatch_GetTypeInfo(proxy_disp, 0xdeadbeef, 0, &typeinfo);
     ok(hr == 0xbeefdead, "Got hr %#lx.\n", hr);
+
+    /* PSDispatch creates a plain IDispatch proxy even for dual interfaces. */
+    ret = RegSetValueW(HKEY_CLASSES_ROOT, L"Interface\\{f711b105-554d-4751-818c-46fcc5d7c0d5}\\ProxyStubClsid32",
+            REG_SZ, L"{00020420-0000-0000-C000-000000000046}", 0);
+    ok(!ret, "Got error %lu.\n", ret);
+    CreateStreamOnHGlobal(NULL, TRUE, &stream2);
+    tid2 = start_host_object(stream2, &IID_ItestIF7, (IUnknown *)disp_obj, MSHLFLAGS_NORMAL, &thread2);
+    IStream_Seek(stream2, zero, STREAM_SEEK_SET, NULL);
+    hr = CoUnmarshalInterface(stream2, &IID_ItestIF7, (void **)&proxy_dual);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(proxy_dual->lpVtbl == proxy_disp->lpVtbl, "Got a different proxy vtbl.\n");
+    ref = IDispatch_Release(proxy_dual);
+    ok(!ref, "Got outstanding refcount %ld.\n", ref);
+    IStream_Release(stream2);
+    end_host_object(tid2, thread2);
+    RegSetValueW(HKEY_CLASSES_ROOT, L"Interface\\{f711b105-554d-4751-818c-46fcc5d7c0d5}\\ProxyStubClsid32",
+            REG_SZ, L"{00020424-0000-0000-C000-000000000046}", 0);
 
     ref = IDispatch_Release(proxy_disp);
     ok(!ref, "Got outstanding refcount %ld.\n", ref);

@@ -1155,6 +1155,33 @@ static const IPSFactoryBufferVtbl dispatch_typelib_ps_vtbl =
 
 static IPSFactoryBuffer dispatch_typelib_ps = { &dispatch_typelib_ps_vtbl };
 
+/* PSDispatch marshals any interface as IDispatch; unlike PSOAInterface it
+ * doesn't look at the typelib, not even for dual interfaces. */
+static HRESULT WINAPI dispatch_ps_CreateProxy(IPSFactoryBuffer *iface,
+    IUnknown *outer, REFIID iid, IRpcProxyBuffer **proxy, void **out)
+{
+    return dispatch_create_proxy(outer, proxy, out);
+}
+
+static HRESULT WINAPI dispatch_ps_CreateStub(IPSFactoryBuffer *iface,
+    REFIID iid, IUnknown *server, IRpcStubBuffer **stub)
+{
+    if (IsEqualGUID(iid, &IID_IDispatch))
+        return dispatch_create_stub(server, stub);
+    return dispinterface_create_stub(server, iid, stub);
+}
+
+static const IPSFactoryBufferVtbl dispatch_ps_vtbl =
+{
+    dispatch_typelib_ps_QueryInterface,
+    dispatch_typelib_ps_AddRef,
+    dispatch_typelib_ps_Release,
+    dispatch_ps_CreateProxy,
+    dispatch_ps_CreateStub,
+};
+
+static IPSFactoryBuffer dispatch_ps = { &dispatch_ps_vtbl };
+
 extern void _get_STDFONT_CF(LPVOID *);
 extern void _get_STDPIC_CF(LPVOID *);
 
@@ -1179,7 +1206,10 @@ HRESULT WINAPI DllGetClassObject(REFCLSID rclsid, REFIID iid, LPVOID *ppv)
 	}
     }
 
-    if (IsEqualGUID(rclsid, &CLSID_PSDispatch) || IsEqualGUID(rclsid, &CLSID_PSOAInterface))
+    if (IsEqualGUID(rclsid, &CLSID_PSDispatch))
+        return IPSFactoryBuffer_QueryInterface(&dispatch_ps, iid, ppv);
+
+    if (IsEqualGUID(rclsid, &CLSID_PSOAInterface))
         return IPSFactoryBuffer_QueryInterface(&dispatch_typelib_ps, iid, ppv);
 
     if (IsEqualCLSID(rclsid, &CLSID_PSTypeComp) ||
