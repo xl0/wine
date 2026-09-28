@@ -3755,6 +3755,12 @@ static UINT get_glyph_index_linked( struct gdi_font **font, UINT glyph )
     return 0;
 }
 
+/* control characters that are drawn as empty zero-width glyphs when the font doesn't map them */
+static BOOL is_blank_control_char( UINT ch )
+{
+    return ch == '\t' || ch == '\n' || ch == '\r' || (ch >= 0x1c && ch <= 0x1f) || (ch >= 0x80 && ch <= 0x9f);
+}
+
 static DWORD get_glyph_outline( struct gdi_font *font, UINT glyph, UINT format,
                                 GLYPHMETRICS *gm_ret, ABC *abc_ret, DWORD buflen, void *buf,
                                 const MAT2 *mat )
@@ -3778,6 +3784,14 @@ static DWORD get_glyph_outline( struct gdi_font *font, UINT glyph, UINT format,
     else
     {
         index = get_glyph_index_linked( &font, glyph );
+        if (!index && is_blank_control_char( glyph ))
+        {
+            memset( &gm, 0, sizeof(gm) );
+            gm.gmBlackBoxX = gm.gmBlackBoxY = 1;
+            memset( &abc, 0, sizeof(abc) );
+            if (format != GGO_METRICS) ret = 0;
+            goto done;
+        }
         if (tategaki)
         {
             UINT orig = index;
@@ -5262,12 +5276,16 @@ BOOL WINAPI NtGdiGetTextExtentExW( HDC hdc, const WCHAR *str, INT count, INT max
     {
         if (dxs || nfit)
         {
+            unsigned int dx = 0;
+
             for (i = 0; i < count; i++)
             {
-                unsigned int dx = abs( INTERNAL_XDSTOWS( dc, pos[i] )) +
+                unsigned int next = abs( INTERNAL_XDSTOWS( dc, pos[i] )) +
                     (i + 1) * dc->attr->char_extra;
-                if (nfit && dx > (unsigned int)max_ext) break;
-		if (dxs) dxs[i] = dx;
+                /* zero-width characters at the limit don't fit either */
+                if (nfit && (next > (unsigned int)max_ext || dx >= (unsigned int)max_ext)) break;
+                dx = next;
+                if (dxs) dxs[i] = dx;
             }
             if (nfit) *nfit = i;
         }

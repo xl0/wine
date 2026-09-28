@@ -7751,6 +7751,59 @@ done:
     ReleaseDC(0, hdc);
 }
 
+static void test_control_chars(void)
+{
+    static const WCHAR blank_chars[] = {'\t', '\n', '\r', 0x1c, 0x1f, 0x80, 0x85, 0x9f};
+    BITMAPINFO bmi = {{sizeof(bmi.bmiHeader), 32, 32, 1, 32, BI_RGB}};
+    WCHAR str[3] = {'a', 0x01, 'a'};
+    HFONT hfont, old_hfont;
+    HBITMAP bitmap;
+    DWORD *bits;
+    WORD glyph;
+    INT dx[3];
+    SIZE size;
+    HDC hdc;
+    UINT i, j;
+
+    if (!is_font_installed("Tahoma"))
+    {
+        skip("Tahoma is not installed\n");
+        return;
+    }
+
+    hdc = CreateCompatibleDC(0);
+    bitmap = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, (void **)&bits, NULL, 0);
+    SelectObject(hdc, bitmap);
+    SetBkMode(hdc, TRANSPARENT);
+    hfont = CreateFontA(-20, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
+                        NONANTIALIASED_QUALITY, 0, "Tahoma");
+    old_hfont = SelectObject(hdc, hfont);
+
+    /* other unmapped control characters use the default glyph */
+    GetTextExtentExPointW(hdc, str, 3, 0, NULL, dx, &size);
+    ok(dx[1] > dx[0], "got advance %d\n", dx[1] - dx[0]);
+
+    /* these are empty and zero-width when the font doesn't map them */
+    for (i = 0; i < ARRAY_SIZE(blank_chars); i++)
+    {
+        str[1] = blank_chars[i];
+        GetGlyphIndicesW(hdc, str + 1, 1, &glyph, GGI_MARK_NONEXISTING_GLYPHS);
+        ok(glyph == 0xffff, "%#x: got glyph %#x\n", str[1], glyph);
+        GetTextExtentExPointW(hdc, str, 3, 0, NULL, dx, &size);
+        ok(dx[1] == dx[0], "%#x: got advance %d\n", str[1], dx[1] - dx[0]);
+
+        memset(bits, 0xff, 32 * 32 * 4);
+        ExtTextOutW(hdc, 0, 0, 0, NULL, str + 1, 1, NULL);
+        for (j = 0; j < 32 * 32; j++) if ((bits[j] & 0xffffff) != 0xffffff) break;
+        ok(j == 32 * 32, "%#x: glyph was drawn\n", str[1]);
+    }
+
+    SelectObject(hdc, old_hfont);
+    DeleteObject(hfont);
+    DeleteDC(hdc);
+    DeleteObject(bitmap);
+}
+
 static void test_select_object(void)
 {
     HFONT hfont, old_font;
@@ -8095,6 +8148,7 @@ START_TEST(font)
     test_ttf_names();
     test_lang_names();
     test_char_width();
+    test_control_chars();
     test_select_object();
     test_font_weight();
     test_add_font_path();
