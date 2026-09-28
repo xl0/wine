@@ -8453,6 +8453,94 @@ done:
     free(original_modes);
 }
 
+static void clear_backbuffer(ID3D10Device *device, IDXGISwapChain *swapchain, const float *colour)
+{
+    ID3D10RenderTargetView *rtv;
+    ID3D10Texture2D *texture;
+    HRESULT hr;
+
+    hr = IDXGISwapChain_GetBuffer(swapchain, 0, &IID_ID3D10Texture2D, (void **)&texture);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    hr = ID3D10Device_CreateRenderTargetView(device, (ID3D10Resource *)texture, NULL, &rtv);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    ID3D10Device_ClearRenderTargetView(device, rtv, colour);
+    ID3D10RenderTargetView_Release(rtv);
+    ID3D10Texture2D_Release(texture);
+}
+
+static DWORD get_buffer_colour(ID3D10Device *device, IDXGISwapChain *swapchain,
+        unsigned int buffer_idx, unsigned int x, unsigned int y)
+{
+    ID3D10Texture2D *texture, *readback;
+    D3D10_MAPPED_TEXTURE2D map;
+    D3D10_TEXTURE2D_DESC desc;
+    DWORD colour;
+    HRESULT hr;
+
+    hr = IDXGISwapChain_GetBuffer(swapchain, buffer_idx, &IID_ID3D10Texture2D, (void **)&texture);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    ID3D10Texture2D_GetDesc(texture, &desc);
+    desc.Usage = D3D10_USAGE_STAGING;
+    desc.BindFlags = 0;
+    desc.CPUAccessFlags = D3D10_CPU_ACCESS_READ;
+    desc.MiscFlags = 0;
+    hr = ID3D10Device_CreateTexture2D(device, &desc, NULL, &readback);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    ID3D10Device_CopyResource(device, (ID3D10Resource *)readback, (ID3D10Resource *)texture);
+    hr = ID3D10Texture2D_Map(readback, 0, D3D10_MAP_READ, 0, &map);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    colour = *(DWORD *)((BYTE *)map.pData + y * map.RowPitch + x * sizeof(DWORD));
+    ID3D10Texture2D_Unmap(readback, 0);
+    ID3D10Texture2D_Release(readback);
+    ID3D10Texture2D_Release(texture);
+    return colour;
+}
+
+static void test_swapchain_present_dirty_rects(IUnknown *device, BOOL is_d3d12)
+{
+    static const float red[] = {1.0f, 0.0f, 0.0f, 1.0f}, green[] = {0.0f, 1.0f, 0.0f, 1.0f};
+    DXGI_PRESENT_PARAMETERS params = {0};
+    RECT dirty = {0, 0, 8, 8};
+    IDXGISwapChain1 *swapchain1;
+    IDXGISwapChain *swapchain;
+    ID3D10Device *d3d10;
+    DWORD colour;
+    HWND window;
+    HRESULT hr;
+
+    hr = IUnknown_QueryInterface(device, &IID_ID3D10Device, (void **)&d3d10);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    window = create_window();
+    swapchain = create_swapchain(device, is_d3d12, window, 0, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL);
+    hr = IDXGISwapChain_QueryInterface(swapchain, &IID_IDXGISwapChain1, (void **)&swapchain1);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+
+    clear_backbuffer(d3d10, swapchain, red);
+    hr = IDXGISwapChain1_Present1(swapchain1, 0, 0, &params);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    clear_backbuffer(d3d10, swapchain, green);
+    hr = IDXGISwapChain1_Present1(swapchain1, 0, 0, &params);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+
+    /* The back buffer still holds the red frame. Outside the dirty rectangle, the
+     * presented frame is the previous (green) one. */
+    colour = get_buffer_colour(d3d10, swapchain, 0, 40, 10);
+    ok(colour == 0xffff0000, "Got unexpected colour %08lx.\n", colour);
+    params.DirtyRectsCount = 1;
+    params.pDirtyRects = &dirty;
+    hr = IDXGISwapChain1_Present1(swapchain1, 0, 0, &params);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    colour = get_buffer_colour(d3d10, swapchain, 1, 40, 10);
+    ok(colour == 0xff00ff00, "Got unexpected colour %08lx.\n", colour);
+    colour = get_buffer_colour(d3d10, swapchain, 1, 4, 4);
+    ok(colour == 0xffff0000, "Got unexpected colour %08lx.\n", colour);
+
+    IDXGISwapChain1_Release(swapchain1);
+    IDXGISwapChain_Release(swapchain);
+    DestroyWindow(window);
+    ID3D10Device_Release(d3d10);
+}
+
 static void test_swapchain_present_count(IUnknown *device, BOOL is_d3d12)
 {
     static const struct
@@ -9113,6 +9201,7 @@ START_TEST(dxgi)
     run_on_d3d10(test_default_fullscreen_target_output);
     run_on_d3d10(test_mode_change);
     run_on_d3d10(test_swapchain_present_count);
+    run_on_d3d10(test_swapchain_present_dirty_rects);
     run_on_d3d10(test_resize_target_wndproc);
     run_on_d3d10(test_swapchain_window_messages);
     run_on_d3d10(test_zero_size);

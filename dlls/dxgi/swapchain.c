@@ -741,6 +741,59 @@ static HRESULT STDMETHODCALLTYPE d3d11_swapchain_GetCoreWindow(IDXGISwapChain4 *
     return DXGI_ERROR_INVALID_CALL;
 }
 
+/* Flip model: the parts of the back buffer outside the dirty rectangles show the previous frame. */
+static void d3d11_swapchain_copy_undirtied(struct d3d11_swapchain *swapchain,
+        const DXGI_PRESENT_PARAMETERS *present_parameters)
+{
+    struct wined3d_texture *back_buffer, *front_buffer;
+    struct wined3d_device_context *context;
+    struct wined3d_swapchain_desc desc;
+    HRGN region, dirty;
+    struct wined3d_box box;
+    RGNDATA *data;
+    unsigned int i;
+    RECT *rects;
+    DWORD size;
+
+    wined3d_mutex_lock();
+    wined3d_swapchain_get_desc(swapchain->wined3d_swapchain, &desc);
+    if (desc.swap_effect != WINED3D_SWAP_EFFECT_FLIP_SEQUENTIAL || !swapchain->present_count)
+    {
+        wined3d_mutex_unlock();
+        return;
+    }
+
+    region = CreateRectRgn(0, 0, desc.backbuffer_width, desc.backbuffer_height);
+    dirty = CreateRectRgn(0, 0, 0, 0);
+    for (i = 0; i < present_parameters->DirtyRectsCount; ++i)
+    {
+        const RECT *r = &present_parameters->pDirtyRects[i];
+
+        SetRectRgn(dirty, r->left, r->top, r->right, r->bottom);
+        CombineRgn(region, region, dirty, RGN_DIFF);
+    }
+    DeleteObject(dirty);
+
+    size = GetRegionData(region, 0, NULL);
+    if ((data = malloc(size)) && GetRegionData(region, size, data))
+    {
+        /* The last presented buffer is the last back buffer. */
+        back_buffer = wined3d_swapchain_get_back_buffer(swapchain->wined3d_swapchain, 0);
+        front_buffer = wined3d_swapchain_get_back_buffer(swapchain->wined3d_swapchain, desc.backbuffer_count - 1);
+        context = wined3d_device_get_immediate_context(wined3d_swapchain_get_device(swapchain->wined3d_swapchain));
+        rects = (RECT *)data->Buffer;
+        for (i = 0; i < data->rdh.nCount; ++i)
+        {
+            wined3d_box_set(&box, rects[i].left, rects[i].top, rects[i].right, rects[i].bottom, 0, 1);
+            wined3d_device_context_copy_sub_resource_region(context, wined3d_texture_get_resource(back_buffer),
+                    0, box.left, box.top, 0, wined3d_texture_get_resource(front_buffer), 0, &box, 0);
+        }
+    }
+    free(data);
+    DeleteObject(region);
+    wined3d_mutex_unlock();
+}
+
 static HRESULT STDMETHODCALLTYPE d3d11_swapchain_Present1(IDXGISwapChain4 *iface,
         UINT sync_interval, UINT flags, const DXGI_PRESENT_PARAMETERS *present_parameters)
 {
@@ -749,8 +802,11 @@ static HRESULT STDMETHODCALLTYPE d3d11_swapchain_Present1(IDXGISwapChain4 *iface
     TRACE("iface %p, sync_interval %u, flags %#x, present_parameters %p.\n",
             iface, sync_interval, flags, present_parameters);
 
-    if (present_parameters)
-        FIXME("Ignored present parameters %p.\n", present_parameters);
+    if (present_parameters && (present_parameters->pScrollRect || present_parameters->pScrollOffset))
+        FIXME("Ignoring scroll parameters.\n");
+
+    if (present_parameters && present_parameters->DirtyRectsCount && !(flags & DXGI_PRESENT_TEST))
+        d3d11_swapchain_copy_undirtied(swapchain, present_parameters);
 
     return d3d11_swapchain_present(swapchain, sync_interval, flags);
 }
