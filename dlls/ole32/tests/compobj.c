@@ -1412,9 +1412,54 @@ static void test_CoRegisterPSClsid(void)
     CoUninitialize();
 }
 
+static void test_per_user_class(void)
+{
+    static const char key_name[] = "CLSID\\{0badc0de-0000-0000-0000-000000000030}";
+    static const CLSID clsid = { 0x0badc0de, 0, 0, { 0, 0, 0, 0, 0, 0, 0, 0x30 } };
+    TOKEN_ELEVATION elevation;
+    char path[MAX_PATH];
+    IUnknown *unk;
+    HANDLE token;
+    HRESULT hr;
+    DWORD size;
+    HKEY hkey;
+    LONG res;
+
+    OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token);
+    GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size);
+    CloseHandle(token);
+
+    /* a stale per-user registration, updated through HKCR */
+    sprintf(path, "Software\\Classes\\%s\\InprocServer32", key_name);
+    res = RegCreateKeyExA(HKEY_CURRENT_USER, path, 0, NULL, 0, KEY_ALL_ACCESS, NULL, &hkey, NULL);
+    ok(!res, "RegCreateKeyEx returned %ld\n", res);
+    RegSetValueExA(hkey, NULL, 0, REG_SZ, (const BYTE *)"wine_stale.dll", sizeof("wine_stale.dll"));
+    RegCloseKey(hkey);
+    res = RegSetValueA(HKEY_CLASSES_ROOT, key_name, REG_SZ, "wine test", sizeof("wine test"));
+    ok(!res, "RegSetValue returned %ld\n", res);
+    res = RegSetValueA(HKEY_CLASSES_ROOT, path + strlen("Software\\Classes\\"), REG_SZ, "quartz.dll", sizeof("quartz.dll"));
+    ok(!res, "RegSetValue returned %ld\n", res);
+
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+
+    /* elevated processes ignore per-user classes */
+    hr = CoCreateInstance(&clsid, NULL, CLSCTX_INPROC_SERVER, &IID_IUnknown, (void **)&unk);
+    if (elevation.TokenIsElevated) ok(hr == REGDB_E_CLASSNOTREG, "got %#lx\n", hr);
+    else ok(hr == CLASS_E_CLASSNOTAVAILABLE, "got %#lx\n", hr);
+
+    CoUninitialize();
+
+    sprintf(path, "Software\\Classes\\%s", key_name);
+    res = RegDeleteTreeA(HKEY_CURRENT_USER, path);
+    ok(!res, "RegDeleteTree returned %ld\n", res);
+}
+
 static void test_CoGetPSClsid(void)
 {
+    TOKEN_ELEVATION elevation;
     ULONG_PTR cookie;
+    HANDLE token;
+    DWORD size;
     HANDLE handle;
     HRESULT hr;
     CLSID clsid;
@@ -1437,6 +1482,25 @@ static void test_CoGetPSClsid(void)
     ok(hr == REGDB_E_IIDNOTREG,
        "CoGetPSClsid for random IID returned 0x%08lx instead of REGDB_E_IIDNOTREG\n",
        hr);
+
+    /* per-user registrations, ignored by elevated processes */
+    OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token);
+    GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size);
+    CloseHandle(token);
+    res = RegCreateKeyExA(HKEY_CURRENT_USER, "Software\\Classes\\Interface\\{5201163f-8164-4fd0-a1a2-5d5a3654d3bd}"
+                          "\\ProxyStubClsid32", 0, NULL, 0, KEY_ALL_ACCESS, NULL, &hkey, NULL);
+    ok(!res, "RegCreateKeyEx returned %ld\n", res);
+    RegSetValueExA(hkey, NULL, 0, REG_SZ, (const BYTE *)"{00020424-0000-0000-C000-000000000046}", 39);
+    RegCloseKey(hkey);
+    hr = CoGetPSClsid(&IID_IWineTest, &clsid);
+    if (elevation.TokenIsElevated) ok(hr == REGDB_E_IIDNOTREG, "got %#lx\n", hr);
+    else
+    {
+        ok(hr == S_OK, "got %#lx\n", hr);
+        ok(clsid.Data1 == 0x00020424, "got clsid %s\n", wine_dbgstr_guid(&clsid));
+    }
+    res = RegDeleteTreeA(HKEY_CURRENT_USER, "Software\\Classes\\Interface\\{5201163f-8164-4fd0-a1a2-5d5a3654d3bd}");
+    ok(!res, "RegDeleteTree returned %ld\n", res);
 
     hr = CoGetPSClsid(&IID_IClassFactory, NULL);
     ok(hr == E_INVALIDARG,
@@ -4700,6 +4764,7 @@ START_TEST(compobj)
     test_CoCreateInstance();
     test_ole_menu();
     test_CoGetClassObject();
+    test_per_user_class();
     test_CoCreateInstanceEx();
     test_CoRegisterMessageFilter();
     test_CoRegisterPSClsid();
