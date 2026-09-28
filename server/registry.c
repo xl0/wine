@@ -1727,6 +1727,252 @@ static void load_keys( struct key *key, const char *filename, FILE *f, int prefi
     free( info.tmp );
 }
 
+/* binary hive file (regf format) being loaded */
+struct hive
+{
+    unsigned char *data;       /* hive bins data */
+    data_size_t    size;       /* size of hive bins data */
+    unsigned int   minor;      /* format minor version */
+    unsigned __int64 fetched;  /* running total of cell bytes read */
+    unsigned __int64 loaded;   /* running total of value data bytes */
+    WCHAR          name[USHRT_MAX]; /* buffer for key and value names */
+};
+
+static unsigned int get_hive_word( const unsigned char *p )
+{
+    return p[0] | (p[1] << 8);
+}
+
+static unsigned int get_hive_dword( const unsigned char *p )
+{
+    return p[0] | (p[1] << 8) | (p[2] << 16) | ((unsigned int)p[3] << 24);
+}
+
+/* return the data of the cell at offset, checking that it holds at least size bytes */
+static unsigned char *get_hive_cell( struct hive *hive, unsigned int offset, data_size_t size )
+{
+    unsigned int len;
+
+    if (hive->size >= 4 && offset <= hive->size - 4 && !(offset & 7))
+    {
+        len = get_hive_dword( hive->data + offset );
+        if ((int)len < 0) len = -len;
+        if (len <= hive->size - offset && len >= 4 && len - 4 >= size)
+        {
+            /* a genuine hive reads each cell at most twice; cap total reads so that a hive whose
+             * lists or cells reference each other (shared/repeated cells) cannot make the loader
+             * loop or allocate without bound */
+            if ((hive->fetched += len) <= 4ull * hive->size) return hive->data + offset + 4;
+        }
+    }
+    set_error( STATUS_REGISTRY_CORRUPT );
+    return NULL;
+}
+
+/* get a key or value name, stored either in UTF-16 or in Latin-1 if compressed */
+static struct unicode_str get_hive_name( struct hive *hive, const unsigned char *p, data_size_t len, int compressed )
+{
+    struct unicode_str name = { hive->name };
+    data_size_t i;
+
+    if (compressed)
+    {
+        for (i = 0; i < len; i++) hive->name[i] = p[i];
+        name.len = len * sizeof(WCHAR);
+    }
+    else
+    {
+        memcpy( hive->name, p, len );
+        name.len = len & ~1;
+    }
+    return name;
+}
+
+/* load a value from a vk cell */
+static int load_hive_value( struct hive *hive, struct key *key, unsigned int offset )
+{
+    unsigned char *vk, *db, *list, *cell, *data;
+    unsigned int i, size, count, len;
+    struct key_value *value;
+    struct unicode_str name;
+    int index;
+
+    if (!(vk = get_hive_cell( hive, offset, 20 ))) return 0;
+    if (memcmp( vk, "vk", 2 ) || !(vk = get_hive_cell( hive, offset, 20 + get_hive_word( vk + 2 ) )))
+    {
+        set_error( STATUS_REGISTRY_CORRUPT );
+        return 0;
+    }
+    size = get_hive_dword( vk + 4 );
+    offset = get_hive_dword( vk + 8 );
+
+    /* the data of all values lives in the file, so the total cannot exceed the hive size; this also
+     * bounds the up-front allocation below for a big-data value with a bogus (inflated) size */
+    if ((hive->loaded += (size & ~0x80000000)) > hive->size)
+    {
+        set_error( STATUS_REGISTRY_CORRUPT );
+        return 0;
+    }
+
+    if (size & 0x80000000)  /* data stored in the offset field */
+    {
+        if ((size &= ~0x80000000) > 4)
+        {
+            set_error( STATUS_REGISTRY_CORRUPT );
+            return 0;
+        }
+        if (size && !(data = memdup( vk + 8, size ))) return 0;
+    }
+    else if (size > 16344 && hive->minor >= 4)  /* big data, split in db segments */
+    {
+        if (!(db = get_hive_cell( hive, offset, 8 ))) return 0;
+        count = get_hive_word( db + 2 );
+        if (memcmp( db, "db", 2 ) || size > count * 16344 ||
+            !(list = get_hive_cell( hive, get_hive_dword( db + 4 ), count * 4 )))
+        {
+            set_error( STATUS_REGISTRY_CORRUPT );
+            return 0;
+        }
+        if (!(data = mem_alloc( size ))) return 0;
+        for (i = len = 0; len < size; i++, len += 16344)
+        {
+            if (!(cell = get_hive_cell( hive, get_hive_dword( list + i * 4 ), min( size - len, 16344 ) )))
+            {
+                free( data );
+                return 0;
+            }
+            memcpy( data + len, cell, min( size - len, 16344 ) );
+        }
+    }
+    else if (size)
+    {
+        if (!(cell = get_hive_cell( hive, offset, size ))) return 0;
+        if (!(data = memdup( cell, size ))) return 0;
+    }
+    if (!size) data = NULL;
+
+    name = get_hive_name( hive, vk + 20, get_hive_word( vk + 2 ), get_hive_word( vk + 16 ) & 1 );
+    if (!(value = find_value( key, name, &index )) && !(value = insert_value( key, name, index )))
+    {
+        free( data );
+        return 0;
+    }
+    free( value->data );
+    value->data = data;
+    value->len  = size;
+    value->type = get_hive_dword( vk + 12 );
+    return 1;
+}
+
+static int load_hive_key( struct hive *hive, struct key *parent, unsigned int offset, int depth );
+
+/* load the keys of a subkey list cell (li, lf, lh or ri) */
+static int load_hive_subkeys( struct hive *hive, struct key *key, unsigned int offset, int depth, int nested )
+{
+    unsigned char *list;
+    unsigned int i, count, stride;
+
+    if (!(list = get_hive_cell( hive, offset, 4 ))) return 0;
+    count = get_hive_word( list + 2 );
+    if (!memcmp( list, "lf", 2 ) || !memcmp( list, "lh", 2 )) stride = 8;
+    else if (!memcmp( list, "li", 2 ) || (!memcmp( list, "ri", 2 ) && !nested)) stride = 4;
+    else stride = 0;
+    if (!stride || !(list = get_hive_cell( hive, offset, 4 + count * stride )))
+    {
+        set_error( STATUS_REGISTRY_CORRUPT );
+        return 0;
+    }
+    for (i = 0; i < count; i++)
+    {
+        offset = get_hive_dword( list + 4 + i * stride );
+        if (list[0] == 'r' ? !load_hive_subkeys( hive, key, offset, depth, 1 )
+                           : !load_hive_key( hive, key, offset, depth + 1 )) return 0;
+    }
+    return 1;
+}
+
+/* load a key from an nk cell; depth 0 is the hive root, which maps to the parent key itself */
+static int load_hive_key( struct hive *hive, struct key *parent, unsigned int offset, int depth )
+{
+    unsigned char *nk, *list;
+    unsigned int i, count;
+    struct key *key;
+    timeout_t modif;
+    int ret = 0;
+
+    if (!(nk = get_hive_cell( hive, offset, 76 ))) return 0;
+    if (depth > 512 || memcmp( nk, "nk", 2 ) || !(nk = get_hive_cell( hive, offset, 76 + get_hive_word( nk + 72 ) )))
+    {
+        set_error( STATUS_REGISTRY_CORRUPT );
+        return 0;
+    }
+    nk[0] = 0;  /* mark as visited, a cell referenced twice is corrupt */
+
+    if (depth)
+    {
+        struct unicode_str name = get_hive_name( hive, nk + 76, get_hive_word( nk + 72 ),
+                                                 get_hive_word( nk + 2 ) & 0x20 );
+        data_size_t i;
+
+        /* a subkey name is a single path element; empty or backslash-containing names are corrupt
+         * (they would drive create_key_recursive into creating an unnamed key, crashing the server) */
+        for (i = 0; i < name.len / sizeof(WCHAR); i++) if (name.str[i] == '\\') break;
+        if (!name.len || i < name.len / sizeof(WCHAR))
+        {
+            set_error( STATUS_REGISTRY_CORRUPT );
+            return 0;
+        }
+        modif = get_hive_dword( nk + 4 ) | (timeout_t)get_hive_dword( nk + 8 ) << 32;
+        if (!(key = create_key_recursive( parent, name, modif ))) return 0;
+    }
+    else key = (struct key *)grab_object( parent );
+
+    if ((count = get_hive_dword( nk + 36 )))
+    {
+        if (count > hive->size / 4)
+        {
+            set_error( STATUS_REGISTRY_CORRUPT );
+            goto done;
+        }
+        if (!(list = get_hive_cell( hive, get_hive_dword( nk + 40 ), count * 4 ))) goto done;
+        for (i = 0; i < count; i++) if (!load_hive_value( hive, key, get_hive_dword( list + i * 4 ) )) goto done;
+    }
+    if (get_hive_dword( nk + 20 ) && !load_hive_subkeys( hive, key, get_hive_dword( nk + 28 ), depth, 0 )) goto done;
+    ret = 1;
+done:
+    release_object( key );
+    return ret;
+}
+
+/* load a binary hive file, the format used by Windows */
+static void load_hive( struct key *key, int fd )
+{
+    unsigned char base[4096];
+    struct hive *hive;
+    struct stat st;
+
+    if (fstat( fd, &st ) == -1 || pread( fd, base, sizeof(base), 0 ) != sizeof(base))
+    {
+        set_error( STATUS_REGISTRY_CORRUPT );
+        return;
+    }
+    if (!(hive = mem_alloc( sizeof(*hive) ))) return;
+    hive->size  = min( get_hive_dword( base + 0x28 ), st.st_size - sizeof(base) );
+    hive->minor = get_hive_dword( base + 0x18 );
+    hive->fetched = hive->loaded = 0;
+    if (!(hive->data = mem_alloc( hive->size )))
+    {
+        free( hive );
+        return;
+    }
+    if (pread( fd, hive->data, hive->size, sizeof(base) ) != hive->size)
+        set_error( STATUS_REGISTRY_CORRUPT );
+    else
+        load_hive_key( hive, key, get_hive_dword( base + 0x24 ), 0 );
+    free( hive->data );
+    free( hive );
+}
+
 /* load a part of the registry from a file */
 static void load_registry( struct key *key, obj_handle_t handle )
 {
@@ -1738,7 +1984,16 @@ static void load_registry( struct key *key, obj_handle_t handle )
     release_object( file );
     if (fd != -1)
     {
-        FILE *f = fdopen( fd, "r" );
+        char magic[4];
+        FILE *f;
+
+        if (pread( fd, magic, sizeof(magic), 0 ) == sizeof(magic) && !memcmp( magic, "regf", 4 ))
+        {
+            load_hive( key, fd );
+            close( fd );
+            return;
+        }
+        f = fdopen( fd, "r" );
         if (f)
         {
             load_keys( key, NULL, f, -1 );
@@ -2313,7 +2568,15 @@ DECL_HANDLER(load_registry)
 
     if ((key = create_named_object( &params )))
     {
+        unsigned int status = get_error();  /* STATUS_OBJECT_NAME_EXISTS if the key already existed */
+
+        clear_error();
         load_registry( key, req->file );
+        if (get_error())
+        {
+            if (!status) delete_key( key, 1 );
+        }
+        else set_error( status );
         release_object( key );
     }
     if (parent) release_object( parent );

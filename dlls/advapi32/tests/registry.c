@@ -33,6 +33,7 @@
 #include "winsvc.h"
 #include "winerror.h"
 #include "aclapi.h"
+#include "sddl.h"
 
 #define IS_HKCR(hk) ((UINT_PTR)hk > 0 && ((UINT_PTR)hk & 3) == 2)
 
@@ -1732,6 +1733,223 @@ static void test_reg_load_app_key(void)
     p = strrchr(hivefilepath, '\\');
     *p = 0;
     delete_dir(hivefilepath);
+}
+
+/* allocate a cell in the hive bins data, return its offset */
+static DWORD hive_cell(BYTE *bins, DWORD *next, DWORD size, BYTE **data)
+{
+    DWORD offset = *next;
+
+    size = (size + 4 + 7) & ~7;
+    *(LONG *)(bins + offset) = -(LONG)size;
+    *data = bins + offset + 4;
+    *next += size;
+    return offset;
+}
+
+static DWORD hive_nk(BYTE *bins, DWORD *next, const WCHAR *name, WORD flags, DWORD parent, DWORD sk,
+                     DWORD subkeys, DWORD values, DWORD value_count)
+{
+    DWORD i, len = wcslen(name), offset;
+    BOOL compressed = TRUE;
+    BYTE *nk;
+
+    for (i = 0; i < len; i++) if (name[i] > 0xff) compressed = FALSE;
+    if (!compressed) len *= sizeof(WCHAR);
+    offset = hive_cell(bins, next, 76 + len, &nk);
+    memcpy(nk, "nk", 2);
+    *(WORD *)(nk + 2) = flags | (compressed ? 0x20 : 0);
+    *(DWORD *)(nk + 16) = parent;
+    *(DWORD *)(nk + 20) = subkeys != ~0u ? 1 : 0;
+    *(DWORD *)(nk + 28) = subkeys;
+    *(DWORD *)(nk + 32) = ~0u;
+    *(DWORD *)(nk + 36) = value_count;
+    *(DWORD *)(nk + 40) = values;
+    *(DWORD *)(nk + 44) = sk;
+    *(DWORD *)(nk + 48) = ~0u;
+    *(DWORD *)(nk + 52) = subkeys != ~0u ? 32 : 0;
+    *(DWORD *)(nk + 60) = value_count ? 32 : 0;
+    *(DWORD *)(nk + 64) = value_count ? 20000 : 0;
+    *(WORD *)(nk + 72) = len;
+    for (i = 0; i < len; i++) nk[76 + i] = compressed ? name[i] : ((BYTE *)name)[i];
+    return offset;
+}
+
+static DWORD hive_vk(BYTE *bins, DWORD *next, const char *name, DWORD type, DWORD size, DWORD data)
+{
+    DWORD offset;
+    BYTE *vk;
+
+    offset = hive_cell(bins, next, 20 + strlen(name), &vk);
+    memcpy(vk, "vk", 2);
+    *(WORD *)(vk + 2) = strlen(name);
+    *(DWORD *)(vk + 4) = size;
+    *(DWORD *)(vk + 8) = data;
+    *(DWORD *)(vk + 12) = type;
+    *(WORD *)(vk + 16) = 1; /* compressed name */
+    memcpy(vk + 20, name, strlen(name));
+    return offset;
+}
+
+static void test_reg_load_key_hive(void)
+{
+    static const WCHAR unicode_name[] = L"\x0416\x0436";
+    char path[MAX_PATH], dir[MAX_PATH];
+    DWORD i, sum, next, size, root, sk, sub, list, list2, data, db, big_list, written;
+    DWORD subkeys, values, max_subkey, max_value;
+    SECURITY_DESCRIPTOR *sd;
+    BYTE *hive, *bins, *p, *big, *buf;
+    WCHAR name[8];
+    HANDLE file;
+    ULONG sd_size;
+    HKEY key;
+    LONG ret;
+
+    if (!set_privileges(SE_RESTORE_NAME, TRUE) || !set_privileges(SE_BACKUP_NAME, TRUE))
+    {
+        win_skip("Failed to set SE_RESTORE_NAME privileges, skipping tests\n");
+        return;
+    }
+
+    /* build a binary hive: ROOT (value "root") with subkeys Sub (values "dword", "sz", "big")
+     * and a key with a non Latin-1 (uncompressed) name */
+    hive = calloc(1, 0x1000 + 0xa000);
+    bins = hive + 0x1000;
+    big = malloc(20000);
+    buf = malloc(20000);
+    for (i = 0; i < 20000; i++) big[i] = i * 7;
+    memcpy(bins, "hbin", 4);
+    *(DWORD *)(bins + 8) = 0xa000;
+    next = 0x20;
+    root = 0x20;
+    ConvertStringSecurityDescriptorToSecurityDescriptorA("O:BAG:SYD:(A;;KA;;;WD)", SDDL_REVISION_1,
+                                                         (PSECURITY_DESCRIPTOR *)&sd, &sd_size);
+    hive_nk(bins, &next, L"ROOT", 0x0c, 0, 0, 0, 0, 1); /* fixed up below */
+    sk = hive_cell(bins, &next, 20 + sd_size, &p);
+    memcpy(p, "sk", 2);
+    *(DWORD *)(p + 4) = sk;
+    *(DWORD *)(p + 8) = sk;
+    *(DWORD *)(p + 12) = 3;
+    *(DWORD *)(p + 16) = sd_size;
+    memcpy(p + 20, sd, sd_size);
+    LocalFree(sd);
+
+    list = hive_cell(bins, &next, 12, &p);
+    memcpy(p, "li", 2);
+    *(WORD *)(p + 2) = 2;
+    *(DWORD *)(p + 4) = hive_nk(bins, &next, L"Sub", 0, root, sk, ~0u, ~0u, 3);
+    sub = *(DWORD *)(p + 4);
+    *(DWORD *)(p + 8) = hive_nk(bins, &next, unicode_name, 0, root, sk, ~0u, ~0u, 0);
+
+    /* root key: fix up subkeys and values */
+    p = bins + root + 4;
+    *(DWORD *)(p + 20) = 2;
+    *(DWORD *)(p + 28) = list;
+    *(DWORD *)(p + 44) = sk;
+    *(DWORD *)(p + 60) = 8;
+    *(DWORD *)(p + 64) = 4;
+    values = hive_cell(bins, &next, 4, &p);
+    *(DWORD *)(bins + root + 4 + 40) = values;
+    *(DWORD *)p = hive_vk(bins, &next, "root", REG_DWORD, 0x80000004, 0x11223344);
+
+    /* Sub values: inline dword, string, big data split in two db segments */
+    list2 = hive_cell(bins, &next, 12, &p);
+    *(DWORD *)(bins + sub + 4 + 40) = list2;
+    *(DWORD *)(bins + sub + 4 + 52) = 0;
+    *(DWORD *)(p + 0) = hive_vk(bins, &next, "dword", REG_DWORD, 0x80000004, 0x12345678);
+    data = hive_cell(bins, &next, sizeof(L"value"), &p);
+    memcpy(p, L"value", sizeof(L"value"));
+    *(DWORD *)(bins + list2 + 4 + 4) = hive_vk(bins, &next, "sz", REG_SZ, sizeof(L"value"), data);
+    db = hive_cell(bins, &next, 8, &p);
+    memcpy(p, "db", 2);
+    *(WORD *)(p + 2) = 2;
+    big_list = hive_cell(bins, &next, 8, &p);
+    *(DWORD *)(bins + db + 4 + 4) = big_list;
+    *(DWORD *)(bins + big_list + 4) = hive_cell(bins, &next, 16344, &p);
+    memcpy(p, big, 16344);
+    *(DWORD *)(bins + big_list + 4 + 4) = hive_cell(bins, &next, 16344, &p); /* Windows needs full segments */
+    memcpy(p, big + 16344, 20000 - 16344);
+    *(DWORD *)(bins + list2 + 4 + 8) = hive_vk(bins, &next, "big", REG_BINARY, 20000, db);
+    *(LONG *)(bins + next) = 0xa000 - next; /* free cell */
+
+    memcpy(hive, "regf", 4);
+    *(DWORD *)(hive + 0x04) = 1;
+    *(DWORD *)(hive + 0x08) = 1;
+    *(DWORD *)(hive + 0x14) = 1;
+    *(DWORD *)(hive + 0x18) = 5;
+    *(DWORD *)(hive + 0x20) = 1;
+    *(DWORD *)(hive + 0x24) = root;
+    *(DWORD *)(hive + 0x28) = 0xa000;
+    *(DWORD *)(hive + 0x2c) = 1;
+    for (i = sum = 0; i < 127; i++) sum ^= ((DWORD *)hive)[i];
+    *(DWORD *)(hive + 0x1fc) = sum;
+
+    GetTempPathA(MAX_PATH, dir);
+    strcat(dir, "wine_reg_hive");
+    CreateDirectoryA(dir, NULL);
+    sprintf(path, "%s\\hive", dir);
+    file = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    ok(file != INVALID_HANDLE_VALUE, "CreateFile failed: %lu\n", GetLastError());
+    WriteFile(file, hive, 0x1000 + 0xa000, &written, NULL);
+    CloseHandle(file);
+
+    ret = RegLoadKeyA(HKEY_LOCAL_MACHINE, "Test", path);
+    ok(ret == ERROR_SUCCESS, "RegLoadKey failed: %ld\n", ret);
+
+    ret = RegOpenKeyExA(HKEY_LOCAL_MACHINE, "Test", 0, KEY_READ, &key);
+    ok(ret == ERROR_SUCCESS, "RegOpenKeyEx failed: %ld\n", ret);
+    ret = RegQueryInfoKeyA(key, NULL, NULL, NULL, &subkeys, &max_subkey, NULL, &values, &max_value, NULL, NULL, NULL);
+    ok(ret == ERROR_SUCCESS, "RegQueryInfoKey failed: %ld\n", ret);
+    ok(subkeys == 2, "got %lu subkeys\n", subkeys);
+    ok(values == 1, "got %lu values\n", values);
+    size = sizeof(data);
+    ret = RegQueryValueExA(key, "root", NULL, NULL, (BYTE *)&data, &size);
+    ok(ret == ERROR_SUCCESS, "RegQueryValueEx failed: %ld\n", ret);
+    ok(data == 0x11223344, "got %#lx\n", data);
+    size = ARRAY_SIZE(name);
+    ret = RegEnumKeyExW(key, 1, name, &size, NULL, NULL, NULL, NULL);
+    ok(ret == ERROR_SUCCESS, "RegEnumKeyEx failed: %ld\n", ret);
+    ok(!wcscmp(name, unicode_name), "got %s\n", debugstr_w(name));
+    RegCloseKey(key);
+
+    ret = RegOpenKeyExA(HKEY_LOCAL_MACHINE, "Test\\Sub", 0, KEY_READ, &key);
+    ok(ret == ERROR_SUCCESS, "RegOpenKeyEx failed: %ld\n", ret);
+    size = sizeof(data);
+    ret = RegQueryValueExA(key, "dword", NULL, NULL, (BYTE *)&data, &size);
+    ok(ret == ERROR_SUCCESS, "RegQueryValueEx failed: %ld\n", ret);
+    ok(data == 0x12345678, "got %#lx\n", data);
+    size = sizeof(name);
+    ret = RegQueryValueExW(key, L"sz", NULL, NULL, (BYTE *)name, &size);
+    ok(ret == ERROR_SUCCESS, "RegQueryValueEx failed: %ld\n", ret);
+    ok(!wcscmp(name, L"value"), "got %s\n", debugstr_w(name));
+    size = 20000;
+    ret = RegQueryValueExA(key, "big", NULL, NULL, buf, &size);
+    ok(ret == ERROR_SUCCESS, "RegQueryValueEx failed: %ld\n", ret);
+    ok(size == 20000 && !memcmp(buf, big, size), "wrong big data, size %lu\n", size);
+    RegCloseKey(key);
+
+    ret = RegUnLoadKeyA(HKEY_LOCAL_MACHINE, "Test");
+    ok(ret == ERROR_SUCCESS, "RegUnLoadKey failed: %ld\n", ret);
+
+    /* root cell out of bounds */
+    *(DWORD *)(hive + 0x24) = 0xa000;
+    for (i = sum = 0; i < 127; i++) sum ^= ((DWORD *)hive)[i];
+    *(DWORD *)(hive + 0x1fc) = sum;
+    file = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    WriteFile(file, hive, 0x1000 + 0xa000, &written, NULL);
+    CloseHandle(file);
+    ret = RegLoadKeyA(HKEY_LOCAL_MACHINE, "Test", path);
+    ok(ret == ERROR_BADDB, "got %ld\n", ret);
+    if (!ret) RegUnLoadKeyA(HKEY_LOCAL_MACHINE, "Test");
+    ret = RegOpenKeyExA(HKEY_LOCAL_MACHINE, "Test", 0, KEY_READ, &key);
+    ok(ret == ERROR_FILE_NOT_FOUND, "got %ld\n", ret);
+
+    set_privileges(SE_RESTORE_NAME, FALSE);
+    set_privileges(SE_BACKUP_NAME, FALSE);
+    delete_dir(dir);
+    free(hive);
+    free(big);
+    free(buf);
 }
 
 /* tests that show that RegConnectRegistry and
@@ -5182,6 +5400,7 @@ START_TEST(registry)
     test_classesroot_mask();
     test_reg_load_key();
     test_reg_load_app_key();
+    test_reg_load_key_hive();
     test_reg_copy_tree();
     test_reg_delete_tree();
     test_rw_order();
