@@ -34,4 +34,5 @@ STRINGTABLE
     STRING_K,                       "K"
     STRING_INVALID_SYNTAX,          "ERROR: Invalid syntax\n"
     STRING_FILTER_NOT_RECOGNIZED,   "ERROR: The search filter cannot be recognized.\n"
+    STRING_NO_TASKS_FOUND,          "INFO: No tasks are running which match the specified criteria.\n"
 }

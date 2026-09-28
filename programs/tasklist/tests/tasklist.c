@@ -265,6 +265,15 @@ static void test_filter(void)
     ok(stderr_size == 0, "Unexpected stderr buffer size %ld.\n", stderr_size);
     pos = strstr(stdout_buffer, basename);
     ok(!pos, "Got %s.\n", basename);
+    ok(!strcmp(stdout_buffer, "INFO: No tasks are running which match the specified criteria.\r\n"),
+       "Got unexpected stdout %s.\n", debugstr_a(stdout_buffer));
+
+    /* no match with /fo CSV */
+    sprintf(options, "/fi \"PID eq %ld\" /fo CSV", current_pid + 1);
+    run_tasklist(options, 0);
+    ok(stderr_size == 0, "Unexpected stderr buffer size %ld.\n", stderr_size);
+    ok(!strcmp(stdout_buffer, "INFO: No tasks are running which match the specified criteria.\r\n"),
+       "Got unexpected stdout %s.\n", debugstr_a(stdout_buffer));
 }
 
 START_TEST(tasklist)

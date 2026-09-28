@@ -249,21 +249,9 @@ static void tasklist_print(const struct tasklist_options *options)
     struct tasklist_process_info header, info;
     PROCESSENTRY32W *process_list;
     DWORD process_count, i;
-
-    if (options->format == TABLE)
-        wprintf(L"\n");
+    BOOL found = FALSE;
 
     tasklist_get_header(options, &header);
-    if (!options->no_header)
-    {
-        if (options->format == TABLE)
-            wprintf(L"%-25.25s %8.8s %-16.16s %11.11s %12.12s\n"
-                    L"========================= ======== ================ =========== ============\n",
-                    header.image_name, header.pid, header.session_name, header.session_number, header.memory_usage);
-        else if (options->format == CSV)
-            wprintf(L"\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
-                    header.image_name, header.pid, header.session_name, header.session_number, header.memory_usage);
-    }
 
     process_list = enumerate_processes(&process_count);
     for (i = 0; i < process_count; ++i)
@@ -273,6 +261,24 @@ static void tasklist_print(const struct tasklist_options *options)
 
         if (!tasklist_check_filters(options->filters, &info))
             continue;
+
+        if (!found)
+        {
+            found = TRUE;
+            if (options->format == TABLE)
+                wprintf(L"\n");
+
+            if (!options->no_header)
+            {
+                if (options->format == TABLE)
+                    wprintf(L"%-25.25s %8.8s %-16.16s %11.11s %12.12s\n"
+                            L"========================= ======== ================ =========== ============\n",
+                            header.image_name, header.pid, header.session_name, header.session_number, header.memory_usage);
+                else if (options->format == CSV)
+                    wprintf(L"\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
+                            header.image_name, header.pid, header.session_name, header.session_number, header.memory_usage);
+            }
+        }
 
         if (options->format == TABLE)
             wprintf(L"%-25.25s %8.8s %-16.16s %11.11s %12s\n",
@@ -294,6 +300,9 @@ static void tasklist_print(const struct tasklist_options *options)
                     header.memory_usage, info.memory_usage);
     }
     free(process_list);
+
+    if (!found)
+        tasklist_message(STRING_NO_TASKS_FOUND);
 }
 
 int __cdecl wmain(int argc, WCHAR *argv[])

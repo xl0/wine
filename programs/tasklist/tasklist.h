@@ -29,6 +29,7 @@
 #define STRING_K                        107
 #define STRING_INVALID_SYNTAX           108
 #define STRING_FILTER_NOT_RECOGNIZED    109
+#define STRING_NO_TASKS_FOUND           110
 
 enum tasklist_format
 {
