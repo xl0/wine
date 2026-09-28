@@ -27,6 +27,7 @@
 #include "commctrl.h"
 
 #include "wine/test.h"
+#include "v6util.h"
 
 static BOOL (WINAPI *pGetWindowSubclass)(HWND, SUBCLASSPROC, UINT_PTR, DWORD_PTR *);
 static BOOL (WINAPI *pSetWindowSubclass)(HWND, SUBCLASSPROC, UINT_PTR, DWORD_PTR);
@@ -401,6 +402,68 @@ static void test_nested_remove(void)
     DestroyWindow(hwnd);
 }
 
+static LRESULT WINAPI def_ref_proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam,
+                                   UINT_PTR id, DWORD_PTR ref)
+{
+    LRESULT (WINAPI *def_proc)(HWND, UINT, WPARAM, LPARAM) = (void *)ref;
+    struct message msg;
+
+    if (message == WM_USER)
+    {
+        msg.wParam = wParam;
+        msg.procnum = id;
+        add_message(&msg);
+    }
+    return def_proc(hwnd, message, wParam, lParam);
+}
+
+static void test_v5_and_v6(void)
+{
+    static const struct message expected[] = {{ 2, 1 }, { 2, 1 }, { 1, 1 }, { 0 }};
+    BOOL (WINAPI *pSetWindowSubclass_v6)(HWND, SUBCLASSPROC, UINT_PTR, DWORD_PTR);
+    BOOL (WINAPI *pRemoveWindowSubclass_v6)(HWND, SUBCLASSPROC, UINT_PTR);
+    LRESULT (WINAPI *pDefSubclassProc_v6)(HWND, UINT, WPARAM, LPARAM);
+    HMODULE hmod_v5, hmod_v6;
+    ULONG_PTR cookie;
+    HANDLE ctx;
+    HWND hwnd;
+    BOOL ret;
+
+    /* load_v6_module() releases a reference to v5 */
+    hmod_v5 = LoadLibraryA("comctl32.dll");
+    if (!load_v6_module(&cookie, &ctx))
+        return;
+    hmod_v6 = GetModuleHandleA("comctl32.dll");
+    ok(hmod_v6 != hmod_v5, "got the same module.\n");
+    pSetWindowSubclass_v6 = (void *)GetProcAddress(hmod_v6, (LPSTR)410);
+    pRemoveWindowSubclass_v6 = (void *)GetProcAddress(hmod_v6, (LPSTR)412);
+    pDefSubclassProc_v6 = (void *)GetProcAddress(hmod_v6, (LPSTR)413);
+
+    /* Both versions keep their own subclass list on the same window. */
+    hwnd = CreateWindowA("TestSubclass", "Test subclass", WS_OVERLAPPEDWINDOW, 100, 100, 200, 200,
+                         0, 0, 0, NULL);
+    ok(hwnd != NULL, "CreateWindowA failed, error %ld.\n", GetLastError());
+    ret = pSetWindowSubclass(hwnd, def_ref_proc, 2, (DWORD_PTR)pDefSubclassProc);
+    ok(ret, "SetWindowSubclass failed.\n");
+    ret = pSetWindowSubclass_v6(hwnd, def_ref_proc, 2, (DWORD_PTR)pDefSubclassProc_v6);
+    ok(ret, "SetWindowSubclass failed.\n");
+    SetWindowLongA(hwnd, GWLP_USERDATA, EXPECT_UNICODE);
+
+    SendMessageA(hwnd, WM_USER, 1, 0);
+    ok_sequence(expected, "v5 and v6");
+
+    ret = pRemoveWindowSubclass_v6(hwnd, def_ref_proc, 2);
+    ok(ret, "RemoveWindowSubclass failed.\n");
+    ret = pRemoveWindowSubclass(hwnd, def_ref_proc, 2);
+    ok(ret, "RemoveWindowSubclass failed.\n");
+    check_unicode(hwnd, EXPECT_WNDPROC_1);
+    SetWindowLongA(hwnd, GWLP_USERDATA, EXPECT_WNDPROC_1);
+    DestroyWindow(hwnd);
+
+    unload_v6_module(cookie, ctx);
+    FreeLibrary(hmod_v5);
+}
+
 static HWND thread_hwnd;
 static HANDLE thread_ready, thread_done;
 
@@ -577,4 +640,5 @@ START_TEST(subclass)
     test_GetWindowSubclass();
     test_nested_remove();
     test_other_thread();
+    test_v5_and_v6();
 }

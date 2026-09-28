@@ -89,7 +89,11 @@ static const WORD wPattern55AA[] =
     0x5555, 0xaaaa, 0x5555, 0xaaaa
 };
 
+#if __WINE_COMCTL32_VERSION == 6
+static const WCHAR strCC32SubclassInfo[] = L"UxSubclassInfo";
+#else
 static const WCHAR strCC32SubclassInfo[] = L"CC32SubclassInfo";
+#endif
 
 static const struct
 {
