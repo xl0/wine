@@ -838,7 +838,7 @@ static void test_ID3DXFont(IDirect3DDevice9 *device)
     todo_wine ok(height == 0, "Got unexpected height %d.\n", height);
 
     height = ID3DXFont_DrawTextW(font, NULL, L"\t\t\t\t\t\t\t\t\t\ta", -1, &rect, DT_WORDBREAK, 0xff00ff);
-    todo_wine ok(height == 12, "Got unexpected height %d.\n", height);
+    ok(height == 12, "Got unexpected height %d.\n", height);
 
     height = ID3DXFont_DrawTextW(font, NULL, L"\taaaaaaaaaa", -1, &rect, DT_WORDBREAK, 0xff00ff);
     todo_wine ok(height == 24, "Got unexpected height %d.\n", height);
