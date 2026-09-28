@@ -3617,8 +3617,8 @@ static NTSTATUS find_query_actctx( ACTIVATION_CONTEXT **actctx, DWORD flags, ULO
         else status = STATUS_DLL_NOT_FOUND;
         LdrUnlockLoaderLock( 0, magic );
     }
-    else if (!*actctx && (class != ActivationContextBasicInformation))
-        *actctx = process_actctx;
+
+    if (!*actctx && class != ActivationContextBasicInformation) *actctx = process_actctx;
 
     return status;
 }

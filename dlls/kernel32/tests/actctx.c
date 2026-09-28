@@ -2655,7 +2655,16 @@ static void test_actctx(void)
 
 static void test_app_manifest(void)
 {
+    static const struct { DWORD flags; const char *module; } queries[] =
+    {
+        { QUERY_ACTCTX_FLAG_USE_ACTIVE_ACTCTX },
+        { QUERY_ACTCTX_FLAG_ACTCTX_IS_HMODULE, "kernel32.dll" },
+    };
+    ULONG_PTR buf[256];
+    ACTIVATION_CONTEXT_DETAILED_INFORMATION *info = (void *)buf;
     HANDLE handle;
+    SIZE_T size;
+    unsigned int i;
     BOOL b;
 
     trace("child process manifest1\n");
@@ -2668,6 +2677,18 @@ static void test_app_manifest(void)
         test_detailed_info(handle, &detailed_info1_child, __LINE__);
         test_info_in_assembly(handle, 1, &manifest1_child_info, __LINE__);
         ReleaseActCtx(handle);
+    }
+
+    /* no active context and no module context: the process default context is used */
+    for (i = 0; i < ARRAY_SIZE(queries); i++)
+    {
+        handle = queries[i].module ? GetModuleHandleA(queries[i].module) : NULL;
+        b = QueryActCtxW(queries[i].flags, handle, NULL, ActivationContextDetailedInformation,
+                         buf, sizeof(buf), &size);
+        ok(b, "%u: QueryActCtxW failed: %lu\n", i, GetLastError());
+        if (!b) continue;
+        ok(info->lpRootManifestPath && !wcsicmp(info->lpRootManifestPath, app_manifest_path),
+           "%u: got root manifest %s\n", i, wine_dbgstr_w(info->lpRootManifestPath));
     }
 }
 
