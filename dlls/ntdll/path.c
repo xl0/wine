@@ -56,7 +56,8 @@ RTL_PATH_TYPE WINAPI RtlDetermineDosPathNameType_U( PCWSTR path )
 /***********************************************************************
  *             RtlIsDosDeviceName_U   (NTDLL.@)
  *
- * Check if the given DOS path contains a DOS device name.
+ * Check if the given DOS path is a DOS device name. Only NUL is
+ * recognized as the last element of a longer path.
  *
  * Returns the length of the device name in the low word and its
  * position in the high word (both in bytes, not WCHARs), or 0 if no
@@ -96,12 +97,16 @@ ULONG WINAPI RtlIsDosDeviceName_U( PCWSTR dos_name )
     /* find start of file name */
     for (p = start; *p; p++) if (IS_SEPARATOR(*p)) start = p + 1;
 
-    /* truncate at extension and ':' */
-    for (end = start; *end; end++) if (*end == '.' || *end == ':') break;
+    /* strip a trailing colon, trailing dots and spaces, then a colon and spaces */
+    end = start + wcslen( start );
+    if (end > start && end[-1] == ':') end--;
+    while (end > start && (end[-1] == '.' || end[-1] == ' ')) end--;
+    if (end > start && end[-1] == ':') end--;
+    while (end > start && end[-1] == ' ') end--;
     end--;
 
-    /* remove trailing spaces */
-    while (end >= start && *end == ' ') end--;
+    /* except for NUL, device names are only recognized without a path */
+    if (start != dos_name && (end - start != 2 || wcsnicmp( start, nulW, 3 ))) return 0;
 
     /* now we have a potential device name between start and end, check it */
     switch(end - start + 1)
@@ -114,7 +119,7 @@ ULONG WINAPI RtlIsDosDeviceName_U( PCWSTR dos_name )
         return MAKELONG( 3 * sizeof(WCHAR), (start - dos_name) * sizeof(WCHAR) );
     case 4:
         if (wcsnicmp( start, comW, 3 ) && wcsnicmp( start, lptW, 3 )) break;
-        if (*end <= '0' || *end > '9') break;
+        if ((*end <= '0' || *end > '9') && *end != 0xb9 && *end != 0xb2 && *end != 0xb3) break;
         return MAKELONG( 4 * sizeof(WCHAR), (start - dos_name) * sizeof(WCHAR) );
     case 6:
         if (wcsnicmp( start, coninW, ARRAY_SIZE(coninW) )) break;

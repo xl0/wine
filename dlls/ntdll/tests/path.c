@@ -120,7 +120,8 @@ static void test_RtlIsDosDeviceName_U(void)
         const char *path;
         WORD pos;
         WORD len;
-        BOOL fails;
+        BOOL fails;   /* 0 on some older Windows versions */
+        BOOL legacy;  /* 0 on Windows 11, pos/len on older versions */
     };
 
     static const struct test tests[] =
@@ -136,10 +137,10 @@ static void test_RtlIsDosDeviceName_U(void)
         { "c:\\nul\\",     0, 0 },
         { "c:\\nul\\foo",  0, 0 },
         { "c:\\nul::",     6, 6 },
-        { "c:\\nul::::::", 6, 6, TRUE }, /* fails on win11 */
-        { "c:prn     ",    4, 6, TRUE }, /* fails on win11 */
-        { "c:prn.......",  4, 6, TRUE }, /* fails on win11 */
-        { "c:prn... ...",  4, 6, TRUE }, /* fails on win11 */
+        { "c:\\nul::::::", 6, 6, FALSE, TRUE },
+        { "c:prn     ",    4, 6, FALSE, TRUE },
+        { "c:prn.......",  4, 6, FALSE, TRUE },
+        { "c:prn... ...",  4, 6, FALSE, TRUE },
         { "c:NUL  ....  ", 4, 6 },
         { "c: . . .",      0, 0 },
         { "c:",            0, 0 },
@@ -148,33 +149,45 @@ static void test_RtlIsDosDeviceName_U(void)
         { "c:nul. . . :",  4, 6 },
         { "c:nul . . :",   4, 6 },
         { "c:nul0",        0, 0 },
-        { "c:prn:aaa",     4, 6, TRUE }, /* fails on win11 */
-        { "c:PRN:.txt",    4, 6, TRUE }, /* fails on win11 */
-        { "c:aux:.txt...", 4, 6, TRUE }, /* fails on win11 */
-        { "c:prn:.txt:",   4, 6, TRUE }, /* fails on win11 */
-        { "c:nul:aaa",     4, 6, TRUE }, /* fails on win11 */
+        { "c:prn:aaa",     4, 6, FALSE, TRUE },
+        { "c:PRN:.txt",    4, 6, FALSE, TRUE },
+        { "c:aux:.txt...", 4, 6, FALSE, TRUE },
+        { "c:prn:.txt:",   4, 6, FALSE, TRUE },
+        { "c:nul:aaa",     4, 6, FALSE, TRUE },
         { "con:",          0, 6 },
         { "lpt1:",         0, 8 },
-        { "c:com5:",       4, 8, TRUE }, /* fails on win11 */
+        { "c:com5:",       4, 8, FALSE, TRUE },
         { "CoM4:",         0, 8 },
         { "lpt9:",         0, 8 },
         { "c:\\lpt0.txt",  0, 0 },
+        { "c:\\con",       6, 6, FALSE, TRUE },
+        { "c:\\dir\\con.iam", 14, 6, FALSE, TRUE },
+        { "c:\\dir\\nul",  14, 6 },
+        { "c:\\nul.txt",   6, 6, FALSE, TRUE },
+        { "\\??\\nul",     8, 6 },
+        { "nul.txt",       0, 6, FALSE, TRUE },
+        { "nul:x",         0, 6, FALSE, TRUE },
+        { "nul .::",       0, 6, FALSE, TRUE },
+        { "nul ::",        0, 6 },
+        { "nul:. :",       0, 6 },
+        { "c:con",         4, 6, FALSE, TRUE },
+        { ".\\con",        4, 6, FALSE, TRUE },
         { "CONIN$",        0, 12, TRUE }, /* fails on win7 */
         { "CONOUT$",       0, 14, TRUE }, /* fails on win7 */
         { "CONERR$",       0, 0 },
         { "CON",           0, 6 },
         { "PIPE",          0, 0 },
-        { "\\??\\CONIN$",  8, 12, TRUE }, /* fails on win7 */
-        { "\\??\\CONOUT$", 8, 14, TRUE }, /* fails on win7 */
+        { "\\??\\CONIN$",  8, 12, FALSE, TRUE },
+        { "\\??\\CONOUT$", 8, 14, FALSE, TRUE },
         { "\\??\\CONERR$", 0, 0 },
-        { "\\??\\CON",     8, 6, TRUE }, /* fails on win11 */
+        { "\\??\\CON",     8, 6, FALSE, TRUE },
         { "c:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
           "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
           "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
           "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
           "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
           "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\nul.txt", 1000, 6, TRUE }, /* fails on win11 */
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\nul.txt", 1000, 6, FALSE, TRUE },
         { NULL, 0 }
     };
 
@@ -192,10 +205,14 @@ static void test_RtlIsDosDeviceName_U(void)
     {
         pRtlMultiByteToUnicodeN( buffer, sizeof(buffer), NULL, test->path, strlen(test->path)+1 );
         ret = pRtlIsDosDeviceName_U( buffer );
-        ok( ret == MAKELONG( test->len, test->pos ) ||
-            (test->fails && broken( ret == 0 )),
-            "Wrong result (%d,%d)/(%d,%d) for %s\n",
-            HIWORD(ret), LOWORD(ret), test->pos, test->len, test->path );
+        if (test->legacy)
+            ok( !ret || broken( ret == MAKELONG( test->len, test->pos )),
+                "Wrong result (%d,%d) for %s\n", HIWORD(ret), LOWORD(ret), test->path );
+        else
+            ok( ret == MAKELONG( test->len, test->pos ) ||
+                (test->fails && broken( ret == 0 )),
+                "Wrong result (%d,%d)/(%d,%d) for %s\n",
+                HIWORD(ret), LOWORD(ret), test->pos, test->len, test->path );
     }
 }
 
@@ -495,6 +512,10 @@ static void test_RtlDosPathNameToNtPathName_U(void)
         {L"C:NUL",          L"\\??\\NUL",                   -1},
         {L"AUX" ,           L"\\??\\AUX",                   -1},
         {L"COM1" ,          L"\\??\\COM1",                  -1},
+        {L"c:con",          L"\\??\\C:\\windows\\con",      15, L"\\??\\con" /* win10 */},
+        {L"c:\\windows\\con", L"\\??\\c:\\windows\\con",  15, L"\\??\\con" /* win10 */},
+        {L"c:\\windows\\con.iam", L"\\??\\c:\\windows\\con.iam", 15, L"\\??\\con" /* win10 */},
+        {L"\\windows\\nul.txt", L"\\??\\C:\\windows\\nul.txt", 15, L"\\??\\nul" /* win10 */},
         {L"?<>*\"|:",       L"\\??\\C:\\windows\\?<>*\"|:", 15},
         {L"?:",             L"\\??\\?:\\",                  -1},
 
