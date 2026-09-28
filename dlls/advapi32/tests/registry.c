@@ -3372,10 +3372,6 @@ static void test_redirection(void)
     RegDeleteKeyA( key64, "" );
     RegCloseKey( key64 );
 
-    RegDeleteKeyA( root64, "" );
-    RegDeleteKeyA( root32, "" );
-    RegDeleteKeyA( root, "" );
-
     RegCloseKey( root64 );
     RegCloseKey( root32 );
     RegCloseKey( root );
