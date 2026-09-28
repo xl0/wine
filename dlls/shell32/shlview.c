@@ -3072,8 +3072,23 @@ static HRESULT WINAPI FolderView2_GetSelection(IFolderView2 *iface, BOOL none_im
     IShellItemArray **array)
 {
     IShellViewImpl *This = impl_from_IFolderView2(iface);
-    FIXME("(%p)->(%d %p), stub\n", This, none_implies_folder, array);
-    return E_NOTIMPL;
+    PIDLIST_ABSOLUTE pidl;
+    HRESULT hr;
+
+    TRACE("(%p)->(%d %p)\n", This, none_implies_folder, array);
+
+    if (ShellView_GetSelections(This))
+        return SHCreateShellItemArray(NULL, This->pSFParent, This->cidl, (PCUITEMID_CHILD_ARRAY)This->apidl, array);
+
+    *array = NULL;
+    if (!none_implies_folder)
+        return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+
+    if (FAILED(hr = SHGetIDListFromObject((IUnknown *)This->pSFParent, &pidl)))
+        return hr;
+    hr = SHCreateShellItemArrayFromIDLists(1, (PCIDLIST_ABSOLUTE_ARRAY)&pidl, array);
+    ILFree(pidl);
+    return hr;
 }
 
 static HRESULT WINAPI FolderView2_GetSelectionState(IFolderView2 *iface, PCUITEMID_CHILD pidl,

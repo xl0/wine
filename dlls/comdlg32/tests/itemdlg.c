@@ -2739,7 +2739,7 @@ static HRESULT WINAPI test_control_OnButtonClicked(IFileDialogControlEvents *ifa
     {
         psia = NULL;
         hr = IFolderView2_GetSelection(pfv2, TRUE, &psia);
-        todo_wine ok(hr == S_OK, "GetSelection(TRUE) returned 0x%08lx \n", hr);
+        ok(hr == S_OK, "GetSelection(TRUE) returned 0x%08lx \n", hr);
 
         if (hr == S_OK)
         {

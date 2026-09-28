@@ -861,7 +861,44 @@ if (0)
     hr = IFolderView_QueryInterface(fv, &IID_IFolderView2, (void**)&fv2);
     if (hr != S_OK)
         win_skip("IFolderView2 is not supported.\n");
-    if (fv2) IFolderView2_Release(fv2);
+    else
+    {
+        WCHAR *name, desktop_path[MAX_PATH];
+        IShellItemArray *array;
+        IShellItem *item;
+        DWORD n;
+
+        array = (void *)0xdeadbeef;
+        hr = IFolderView2_GetSelection(fv2, FALSE, &array);
+        ok(hr == HRESULT_FROM_WIN32(ERROR_NOT_FOUND), "got (0x%08lx)\n", hr);
+        ok(!array, "got %p\n", array);
+
+        hr = IFolderView2_GetSelection(fv2, TRUE, &array);
+        ok(hr == S_OK, "got (0x%08lx)\n", hr);
+        hr = IShellItemArray_GetCount(array, &n);
+        ok(hr == S_OK && n == 1, "got (0x%08lx) %lu\n", hr, n);
+        hr = IShellItemArray_GetItemAt(array, 0, &item);
+        ok(hr == S_OK, "got (0x%08lx)\n", hr);
+        hr = IShellItem_GetDisplayName(item, SIGDN_DESKTOPABSOLUTEPARSING, &name);
+        ok(hr == S_OK, "got (0x%08lx)\n", hr);
+        SHGetSpecialFolderPathW(NULL, desktop_path, CSIDL_DESKTOPDIRECTORY, FALSE);
+        ok(!wcsicmp(name, desktop_path), "got %s\n", wine_dbgstr_w(name));
+        CoTaskMemFree(name);
+        IShellItem_Release(item);
+        IShellItemArray_Release(array);
+
+        if (count)
+        {
+            hr = IFolderView2_SelectItem(fv2, 0, SVSI_SELECT);
+            ok(hr == S_OK, "got (0x%08lx)\n", hr);
+            hr = IFolderView2_GetSelection(fv2, FALSE, &array);
+            ok(hr == S_OK, "got (0x%08lx)\n", hr);
+            hr = IShellItemArray_GetCount(array, &n);
+            ok(hr == S_OK && n == 1, "got (0x%08lx) %lu\n", hr, n);
+            IShellItemArray_Release(array);
+        }
+        IFolderView2_Release(fv2);
+    }
 
     hr = IShellView_DestroyViewWindow(view);
     ok(hr == S_OK, "got (0x%08lx)\n", hr);
