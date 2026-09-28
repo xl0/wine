@@ -35,7 +35,7 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(sxs);
 
-static const WCHAR cache_mutex_nameW[] = L"__WINE_SXS_CACHE_MUTEX__";
+static const WCHAR cache_mutex_nameW[] = L"Global\\__WINE_SXS_CACHE_MUTEX__";
 
 struct cache
 {
