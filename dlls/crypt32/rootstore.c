@@ -766,7 +766,7 @@ void CRYPT_ImportSystemRootCertsToReg(void)
     if (root_certs_imported)
         return;
 
-    hsem = CreateSemaphoreW( NULL, 0, 1, L"crypt32_root_semaphore");
+    hsem = CreateSemaphoreW( NULL, 0, 1, L"Global\\crypt32_root_semaphore");
     if (!hsem)
     {
         ERR("Failed to create semaphore\n");
