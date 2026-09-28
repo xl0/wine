@@ -2681,7 +2681,7 @@ static void set_fd_disposition( struct fd *fd, unsigned int flags )
 
     if (!fd->inode)
     {
-        set_error( STATUS_OBJECT_TYPE_MISMATCH );
+        set_error( STATUS_INVALID_PARAMETER );
         return;
     }
 
