@@ -723,7 +723,7 @@ static const WCHAR composition_name[] = {'C','o','m','p','o','s','i','t','i','o'
 struct type_descr composition_type =
 {
     { composition_name, sizeof(composition_name) },                     /* name */
-    COMPOSITION_QUERY_STATE,                                            /* valid_access */
+    STANDARD_RIGHTS_REQUIRED | COMPOSITION_QUERY_STATE | COMPOSITION_MODIFY_STATE, /* valid_access */
     {                                                                   /* mapping */
         STANDARD_RIGHTS_READ | COMPOSITION_QUERY_STATE,
         STANDARD_RIGHTS_READ | COMPOSITION_MODIFY_STATE,
