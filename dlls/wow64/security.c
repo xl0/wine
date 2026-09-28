@@ -474,10 +474,10 @@ NTSTATUS WINAPI wow64_NtQueryInformationToken( UINT *args )
         status = NtQueryInformationToken( handle, class, &buffer, sizeof(buffer), &ret_size );
         if (status) return status;
         sid = owner->Owner;
-        sid_len = offsetof( SID, SubAuthority[sid->SubAuthorityCount] );
+        sid_len = sid ? offsetof( SID, SubAuthority[sid->SubAuthorityCount] ) : 0;
         if (len >= sizeof(*owner32) + sid_len)
         {
-            owner32->Owner = PtrToUlong( owner32 + 1 );
+            owner32->Owner = sid ? PtrToUlong( owner32 + 1 ) : 0;
             memcpy( owner32 + 1, sid, sid_len );
         }
         else status = STATUS_BUFFER_TOO_SMALL;
