@@ -25,6 +25,7 @@
 #include "winuser.h"
 #include "winerror.h"
 #include "winnt.h"
+#include "winioctl.h"
 #include "winver.h"
 #include "imagehlp.h"
 #define PSAPI_VERSION 1
@@ -369,6 +370,61 @@ static void test_pe_checksum(void)
     ok((checksum_new == 0) || (checksum_new == 0xdeadbeef), "Expected 0, got %lx\n", checksum_new);
 }
 
+static void test_large_offset(void)
+{
+    DWORD count, cert_len = sizeof(WIN_CERTIFICATE) + sizeof(test_cert_data), dir_size = (cert_len + 7) & ~7;
+    IMAGE_DATA_DIRECTORY *dir;
+    WIN_CERTIFICATE *cert;
+    IMAGE_NT_HEADERS *nt;
+    LARGE_INTEGER pos;
+    char header[0x400];
+    HANDLE file;
+    BOOL ret;
+
+    /* drop the file's own signature, then put a certificate table at 2 GB */
+    file = CreateFileA(test_dll_path, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    ok(file != INVALID_HANDLE_VALUE, "CreateFile failed, error %lu\n", GetLastError());
+    while (ImageEnumerateCertificates(file, CERT_SECTION_TYPE_ANY, &count, NULL, 0) && count)
+        ok(ImageRemoveCertificate(file, 0), "ImageRemoveCertificate failed, error %lu\n", GetLastError());
+    if (!DeviceIoControl(file, FSCTL_SET_SPARSE, NULL, 0, NULL, 0, &count, NULL))
+    {
+        skip("FSCTL_SET_SPARSE failed, error %lu\n", GetLastError());
+        CloseHandle(file);
+        return;
+    }
+
+    SetFilePointer(file, 0, NULL, FILE_BEGIN);
+    ret = ReadFile(file, header, sizeof(header), &count, NULL);
+    ok(ret && count == sizeof(header), "ReadFile failed, error %lu\n", GetLastError());
+    nt = ImageNtHeader(header);
+    if (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+        dir = &((IMAGE_NT_HEADERS64 *)nt)->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_SECURITY];
+    else
+        dir = &((IMAGE_NT_HEADERS32 *)nt)->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_SECURITY];
+    dir->VirtualAddress = 0x80000000;
+    dir->Size = dir_size;
+    SetFilePointer(file, 0, NULL, FILE_BEGIN);
+    ret = WriteFile(file, header, sizeof(header), &count, NULL);
+    ok(ret, "WriteFile failed, error %lu\n", GetLastError());
+
+    cert = calloc(1, dir_size);
+    cert->dwLength = cert_len;
+    cert->wRevision = WIN_CERT_REVISION_1_0;
+    cert->wCertificateType = WIN_CERT_TYPE_PKCS_SIGNED_DATA;
+    memcpy(cert->bCertificate, test_cert_data, sizeof(test_cert_data));
+    pos.QuadPart = 0x80000000;
+    SetFilePointerEx(file, pos, NULL, FILE_BEGIN);
+    ret = WriteFile(file, cert, dir_size, &count, NULL);
+    ok(ret, "WriteFile failed, error %lu\n", GetLastError());
+    free(cert);
+
+    ret = ImageEnumerateCertificates(file, CERT_SECTION_TYPE_ANY, &count, NULL, 0);
+    ok(ret && count == 1, "got ret %d, count %lu, error %lu\n", ret, count, GetLastError());
+    CloseHandle(file);
+
+    test_get_certificate(test_cert_data, 0);
+}
+
 START_TEST(integrity)
 {
     DWORD file_size, file_size_orig, first, second;
@@ -404,6 +460,7 @@ START_TEST(integrity)
     ok(file_size == file_size_orig, "File size different after add and remove (old: %ld; new: %ld)\n", file_size_orig, file_size);
 
     test_pe_checksum();
+    test_large_offset();
 
     DeleteFileA(test_dll_path);
 }

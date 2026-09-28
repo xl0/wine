@@ -231,6 +231,19 @@ static BOOL IMAGEHLP_SetSecurityDirOffset(HANDLE handle,
 }
 
 /***********************************************************************
+ * IMAGEHLP_SetFilePointer (INTERNAL)
+ *
+ * Seek to a DWORD file offset; security directory offsets may exceed 2 GB.
+ */
+static BOOL IMAGEHLP_SetFilePointer( HANDLE handle, DWORD offset )
+{
+    LARGE_INTEGER pos;
+
+    pos.QuadPart = offset;
+    return SetFilePointerEx( handle, pos, NULL, FILE_BEGIN );
+}
+
+/***********************************************************************
  * IMAGEHLP_GetCertificateOffset (INTERNAL)
  *
  * Read a file's PE header, and return the offset and size of the 
@@ -251,9 +264,7 @@ static BOOL IMAGEHLP_GetCertificateOffset( HANDLE handle, DWORD num,
     while( 1 )
     {
         /* read the length of the current certificate */
-        count = SetFilePointer( handle, sd_VirtualAddr + offset,
-                                 NULL, FILE_BEGIN );
-        if( count == INVALID_SET_FILE_POINTER )
+        if( !IMAGEHLP_SetFilePointer( handle, sd_VirtualAddr + offset ) )
             return FALSE;
         r = ReadFile( handle, &len, sizeof len, &count, NULL );
         if( !r )
@@ -406,10 +417,7 @@ BOOL WINAPI ImageAddCertificate(
         while (offset < size)
         {
             /* read the length of the current certificate */
-            count = SetFilePointer (FileHandle, sd_VirtualAddr + offset,
-                                     NULL, FILE_BEGIN);
-
-            if (count == INVALID_SET_FILE_POINTER)
+            if (!IMAGEHLP_SetFilePointer(FileHandle, sd_VirtualAddr + offset))
                 return FALSE;
 
             r = ReadFile(FileHandle, &hdr, cert_hdr_size, &count, NULL);
@@ -437,9 +445,7 @@ BOOL WINAPI ImageAddCertificate(
             index++;
         }
 
-        count = SetFilePointer (FileHandle, sd_VirtualAddr + offset, NULL, FILE_BEGIN);
-
-        if (count == INVALID_SET_FILE_POINTER)
+        if (!IMAGEHLP_SetFilePointer(FileHandle, sd_VirtualAddr + offset))
             return FALSE;
     }
     else
@@ -506,9 +512,7 @@ BOOL WINAPI ImageEnumerateCertificates(
     while( offset < size )
     {
         /* read the length of the current certificate */
-        count = SetFilePointer( handle, sd_VirtualAddr + offset,
-                                 NULL, FILE_BEGIN );
-        if( count == INVALID_SET_FILE_POINTER )
+        if( !IMAGEHLP_SetFilePointer( handle, sd_VirtualAddr + offset ) )
             return FALSE;
         r = ReadFile( handle, &hdr, cert_hdr_size, &count, NULL );
         if( !r )
@@ -555,7 +559,7 @@ BOOL WINAPI ImageGetCertificateData(
                 HANDLE handle, DWORD Index,
                 LPWIN_CERTIFICATE Certificate, PDWORD RequiredLength)
 {
-    DWORD r, offset, ofs, size, count;
+    DWORD r, ofs, size, count;
 
     TRACE("%p %ld %p %p\n", handle, Index, Certificate, RequiredLength);
 
@@ -583,8 +587,7 @@ BOOL WINAPI ImageGetCertificateData(
 
     *RequiredLength = size;
 
-    offset = SetFilePointer( handle, ofs, NULL, FILE_BEGIN );
-    if( offset == INVALID_SET_FILE_POINTER )
+    if( !IMAGEHLP_SetFilePointer( handle, ofs ) )
         return FALSE;
 
     r = ReadFile( handle, Certificate, size, &count, NULL );
@@ -605,7 +608,7 @@ BOOL WINAPI ImageGetCertificateData(
 BOOL WINAPI ImageGetCertificateHeader(
     HANDLE handle, DWORD index, LPWIN_CERTIFICATE pCert)
 {
-    DWORD r, offset, ofs, size, count;
+    DWORD r, ofs, size, count;
     const size_t cert_hdr_size = sizeof *pCert - sizeof pCert->bCertificate;
 
     TRACE("%p %ld %p\n", handle, index, pCert);
@@ -616,8 +619,7 @@ BOOL WINAPI ImageGetCertificateHeader(
     if( size < cert_hdr_size )
         return FALSE;
 
-    offset = SetFilePointer( handle, ofs, NULL, FILE_BEGIN );
-    if( offset == INVALID_SET_FILE_POINTER )
+    if( !IMAGEHLP_SetFilePointer( handle, ofs ) )
         return FALSE;
 
     r = ReadFile( handle, pCert, cert_hdr_size, &count, NULL );
@@ -887,7 +889,7 @@ invalid_parameter:
 BOOL WINAPI ImageRemoveCertificate(HANDLE FileHandle, DWORD Index)
 {
     DWORD size = 0, count = 0, sd_VirtualAddr = 0, offset = 0;
-    DWORD data_size = 0, cert_size = 0, cert_size_padded = 0, ret = 0;
+    DWORD data_size = 0, cert_size = 0, cert_size_padded = 0;
     LPVOID cert_data;
     BOOL r;
 
@@ -912,9 +914,7 @@ BOOL WINAPI ImageRemoveCertificate(HANDLE FileHandle, DWORD Index)
 
     if (data_size == 0)
     {
-        ret = SetFilePointer(FileHandle, sd_VirtualAddr, NULL, FILE_BEGIN);
-
-        if (ret == INVALID_SET_FILE_POINTER)
+        if (!IMAGEHLP_SetFilePointer(FileHandle, sd_VirtualAddr))
             return FALSE;
     }
     else
@@ -924,9 +924,7 @@ BOOL WINAPI ImageRemoveCertificate(HANDLE FileHandle, DWORD Index)
         if (!cert_data)
             return FALSE;
 
-        ret = SetFilePointer(FileHandle, offset + cert_size_padded, NULL, FILE_BEGIN);
-
-        if (ret == INVALID_SET_FILE_POINTER)
+        if (!IMAGEHLP_SetFilePointer(FileHandle, offset + cert_size_padded))
             goto error;
 
         /* Read any subsequent certificates */
@@ -935,7 +933,7 @@ BOOL WINAPI ImageRemoveCertificate(HANDLE FileHandle, DWORD Index)
         if ((!r) || (count != data_size))
             goto error;
 
-        SetFilePointer(FileHandle, offset, NULL, FILE_BEGIN);
+        IMAGEHLP_SetFilePointer(FileHandle, offset);
 
         /* Write them one index back */
         r = WriteFile(FileHandle, cert_data, data_size, &count, NULL);
