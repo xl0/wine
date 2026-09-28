@@ -2871,8 +2871,6 @@ void reset_monitor_update_serial(void)
 
 static BOOL lock_display_devices( BOOL force )
 {
-    static const WCHAR wine_service_station_name[] =
-        {'_','_','w','i','n','e','s','e','r','v','i','c','e','_','w','i','n','s','t','a','t','i','o','n',0};
     struct device_manager_ctx ctx =
     {
         .opengl_gpus = LIST_INIT(ctx.opengl_gpus),
@@ -2880,7 +2878,6 @@ static BOOL lock_display_devices( BOOL force )
     };
     UINT64 serial;
     UINT status;
-    WCHAR name[MAX_PATH];
     BOOL ret = TRUE;
 
     init_display_driver(); /* make sure to load the driver before anything else */
@@ -2891,8 +2888,7 @@ static BOOL lock_display_devices( BOOL force )
     if (!force && monitor_update_serial >= serial) return TRUE;
 
     /* services do not have any adapters, only a virtual monitor */
-    if (NtUserGetObjectInformation( NtUserGetProcessWindowStation(), UOI_NAME, name, sizeof(name), NULL )
-        && !wcscmp( name, wine_service_station_name ))
+    if (is_service_process())
     {
         clear_display_devices();
         list_add_tail( &monitors, &virtual_monitor.entry );

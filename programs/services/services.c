@@ -1028,7 +1028,7 @@ found:
     si.cb = sizeof(STARTUPINFOW);
     if (!(service_entry->config.dwServiceType & SERVICE_INTERACTIVE_PROCESS))
     {
-        si.lpDesktop = (WCHAR *)L"__wineservice_winstation\\Default";
+        si.lpDesktop = (WCHAR *)L"Service-0x0-3e7$\\Default";
     }
 
     if (!environment && OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, &token))

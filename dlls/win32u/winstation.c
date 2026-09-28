@@ -350,11 +350,11 @@ BOOL is_virtual_desktop(void)
 
 BOOL is_service_process(void)
 {
-    static const WCHAR wine_service_station_name[] = {'_','_','w','i','n','e','s','e','r','v','i','c','e','_','w','i','n','s','t','a','t','i','o','n',0};
+    static const WCHAR service_station_name[] = {'S','e','r','v','i','c','e','-','0','x','0','-','3','e','7','$',0};
     WCHAR name[MAX_PATH];
 
     return NtUserGetObjectInformation( NtUserGetProcessWindowStation(), UOI_NAME, name, sizeof(name), NULL ) &&
-           !wcscmp( name, wine_service_station_name );
+           !wcscmp( name, service_station_name );
 }
 
 /***********************************************************************
