@@ -3221,9 +3221,15 @@ LSTATUS WINAPI RegNotifyChangeKeyValue( HKEY hkey, BOOL fWatchSubTree,
  */
 LSTATUS WINAPI RegOpenUserClassesRoot( HANDLE hToken, DWORD dwOptions, REGSAM samDesired, PHKEY phkResult )
 {
-    FIXME("(%p, 0x%lx, 0x%lx, %p) semi-stub\n", hToken, dwOptions, samDesired, phkResult);
+    UNICODE_STRING empty = { 0 };
+    NTSTATUS status;
 
-    *phkResult = HKEY_CLASSES_ROOT;
+    TRACE("(%p, 0x%lx, 0x%lx, %p)\n", hToken, dwOptions, samDesired, phkResult);
+
+    /* the HKCU side of the merged view, not affected by RegOverridePredefKey(); Wine has a single user */
+    if (!init_user_classes()) return ERROR_OUTOFMEMORY;
+    if ((status = open_classes_path( phkResult, user_classes, &empty, TRUE ))) return RtlNtStatusToDosError( status );
+    *phkResult = (HKEY)((ULONG_PTR)*phkResult | HKCR_TAG);
     return ERROR_SUCCESS;
 }
 

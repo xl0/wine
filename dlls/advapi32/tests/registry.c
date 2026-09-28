@@ -4131,8 +4131,20 @@ static void test_classesroot_wow64(void)
 
 static void test_classesroot_mask(void)
 {
-    HKEY hkey;
+    HANDLE token;
+    HKEY hkey, subkey;
     LSTATUS res;
+
+    /* merged view, like HKEY_CLASSES_ROOT */
+    OpenProcessToken( GetCurrentProcess(), TOKEN_QUERY, &token );
+    res = RegOpenUserClassesRoot( token, 0, KEY_READ, &hkey );
+    ok(res == ERROR_SUCCESS, "RegOpenUserClassesRoot failed: %ld\n", res);
+    ok(IS_HKCR(hkey), "hkcr mask not set in %p\n", hkey);
+    res = RegOpenKeyA( hkey, "exefile", &subkey );
+    ok(res == ERROR_SUCCESS, "RegOpenKeyA failed: %ld\n", res);
+    RegCloseKey( subkey );
+    RegCloseKey( hkey );
+    CloseHandle( token );
 
     res = RegOpenKeyA( HKEY_CLASSES_ROOT, "CLSID", &hkey );
     ok(res == ERROR_SUCCESS, "RegOpenKeyA failed: %ld\n", res);
