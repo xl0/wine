@@ -346,6 +346,70 @@ static void test_subclass(void)
     DestroyWindow(hwnd);
 }
 
+static HWND thread_hwnd;
+static HANDLE thread_ready, thread_done;
+
+static DWORD WINAPI subclass_thread(void *arg)
+{
+    MSG msg;
+    BOOL ret;
+
+    thread_hwnd = CreateWindowA("static", "Test subclass", WS_OVERLAPPEDWINDOW, 100, 100, 200, 200,
+                                0, 0, 0, NULL);
+    ok(thread_hwnd != NULL, "CreateWindowA failed, error %ld.\n", GetLastError());
+    ret = pSetWindowSubclass(thread_hwnd, wnd_proc_sub, 2, 0);
+    ok(ret, "SetWindowSubclass failed.\n");
+    SetWindowLongA(thread_hwnd, GWLP_USERDATA, EXPECT_UNICODE);
+    SetEvent(thread_ready);
+
+    while (MsgWaitForMultipleObjects(1, &thread_done, FALSE, INFINITE, QS_ALLINPUT) != WAIT_OBJECT_0)
+        while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE)) DispatchMessageA(&msg);
+
+    DestroyWindow(thread_hwnd);
+    return 0;
+}
+
+static void test_other_thread(void)
+{
+    static const struct message empty_seq[] = {{ 0 }};
+    WNDPROC proc, subclassed;
+    DWORD_PTR data;
+    HANDLE thread;
+    BOOL ret;
+
+    thread_ready = CreateEventA(NULL, FALSE, FALSE, NULL);
+    thread_done = CreateEventA(NULL, FALSE, FALSE, NULL);
+    thread = CreateThread(NULL, 0, subclass_thread, NULL, 0, NULL);
+    WaitForSingleObject(thread_ready, INFINITE);
+    subclassed = (WNDPROC)GetWindowLongPtrA(thread_hwnd, GWLP_WNDPROC);
+
+    ret = pSetWindowSubclass(thread_hwnd, wnd_proc_sub, 3, 0);
+    ok(!ret, "SetWindowSubclass succeeded.\n");
+
+    data = 0;
+    ret = pGetWindowSubclass(thread_hwnd, wnd_proc_sub, 2, &data);
+    ok(ret, "GetWindowSubclass failed.\n");
+    ret = pGetWindowSubclass(thread_hwnd, wnd_proc_sub, 3, &data);
+    ok(!ret, "GetWindowSubclass succeeded.\n");
+
+    /* The window procedure is restored by the window's thread. */
+    ret = pRemoveWindowSubclass(thread_hwnd, wnd_proc_sub, 2);
+    ok(ret, "RemoveWindowSubclass failed.\n");
+    proc = (WNDPROC)GetWindowLongPtrA(thread_hwnd, GWLP_WNDPROC);
+    ok(proc == subclassed, "got proc %p, expected %p.\n", proc, subclassed);
+
+    SendMessageA(thread_hwnd, WM_USER, 1, 0);
+    ok_sequence(empty_seq, "Other thread");
+    proc = (WNDPROC)GetWindowLongPtrA(thread_hwnd, GWLP_WNDPROC);
+    ok(proc != subclassed, "got proc %p.\n", proc);
+
+    SetEvent(thread_done);
+    WaitForSingleObject(thread, INFINITE);
+    CloseHandle(thread);
+    CloseHandle(thread_ready);
+    CloseHandle(thread_done);
+}
+
 static BOOL register_window_classes(void)
 {
     WNDCLASSA cls;
@@ -456,4 +520,5 @@ START_TEST(subclass)
 
     test_subclass();
     test_GetWindowSubclass();
+    test_other_thread();
 }

@@ -1042,6 +1042,9 @@ BOOL WINAPI SetWindowSubclass (HWND hWnd, SUBCLASSPROC pfnSubclass,
    if (!hWnd || !pfnSubclass)
        return FALSE;
 
+   if (GetWindowThreadProcessId (hWnd, NULL) != GetCurrentThreadId ())
+       return FALSE;
+
    /* Since the window procedure that we set here has two additional arguments,
     * we can't simply set it as the new window procedure of the window. So we
     * set our own window procedure and then calculate the other two arguments
@@ -1120,8 +1123,12 @@ BOOL WINAPI GetWindowSubclass (HWND hWnd, SUBCLASSPROC pfnSubclass,
 {
    const SUBCLASS_INFO *stack;
    const SUBCLASSPROCS *proc;
+   DWORD pid;
 
    TRACE("%p, %p, %Ix, %p\n", hWnd, pfnSubclass, uID, pdwRef);
+
+   if (!GetWindowThreadProcessId (hWnd, &pid) || pid != GetCurrentProcessId ())
+      goto done;
 
    /* See if we have been called for this window */
    stack = GetPropW (hWnd, COMCTL32_wSubclass);
@@ -1167,8 +1174,13 @@ BOOL WINAPI RemoveWindowSubclass(HWND hWnd, SUBCLASSPROC pfnSubclass, UINT_PTR u
    LPSUBCLASSPROCS prevproc = NULL;
    LPSUBCLASSPROCS proc;
    BOOL ret = FALSE;
+   DWORD pid, tid;
 
    TRACE("%p, %p, %Ix.\n", hWnd, pfnSubclass, uID);
+
+   tid = GetWindowThreadProcessId (hWnd, &pid);
+   if (!tid || pid != GetCurrentProcessId ())
+      return FALSE;
 
    /* Find the Subclass to remove */
    stack = GetPropW (hWnd, COMCTL32_wSubclass);
@@ -1196,7 +1208,8 @@ BOOL WINAPI RemoveWindowSubclass(HWND hWnd, SUBCLASSPROC pfnSubclass, UINT_PTR u
       proc = proc->next;
    }
    
-   if (!stack->SubclassProcs && !stack->running) {
+   /* another thread leaves the cleanup to the next message */
+   if (!stack->SubclassProcs && !stack->running && tid == GetCurrentThreadId ()) {
       TRACE("Last Subclass removed, cleaning up\n");
       /* clean up our heap and reset the original window procedure */
       if ((WNDPROC)GetWindowLongPtrW (hWnd, GWLP_WNDPROC) != COMCTL32_SubclassProc)
