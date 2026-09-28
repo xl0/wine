@@ -2190,50 +2190,80 @@ static void test_wintrust_blob(void)
 {
     static GUID generic_action_v2 = WINTRUST_ACTION_GENERIC_VERIFY_V2;
     static GUID p7x_subject = { 0x5598cff1, 0x68db, 0x4340, { 0xb5,0x7f,0x1c,0xac,0xf8,0x8c,0x9a,0x51 } };
+    static const struct
+    {
+        DWORD offset; /* of the byte to corrupt */
+        LONG r;
+        BOOL todo;
+        BOOL timestamped;
+    }
+    tests[] =
+    {
+        { ~0u, CERT_E_UNTRUSTEDROOT, FALSE, TRUE },
+        /* "PKCX" magic */
+        { 0, TRUST_E_NOSIGNATURE },
+        /* time-stamp messageImprint, the hash of the signature */
+        { 2322, NTE_BAD_HASH },
+        /* time-stamp signature */
+        { sizeof(p7x_signature) - 1, 0xc000a000 /* STATUS_INVALID_SIGNATURE */, TRUE },
+    };
     WINTRUST_BLOB_INFO blob = { sizeof(blob) };
     WINTRUST_DATA wtd = { sizeof(wtd) };
     CRYPT_PROVIDER_DATA *data;
     CRYPT_PROVIDER_SGNR *signer;
-    BYTE bad_magic[sizeof(p7x_signature)];
+    BYTE buf[sizeof(p7x_signature)];
     SYSTEMTIME st;
+    unsigned int i;
     LONG r;
 
     blob.gSubject = p7x_subject;
-    blob.cbMemObject = sizeof(p7x_signature);
-    blob.pbMemObject = (BYTE *)p7x_signature;
+    blob.cbMemObject = sizeof(buf);
+    blob.pbMemObject = buf;
     wtd.dwUIChoice = WTD_UI_NONE;
     wtd.fdwRevocationChecks = WTD_REVOKE_NONE;
     wtd.dwProvFlags = WTD_REVOCATION_CHECK_NONE;
     wtd.dwUnionChoice = WTD_CHOICE_BLOB;
     wtd.pBlob = &blob;
-    wtd.dwStateAction = WTD_STATEACTION_VERIFY;
-    r = WinVerifyTrust(INVALID_HANDLE_VALUE, &generic_action_v2, &wtd);
-    ok(r == CERT_E_UNTRUSTEDROOT, "got %08lx\n", r);
-    data = WTHelperProvDataFromStateData(wtd.hWVTStateData);
-    ok(data && data->csSigners == 1, "got %p\n", data);
-    if (data && data->csSigners == 1)
+    for (i = 0; i < ARRAY_SIZE(tests); i++)
     {
-        /* The signer is verified as of the time-stamp, when its certificate was valid. */
-        signer = &data->pasSigners[0];
-        FileTimeToSystemTime(&signer->sftVerifyAsOf, &st);
-        ok(st.wYear == 2000 && st.wMonth == 6 && st.wDay == 1 && st.wHour == 12 && !st.wMinute && !st.wSecond,
-           "got %u-%u-%u %u:%u:%u\n", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-        ok(signer->pChainContext && signer->pChainContext->TrustStatus.dwErrorStatus == CERT_TRUST_IS_UNTRUSTED_ROOT,
-           "got %#lx\n", signer->pChainContext ? signer->pChainContext->TrustStatus.dwErrorStatus : 0);
+        winetest_push_context("%u", i);
+        memcpy(buf, p7x_signature, sizeof(buf));
+        if (tests[i].offset != ~0u) buf[tests[i].offset] ^= 1;
+        wtd.dwStateAction = WTD_STATEACTION_VERIFY;
+        wtd.hWVTStateData = NULL;
+        r = WinVerifyTrust(INVALID_HANDLE_VALUE, &generic_action_v2, &wtd);
+        todo_wine_if(tests[i].todo) ok(r == tests[i].r, "got %08lx\n", r);
+        data = WTHelperProvDataFromStateData(wtd.hWVTStateData);
+        ok(!!data, "got %p\n", data);
+        if (data && data->csSigners == 1)
+        {
+            signer = &data->pasSigners[0];
+            FileTimeToSystemTime(&signer->sftVerifyAsOf, &st);
+            if (tests[i].timestamped)
+            {
+                /* The signer is verified as of the time-stamp, when its certificate was valid. */
+                ok(st.wYear == 2000 && st.wMonth == 6 && st.wDay == 1 && st.wHour == 12 && !st.wMinute && !st.wSecond,
+                   "got %u-%u-%u %u:%u:%u\n", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+                ok(signer->pChainContext && signer->pChainContext->TrustStatus.dwErrorStatus == CERT_TRUST_IS_UNTRUSTED_ROOT,
+                   "got %#lx\n", signer->pChainContext ? signer->pChainContext->TrustStatus.dwErrorStatus : 0);
+                ok(signer->csCounterSigners == 1, "got %lu\n", signer->csCounterSigners);
+                if (signer->csCounterSigners == 1)
+                    ok(!CompareFileTime(&signer->pasCounterSigners[0].sftVerifyAsOf, &signer->sftVerifyAsOf),
+                       "got different time\n");
+            }
+            else
+            {
+                /* A bad time-stamp is not used. */
+                ok(st.wYear > 2000, "got %u\n", st.wYear);
+                ok(!signer->csCounterSigners, "got %lu\n", signer->csCounterSigners);
+            }
+        }
+        else ok(!tests[i].timestamped, "got %lu signers\n", data ? data->csSigners : 0);
+        wtd.dwStateAction = WTD_STATEACTION_CLOSE;
+        r = WinVerifyTrust(INVALID_HANDLE_VALUE, &generic_action_v2, &wtd);
+        ok(r == S_OK, "got %08lx\n", r);
+        winetest_pop_context();
     }
-    wtd.dwStateAction = WTD_STATEACTION_CLOSE;
-    r = WinVerifyTrust(INVALID_HANDLE_VALUE, &generic_action_v2, &wtd);
-    ok(r == S_OK, "got %08lx\n", r);
-
-    memcpy(bad_magic, p7x_signature, sizeof(p7x_signature));
-    bad_magic[0] = 'X';
-    blob.pbMemObject = bad_magic;
-    wtd.dwStateAction = WTD_STATEACTION_VERIFY;
-    wtd.hWVTStateData = NULL;
-    r = WinVerifyTrust(INVALID_HANDLE_VALUE, &generic_action_v2, &wtd);
-    ok(r == TRUST_E_NOSIGNATURE, "got %08lx\n", r);
-    wtd.dwStateAction = WTD_STATEACTION_CLOSE;
-    WinVerifyTrust(INVALID_HANDLE_VALUE, &generic_action_v2, &wtd);
 }
 
 START_TEST(softpub)

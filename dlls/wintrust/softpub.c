@@ -682,20 +682,20 @@ HRESULT WINAPI SoftpubLoadMessage(CRYPT_PROVIDER_DATA *data)
 }
 
 static CMSG_SIGNER_INFO *WINTRUST_GetSigner(CRYPT_PROVIDER_DATA *data,
- DWORD signerIdx)
+ HCRYPTMSG msg, DWORD signerIdx)
 {
     BOOL ret;
     CMSG_SIGNER_INFO *signerInfo = NULL;
     DWORD size;
 
-    ret = CryptMsgGetParam(data->hMsg, CMSG_SIGNER_INFO_PARAM, signerIdx,
+    ret = CryptMsgGetParam(msg, CMSG_SIGNER_INFO_PARAM, signerIdx,
      NULL, &size);
     if (ret)
     {
         signerInfo = data->psPfns->pfnAlloc(size);
         if (signerInfo)
         {
-            ret = CryptMsgGetParam(data->hMsg, CMSG_SIGNER_INFO_PARAM,
+            ret = CryptMsgGetParam(msg, CMSG_SIGNER_INFO_PARAM,
              signerIdx, signerInfo, &size);
             if (!ret)
             {
@@ -738,40 +738,6 @@ static BOOL WINTRUST_GetTimeFromCounterSigner(
         }
     }
     return foundTimeStamp;
-}
-
-/* Gets genTime from the TSTInfo content of an RFC 3161 time-stamp token. */
-static BOOL WINTRUST_GetTimeFromTimeStampToken(const CRYPT_ATTR_BLOB *token,
- FILETIME *time)
-{
-    static const DWORD encoding = X509_ASN_ENCODING | PKCS_7_ASN_ENCODING;
-    CRYPT_SEQUENCE_OF_ANY *tst_info = NULL;
-    BYTE *content = NULL;
-    DWORD size;
-    HCRYPTMSG msg;
-    BOOL ret = FALSE;
-
-    /* FIXME: need to verify the time-stamp token signature too */
-    if (!(msg = CryptMsgOpenToDecode(encoding, 0, 0, 0, NULL, NULL)))
-        return FALSE;
-    if (CryptMsgUpdate(msg, token->pbData, token->cbData, TRUE) &&
-     CryptMsgGetParam(msg, CMSG_CONTENT_PARAM, 0, NULL, &size) &&
-     (content = malloc(size)) &&
-     CryptMsgGetParam(msg, CMSG_CONTENT_PARAM, 0, content, &size) &&
-     CryptDecodeObjectEx(encoding, X509_SEQUENCE_OF_ANY, content, size,
-     CRYPT_DECODE_ALLOC_FLAG, NULL, &tst_info, &size) &&
-     tst_info->cValue > 4)
-    {
-        /* version, policy, messageImprint, serialNumber, genTime, ... */
-        size = sizeof(*time);
-        ret = CryptDecodeObjectEx(encoding, X509_CHOICE_OF_TIME,
-         tst_info->rgValue[4].pbData, tst_info->rgValue[4].cbData, 0, NULL,
-         time, &size);
-    }
-    LocalFree(tst_info);
-    free(content);
-    CryptMsgClose(msg);
-    return ret;
 }
 
 static LPCSTR filetime_to_str(const FILETIME *time)
@@ -822,19 +788,6 @@ static FILETIME WINTRUST_GetTimeFromSigner(const CRYPT_PROVIDER_DATA *data,
             }
         }
     }
-    for (i = 0; !foundTimeStamp && i < signerInfo->UnauthAttrs.cAttr; i++)
-    {
-        if (!strcmp(signerInfo->UnauthAttrs.rgAttr[i].pszObjId,
-         szOID_RFC3161_counterSign))
-        {
-            const CRYPT_ATTRIBUTE *attr = &signerInfo->UnauthAttrs.rgAttr[i];
-            DWORD j;
-
-            for (j = 0; !foundTimeStamp && j < attr->cValue; j++)
-                foundTimeStamp = WINTRUST_GetTimeFromTimeStampToken(
-                 &attr->rgValue[j], &time);
-        }
-    }
     if (!foundTimeStamp)
     {
         TRACE("returning system time %s\n",
@@ -846,10 +799,148 @@ static FILETIME WINTRUST_GetTimeFromSigner(const CRYPT_PROVIDER_DATA *data,
     return time;
 }
 
+static BOOL WINTRUST_CertHasUsage(PCCERT_CONTEXT cert, LPCSTR oid)
+{
+    CERT_ENHKEY_USAGE *usage;
+    BOOL ret = FALSE;
+    DWORD size, i;
+
+    if (!CertGetEnhancedKeyUsage(cert, CERT_FIND_EXT_ONLY_ENHKEY_USAGE_FLAG,
+     NULL, &size) || !(usage = malloc(size)))
+        return FALSE;
+    if (CertGetEnhancedKeyUsage(cert, CERT_FIND_EXT_ONLY_ENHKEY_USAGE_FLAG,
+     usage, &size))
+        for (i = 0; !ret && i < usage->cUsageIdentifier; i++)
+            ret = !strcmp(usage->rgpszUsageIdentifier[i], oid);
+    free(usage);
+    return ret;
+}
+
+/* Verifies the RFC 3161 time-stamp token of a signer, if it has one. The
+ * token's signer is added as counter signer, and the signer is verified as of
+ * the token's genTime. Tokens from certificates not valid for time stamping
+ * are ignored.
+ */
+static DWORD WINTRUST_VerifyTimeStampToken(CRYPT_PROVIDER_DATA *data,
+ DWORD signerIdx)
+{
+    static const DWORD encoding = X509_ASN_ENCODING | PKCS_7_ASN_ENCODING;
+    CRYPT_PROVIDER_SGNR *signer = &data->pasSigners[signerIdx];
+    CRYPT_PROVIDER_SGNR sgnr = { sizeof(sgnr), { 0 } };
+    CRYPT_SEQUENCE_OF_ANY *tst_info = NULL, *imprint = NULL, *alg = NULL;
+    const CRYPT_ATTR_BLOB *token = NULL;
+    CRYPT_DATA_BLOB *digest = NULL;
+    PCCERT_CONTEXT cert = NULL;
+    HCERTSTORE store = NULL;
+    BYTE *content = NULL, hash[64];
+    LPSTR *oid = NULL;
+    HCRYPTMSG msg;
+    CERT_INFO certInfo;
+    DWORD i, size, hash_size = sizeof(hash), err = ERROR_SUCCESS;
+
+    for (i = 0; !token && i < signer->psSigner->UnauthAttrs.cAttr; i++)
+        if (!strcmp(signer->psSigner->UnauthAttrs.rgAttr[i].pszObjId,
+         szOID_RFC3161_counterSign) &&
+         signer->psSigner->UnauthAttrs.rgAttr[i].cValue)
+            token = &signer->psSigner->UnauthAttrs.rgAttr[i].rgValue[0];
+    if (!token)
+        return ERROR_SUCCESS;
+
+    if (!(msg = CryptMsgOpenToDecode(encoding, 0, 0, 0, NULL, NULL)))
+        return GetLastError();
+    /* TSTInfo: version, policy, messageImprint, serialNumber, genTime, ...
+     * messageImprint: hashAlgorithm, hashedMessage (of the signature)
+     */
+    if (!CryptMsgUpdate(msg, token->pbData, token->cbData, TRUE) ||
+     !CryptMsgGetParam(msg, CMSG_CONTENT_PARAM, 0, NULL, &size) ||
+     !(content = malloc(size)) ||
+     !CryptMsgGetParam(msg, CMSG_CONTENT_PARAM, 0, content, &size) ||
+     !CryptDecodeObjectEx(encoding, X509_SEQUENCE_OF_ANY, content, size,
+     CRYPT_DECODE_ALLOC_FLAG, NULL, &tst_info, &size) ||
+     tst_info->cValue < 5 ||
+     !CryptDecodeObjectEx(encoding, X509_SEQUENCE_OF_ANY,
+     tst_info->rgValue[2].pbData, tst_info->rgValue[2].cbData,
+     CRYPT_DECODE_ALLOC_FLAG, NULL, &imprint, &size) ||
+     imprint->cValue != 2 ||
+     !CryptDecodeObjectEx(encoding, X509_SEQUENCE_OF_ANY,
+     imprint->rgValue[0].pbData, imprint->rgValue[0].cbData,
+     CRYPT_DECODE_ALLOC_FLAG, NULL, &alg, &size) ||
+     !alg->cValue ||
+     !CryptDecodeObjectEx(encoding, X509_OBJECT_IDENTIFIER,
+     alg->rgValue[0].pbData, alg->rgValue[0].cbData,
+     CRYPT_DECODE_ALLOC_FLAG, NULL, &oid, &size) ||
+     !CryptDecodeObjectEx(encoding, X509_OCTET_STRING,
+     imprint->rgValue[1].pbData, imprint->rgValue[1].cbData,
+     CRYPT_DECODE_ALLOC_FLAG, NULL, &digest, &size) ||
+     !(sgnr.psSigner = WINTRUST_GetSigner(data, msg, 0)))
+    {
+        err = GetLastError();
+        goto done;
+    }
+    size = sizeof(sgnr.sftVerifyAsOf);
+    if (!CryptDecodeObjectEx(encoding, X509_CHOICE_OF_TIME,
+     tst_info->rgValue[4].pbData, tst_info->rgValue[4].cbData, 0, NULL,
+     &sgnr.sftVerifyAsOf, &size))
+    {
+        err = GetLastError();
+        goto done;
+    }
+
+    if (!CryptHashCertificate(0, CertOIDToAlgId(*oid), 0,
+     signer->psSigner->EncryptedHash.pbData,
+     signer->psSigner->EncryptedHash.cbData, hash, &hash_size) ||
+     hash_size != digest->cbData || memcmp(hash, digest->pbData, hash_size))
+    {
+        err = NTE_BAD_HASH;
+        goto done;
+    }
+
+    certInfo.Issuer = sgnr.psSigner->Issuer;
+    certInfo.SerialNumber = sgnr.psSigner->SerialNumber;
+    if (!(store = CertOpenStore(CERT_STORE_PROV_MSG, encoding, 0, 0, msg)) ||
+     !(cert = CertGetSubjectCertificateFromStore(store, encoding, &certInfo)) ||
+     !CryptMsgControl(msg, 0, CMSG_CTRL_VERIFY_SIGNATURE, cert->pCertInfo))
+    {
+        err = GetLastError();
+        goto done;
+    }
+
+    if (WINTRUST_CertHasUsage(cert, szOID_PKIX_KP_TIMESTAMP_SIGNING))
+    {
+        if (!data->psPfns->pfnAddStore2Chain(data, store) ||
+         !data->psPfns->pfnAddSgnr2Chain(data, TRUE, signerIdx, &sgnr))
+        {
+            err = GetLastError();
+            goto done;
+        }
+        signer->sftVerifyAsOf = sgnr.sftVerifyAsOf;
+        sgnr.psSigner = NULL;
+        if (!data->psPfns->pfnAddCert2Chain(data, signerIdx, TRUE,
+         signer->csCounterSigners - 1, cert))
+            err = GetLastError();
+    }
+    else
+        TRACE("time-stamp certificate isn't valid for time stamping\n");
+
+done:
+    CertFreeCertificateContext(cert);
+    CertCloseStore(store, 0);
+    data->psPfns->pfnFree(sgnr.psSigner);
+    LocalFree(digest);
+    LocalFree(oid);
+    LocalFree(alg);
+    LocalFree(imprint);
+    LocalFree(tst_info);
+    free(content);
+    CryptMsgClose(msg);
+    return err;
+}
+
 static DWORD WINTRUST_SaveSigner(CRYPT_PROVIDER_DATA *data, DWORD signerIdx)
 {
     DWORD err;
-    CMSG_SIGNER_INFO *signerInfo = WINTRUST_GetSigner(data, signerIdx);
+    CMSG_SIGNER_INFO *signerInfo = WINTRUST_GetSigner(data, data->hMsg,
+     signerIdx);
 
     if (signerInfo)
     {
@@ -860,7 +951,7 @@ static DWORD WINTRUST_SaveSigner(CRYPT_PROVIDER_DATA *data, DWORD signerIdx)
         if (!data->psPfns->pfnAddSgnr2Chain(data, FALSE, signerIdx, &sgnr))
             err = GetLastError();
         else
-            err = ERROR_SUCCESS;
+            err = WINTRUST_VerifyTimeStampToken(data, signerIdx);
     }
     else
         err = GetLastError();
