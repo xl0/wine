@@ -5154,6 +5154,19 @@ static void check_authenticode_policy(void)
      partialPolicyCheck, &oct2007, NULL);
 }
 
+static void check_authenticode_ts_policy(void)
+{
+    CERT_CHAIN_POLICY_PARA policyPara = { sizeof(policyPara) };
+
+    CHECK_CHAIN_POLICY_STATUS_ARRAY(CERT_CHAIN_POLICY_AUTHENTICODE_TS, NULL,
+     basePolicyCheck, &oct2007, NULL);
+    CHECK_CHAIN_POLICY_STATUS_ARRAY(CERT_CHAIN_POLICY_AUTHENTICODE_TS, NULL,
+     partialPolicyCheck, &oct2007, NULL);
+    policyPara.dwFlags = CERT_CHAIN_POLICY_ALLOW_UNKNOWN_CA_FLAG;
+    CHECK_CHAIN_POLICY_STATUS_ARRAY(CERT_CHAIN_POLICY_AUTHENTICODE_TS, NULL,
+     ignoredPartialPolicyCheck, &oct2007, &policyPara);
+}
+
 static void check_ssl_policy(void)
 {
     CERT_CHAIN_POLICY_PARA policyPara = { 0 };
@@ -5420,6 +5433,7 @@ static void testVerifyCertChainPolicy(void)
     check_base_policy();
     check_ssl_policy();
     check_authenticode_policy();
+    check_authenticode_ts_policy();
     CHECK_CHAIN_POLICY_STATUS_ARRAY(CERT_CHAIN_POLICY_BASIC_CONSTRAINTS, NULL,
      basicConstraintsPolicyCheck, &oct2007, NULL);
     check_msroot_policy();

@@ -3902,6 +3902,7 @@ BOOL WINAPI CertVerifyCertificateChainPolicy(LPCSTR szPolicyOID,
         switch (LOWORD(szPolicyOID))
         {
         case LOWORD(CERT_CHAIN_POLICY_BASE):
+        case LOWORD(CERT_CHAIN_POLICY_AUTHENTICODE_TS):
             verifyPolicy = verify_base_policy;
             break;
         case LOWORD(CERT_CHAIN_POLICY_AUTHENTICODE):
