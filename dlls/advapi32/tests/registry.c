@@ -3632,9 +3632,9 @@ static void test_classesroot(void)
     /* try to open that key in hkcr */
     res = RegOpenKeyExA( HKEY_CLASSES_ROOT, "WineTestCls", 0,
                          KEY_QUERY_VALUE|KEY_SET_VALUE, &hkcr );
-    todo_wine ok(res == ERROR_SUCCESS ||
-                 broken(res == ERROR_FILE_NOT_FOUND /* WinNT */),
-                 "test key not found in hkcr: %ld\n", res);
+    ok(res == ERROR_SUCCESS ||
+       broken(res == ERROR_FILE_NOT_FOUND /* WinNT */),
+       "test key not found in hkcr: %ld\n", res);
     if (res)
     {
         skip("HKCR key merging not supported\n");
@@ -3643,7 +3643,7 @@ static void test_classesroot(void)
         return;
     }
 
-    todo_wine ok(IS_HKCR(hkcr), "hkcr mask not set in %p\n", hkcr);
+    ok(IS_HKCR(hkcr), "hkcr mask not set in %p\n", hkcr);
 
     /* set a value in user's classes */
     res = RegSetValueExA(hkey, "val1", 0, REG_SZ, (const BYTE *)"user", sizeof("user"));
@@ -3908,7 +3908,7 @@ static void test_classesroot(void)
 static void test_classesroot_enum(void)
 {
     HKEY hkcu=0, hklm=0, hkcr=0, hkcusub[2]={0}, hklmsub[2]={0};
-    DWORD size;
+    DWORD size, subkeys, values;
     static CHAR buffer[2];
     LONG res;
 
@@ -3928,9 +3928,9 @@ static void test_classesroot_enum(void)
     }
 
     res = RegOpenKeyA( HKEY_CLASSES_ROOT, "WineTestCls", &hkcr );
-    todo_wine ok(res == ERROR_SUCCESS ||
-                 broken(res == ERROR_FILE_NOT_FOUND /* WinNT */),
-                 "test key not found in hkcr: %ld\n", res);
+    ok(res == ERROR_SUCCESS ||
+       broken(res == ERROR_FILE_NOT_FOUND /* WinNT */),
+       "test key not found in hkcr: %ld\n", res);
     if (res)
     {
         skip("HKCR key merging not supported\n");
@@ -4028,6 +4028,15 @@ static void test_classesroot_enum(void)
     ok(!strcmp( buffer, "C" ), "expected 'C', got '%s'\n", buffer);
     res = RegEnumKeyA( hkcr, 3, buffer, size );
     ok(res == ERROR_NO_MORE_ITEMS, "expected ERROR_NO_MORE_ITEMS, got %ld\n", res );
+
+    res = RegQueryInfoKeyA( hkcr, NULL, NULL, NULL, &subkeys, NULL, NULL, &values, NULL, NULL, NULL, NULL );
+    ok(res == ERROR_SUCCESS, "RegQueryInfoKeyA failed: %ld\n", res );
+    ok(subkeys == 3 && values == 3, "got %lu subkeys, %lu values\n", subkeys, values);
+    res = RegDeleteKeyA( hkcu, "B" );
+    ok(res == ERROR_SUCCESS, "RegDeleteKeyA failed: %ld\n", res );
+    res = RegQueryInfoKeyA( hkcr, NULL, NULL, NULL, &subkeys, NULL, NULL, &values, NULL, NULL, NULL, NULL );
+    ok(res == ERROR_SUCCESS, "RegQueryInfoKeyA failed: %ld\n", res );
+    ok(subkeys == 2 && values == 3, "got %lu subkeys, %lu values\n", subkeys, values);
 
     /* delete values/keys from HKCU to test only on HKLM */
     RegCloseKey( hkcusub[0] );
@@ -4127,8 +4136,8 @@ static void test_classesroot_mask(void)
 
     res = RegOpenKeyA( HKEY_CLASSES_ROOT, "CLSID", &hkey );
     ok(res == ERROR_SUCCESS, "RegOpenKeyA failed: %ld\n", res);
-    todo_wine ok(IS_HKCR(hkey) || broken(!IS_HKCR(hkey)) /* WinNT */,
-                 "hkcr mask not set in %p\n", hkey);
+    ok(IS_HKCR(hkey) || broken(!IS_HKCR(hkey)) /* WinNT */,
+       "hkcr mask not set in %p\n", hkey);
     RegCloseKey( hkey );
 
     res = RegOpenKeyA( HKEY_CURRENT_USER, "Software", &hkey );

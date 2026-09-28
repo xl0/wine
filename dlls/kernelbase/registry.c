@@ -498,6 +498,369 @@ static inline HKEY get_special_root_hkey( HKEY hkey )
     }
 }
 
+/* HKEY_CLASSES_ROOT subkey handles are tagged in the low bits, like on Windows */
+#define HKCR_TAG 2
+
+static const WCHAR machine_classes[] = L"\\Registry\\Machine\\Software\\Classes";
+static WCHAR *user_classes;  /* \Registry\User\<sid>\Software\Classes */
+static HKEY user_classes_key;
+static BOOL hkcr_remapped;
+
+static BOOL is_hkcr_key( HKEY hkey )
+{
+    if (HandleToUlong(hkey) >= HandleToUlong(HKEY_SPECIAL_ROOT_FIRST))
+        return hkey == HKEY_CLASSES_ROOT && !hkcr_remapped;
+    return (HandleToUlong(hkey) & 3) == HKCR_TAG;
+}
+
+/* open (or create) the key named prefix + suffix; the name is already Wow64-redirected */
+static NTSTATUS open_classes_path( HKEY *retkey, const WCHAR *prefix, const UNICODE_STRING *suffix, BOOL create )
+{
+    DWORD len = wcslen( prefix ) * sizeof(WCHAR);
+    OBJECT_ATTRIBUTES attr;
+    UNICODE_STRING path;
+    NTSTATUS status;
+
+    *retkey = NULL;
+    if (!(path.Buffer = HeapAlloc( GetProcessHeap(), 0, len + suffix->Length ))) return STATUS_NO_MEMORY;
+    memcpy( path.Buffer, prefix, len );
+    memcpy( (char *)path.Buffer + len, suffix->Buffer, suffix->Length );
+    path.Length = path.MaximumLength = len + suffix->Length;
+    InitializeObjectAttributes( &attr, &path, OBJ_CASE_INSENSITIVE, 0, NULL );
+    if (create) status = create_key( retkey, 0, path, 0, MAXIMUM_ALLOWED | KEY_WOW64_64KEY, NULL, NULL );
+    else status = NtOpenKeyEx( (HANDLE *)retkey, MAXIMUM_ALLOWED | KEY_WOW64_64KEY, &attr, 0 );
+    HeapFree( GetProcessHeap(), 0, path.Buffer );
+    return status;
+}
+
+static BOOL init_user_classes(void)
+{
+    UNICODE_STRING path = { 0 };
+    WCHAR *str;
+    HKEY key;
+
+    if (!user_classes)
+    {
+        if (RtlFormatCurrentUserKeyPath( &path )) return FALSE;
+        if ((str = HeapAlloc( GetProcessHeap(), 0, path.Length + sizeof(L"\\Software\\Classes") )))
+        {
+            memcpy( str, path.Buffer, path.Length );
+            wcscpy( str + path.Length / sizeof(WCHAR), L"\\Software\\Classes" );
+            if (InterlockedCompareExchangePointer( (void **)&user_classes, str, NULL ))
+                HeapFree( GetProcessHeap(), 0, str );
+        }
+        RtlFreeUnicodeString( &path );
+        if (!user_classes) return FALSE;
+        path.Length = 0;
+    }
+    if (!user_classes_key && !open_classes_path( &key, user_classes, &path, FALSE ) &&
+        InterlockedCompareExchangePointer( (void **)&user_classes_key, key, NULL ))
+        NtClose( key );
+    return TRUE;
+}
+
+static BOOL strip_classes_prefix( UNICODE_STRING *name, const WCHAR *prefix )
+{
+    DWORD len = wcslen( prefix );
+
+    if (name->Length < len * sizeof(WCHAR) || wcsnicmp( name->Buffer, prefix, len )) return FALSE;
+    if (name->Length > len * sizeof(WCHAR) && name->Buffer[len] != '\\') return FALSE;
+    name->Buffer += len;
+    name->Length -= len * sizeof(WCHAR);
+    return TRUE;
+}
+
+/* HKCR is a merged view of HKCU\Software\Classes over HKLM\Software\Classes.
+ * Get both sides of a HKCR key: one is the key itself, the other one may be missing
+ * unless create_machine is set. Release them with close_hkcr_keys(). */
+static NTSTATUS open_hkcr_keys( HKEY hkey, HKEY *user, HKEY *machine, BOOL create_machine )
+{
+    char buffer[256], *buf_ptr = buffer;
+    KEY_NAME_INFORMATION *info = (KEY_NAME_INFORMATION *)buffer;
+    DWORD len = sizeof(buffer);
+    UNICODE_STRING suffix;
+    NTSTATUS status;
+
+    *user = *machine = NULL;
+    if (!init_user_classes()) return STATUS_NO_MEMORY;
+
+    if (hkey == HKEY_CLASSES_ROOT)
+    {
+        *user = user_classes_key;
+        *machine = get_special_root_hkey( hkey );
+        return *machine ? STATUS_SUCCESS : STATUS_INVALID_HANDLE;
+    }
+
+    hkey = (HKEY)((ULONG_PTR)hkey & ~3);
+    while ((status = NtQueryKey( hkey, KeyNameInformation, buf_ptr, len, &len )) == STATUS_BUFFER_OVERFLOW)
+    {
+        if (buf_ptr != buffer) HeapFree( GetProcessHeap(), 0, buf_ptr );
+        if (!(buf_ptr = HeapAlloc( GetProcessHeap(), 0, len ))) return STATUS_NO_MEMORY;
+        info = (KEY_NAME_INFORMATION *)buf_ptr;
+    }
+    if (!status)
+    {
+        suffix.Buffer = info->Name;
+        suffix.Length = info->NameLength;
+        if (strip_classes_prefix( &suffix, machine_classes ))
+        {
+            *machine = hkey;
+            open_classes_path( user, user_classes, &suffix, FALSE );
+        }
+        else if (strip_classes_prefix( &suffix, user_classes ))
+        {
+            *user = hkey;
+            if (open_classes_path( machine, machine_classes, &suffix, create_machine ) && create_machine)
+            {
+                *user = NULL;
+                status = STATUS_ACCESS_DENIED;
+            }
+        }
+        else status = STATUS_INVALID_HANDLE;
+    }
+    if (buf_ptr != buffer) HeapFree( GetProcessHeap(), 0, buf_ptr );
+    return status;
+}
+
+static void close_hkcr_key( HKEY hkey, HKEY key )
+{
+    if (key && key != (HKEY)((ULONG_PTR)hkey & ~3) && key != user_classes_key && key != special_root_keys[0])
+        NtClose( key );
+}
+
+static void close_hkcr_keys( HKEY hkey, HKEY user, HKEY machine )
+{
+    close_hkcr_key( hkey, user );
+    close_hkcr_key( hkey, machine );
+}
+
+/* open a HKCR subkey: the HKCU side wins, like on Windows */
+static NTSTATUS open_hkcr_key( HKEY *retkey, HKEY hkey, const UNICODE_STRING *name, DWORD options, ACCESS_MASK access )
+{
+    NTSTATUS status = STATUS_OBJECT_NAME_NOT_FOUND;
+    HKEY user, machine;
+    UNICODE_STRING str;
+
+    *retkey = NULL;
+    if ((status = open_hkcr_keys( hkey, &user, &machine, FALSE ))) return status;
+
+    status = STATUS_OBJECT_NAME_NOT_FOUND;
+    if (user)
+    {
+        str = *name;
+        status = open_key( retkey, user, &str, options, access, FALSE );
+    }
+    if (status == STATUS_OBJECT_NAME_NOT_FOUND && machine)
+    {
+        str = *name;
+        status = open_key( retkey, machine, &str, options, access, FALSE );
+    }
+    close_hkcr_keys( hkey, user, machine );
+    if (!status) *retkey = (HKEY)((ULONG_PTR)*retkey | HKCR_TAG);
+    return status;
+}
+
+/* create a HKCR subkey: existing keys are opened, new ones always go to the HKLM side */
+static NTSTATUS create_hkcr_key( HKEY *retkey, HKEY hkey, UNICODE_STRING name, ULONG options, ACCESS_MASK access,
+                                 const UNICODE_STRING *class, PULONG dispos )
+{
+    HKEY user, machine;
+    NTSTATUS status;
+
+    status = open_hkcr_key( retkey, hkey, &name, options & REG_OPTION_OPEN_LINK, access );
+    if (!status && (options & REG_OPTION_CREATE_LINK))
+    {
+        NtClose( *retkey );
+        *retkey = NULL;
+        return STATUS_OBJECT_NAME_COLLISION;
+    }
+    if (!status && dispos) *dispos = REG_OPENED_EXISTING_KEY;
+    if (status != STATUS_OBJECT_NAME_NOT_FOUND) return status;
+
+    if ((status = open_hkcr_keys( hkey, &user, &machine, TRUE ))) return status;
+    status = create_key( retkey, machine, name, options, access, class, dispos );
+    close_hkcr_keys( hkey, user, machine );
+    if (!status) *retkey = (HKEY)((ULONG_PTR)*retkey | HKCR_TAG);
+    return status;
+}
+
+/* values set through HKCR go to the HKCU side if it exists */
+static NTSTATUS set_value_key( HKEY hkey, UNICODE_STRING *name, DWORD type, const void *data, DWORD count )
+{
+    HKEY user, machine;
+    NTSTATUS status;
+
+    if (!is_hkcr_key( hkey )) return NtSetValueKey( hkey, name, 0, type, data, count );
+    if ((status = open_hkcr_keys( hkey, &user, &machine, FALSE ))) return status;
+    status = NtSetValueKey( user ? user : machine, name, 0, type, data, count );
+    close_hkcr_keys( hkey, user, machine );
+    return status;
+}
+
+static CRITICAL_SECTION hkcr_enum_cs;
+static CRITICAL_SECTION_DEBUG hkcr_enum_cs_debug =
+{
+    0, 0, &hkcr_enum_cs,
+    { &hkcr_enum_cs_debug.ProcessLocksList, &hkcr_enum_cs_debug.ProcessLocksList },
+    0, 0, { (DWORD_PTR)(__FILE__ ": hkcr_enum_cs") }
+};
+static CRITICAL_SECTION hkcr_enum_cs = { &hkcr_enum_cs_debug, -1, 0, 0, 0, 0 };
+
+/* where the last merged enumerations of HKCR keys stopped, so sequential enumeration stays linear */
+static struct
+{
+    HKEY  key;
+    BOOL  values;
+    DWORD index;   /* merged index */
+    DWORD pos[2];  /* matching user and machine side indices */
+} hkcr_enum_cache[8];
+static unsigned int hkcr_enum_next;
+
+static NTSTATUS get_enum_name( HKEY key, BOOL values, DWORD index, void *buffer, DWORD size, UNICODE_STRING *name )
+{
+    NTSTATUS status;
+
+    if (values)
+    {
+        KEY_VALUE_BASIC_INFORMATION *info = buffer;
+        status = NtEnumerateValueKey( key, index, KeyValueBasicInformation, buffer, size, &size );
+        name->Buffer = info->Name;
+        name->Length = info->NameLength;
+    }
+    else
+    {
+        KEY_BASIC_INFORMATION *info = buffer;
+        status = NtEnumerateKey( key, index, KeyBasicInformation, buffer, size, &size );
+        name->Buffer = info->Name;
+        name->Length = info->NameLength;
+    }
+    return status;
+}
+
+/* Walk the sorted subkey (or value) lists of both sides of a HKCR key in step, skipping HKLM
+ * entries that HKCU overrides. Returns the side holding the merged entry *index and its index there. */
+static NTSTATUS walk_hkcr_enum( HKEY hkey, HKEY keys[2], BOOL values, DWORD *index, int *side )
+{
+    DWORD size = values ? offsetof( KEY_VALUE_BASIC_INFORMATION, Name[16384] )
+                        : offsetof( KEY_BASIC_INFORMATION, Name[256] );
+    DWORD pos[2] = { 0, 0 }, cur = 0;
+    UNICODE_STRING names[2];
+    NTSTATUS status[2];
+    unsigned int i;
+    char *buffer;
+    int cmp = 0;
+
+    if (!(buffer = HeapAlloc( GetProcessHeap(), 0, 2 * size ))) return STATUS_NO_MEMORY;
+
+    RtlEnterCriticalSection( &hkcr_enum_cs );
+    for (i = 0; i < ARRAY_SIZE(hkcr_enum_cache); i++)
+    {
+        if (hkcr_enum_cache[i].key != hkey || hkcr_enum_cache[i].values != values) continue;
+        if (hkcr_enum_cache[i].index > *index) break;
+        cur = hkcr_enum_cache[i].index;
+        pos[0] = hkcr_enum_cache[i].pos[0];
+        pos[1] = hkcr_enum_cache[i].pos[1];
+        break;
+    }
+    if (i == ARRAY_SIZE(hkcr_enum_cache)) i = hkcr_enum_next++ % ARRAY_SIZE(hkcr_enum_cache);
+
+    for (;;)
+    {
+        status[0] = get_enum_name( keys[0], values, pos[0], buffer, size, &names[0] );
+        status[1] = get_enum_name( keys[1], values, pos[1], buffer + size, size, &names[1] );
+        if (status[0] && status[1]) break;
+        if (status[0]) cmp = 1;
+        else if (status[1]) cmp = -1;
+        else cmp = RtlCompareUnicodeString( &names[0], &names[1], TRUE );
+        if (cur == *index) break;
+        if (cmp <= 0) pos[0]++;
+        if (cmp >= 0) pos[1]++;
+        cur++;
+    }
+
+    /* resume after this entry next time */
+    hkcr_enum_cache[i].key = hkey;
+    hkcr_enum_cache[i].values = values;
+    hkcr_enum_cache[i].index = cur + !(status[0] && status[1]);
+    hkcr_enum_cache[i].pos[0] = pos[0] + (!status[0] && cmp <= 0);
+    hkcr_enum_cache[i].pos[1] = pos[1] + (!status[1] && cmp >= 0);
+    RtlLeaveCriticalSection( &hkcr_enum_cs );
+    HeapFree( GetProcessHeap(), 0, buffer );
+
+    if (status[0] && status[1]) return STATUS_NO_MORE_ENTRIES;
+    *side = cmp <= 0 ? 0 : 1;
+    *index = pos[*side];
+    return STATUS_SUCCESS;
+}
+
+/* get the real key and index for entry *index of a merged HKCR enumeration */
+static NTSTATUS get_hkcr_enum_key( HKEY hkey, BOOL values, DWORD *index, HKEY *retkey )
+{
+    HKEY keys[2];
+    NTSTATUS status;
+    int side;
+
+    if ((status = open_hkcr_keys( hkey, &keys[0], &keys[1], FALSE ))) return status;
+    if (!keys[0] || !keys[1])
+    {
+        *retkey = keys[0] ? keys[0] : keys[1];
+        return STATUS_SUCCESS;
+    }
+    if (!(status = walk_hkcr_enum( hkey, keys, values, index, &side )))
+    {
+        *retkey = keys[side];
+        close_hkcr_key( hkey, keys[!side] );
+        return STATUS_SUCCESS;
+    }
+    close_hkcr_keys( hkey, keys[0], keys[1] );
+    return status;
+}
+
+/* number of entries of the HKCU side of a HKCR key that the HKLM side has too */
+static DWORD count_hkcr_duplicates( HKEY keys[2], BOOL values, DWORD count )
+{
+    DWORD size = values ? offsetof( KEY_VALUE_BASIC_INFORMATION, Name[16384] )
+                        : offsetof( KEY_BASIC_INFORMATION, Name[256] );
+    KEY_VALUE_BASIC_INFORMATION info;
+    OBJECT_ATTRIBUTES attr;
+    UNICODE_STRING name;
+    DWORD i, len, ret = 0;
+    NTSTATUS status;
+    char *buffer;
+    HANDLE key;
+
+    if (!(buffer = HeapAlloc( GetProcessHeap(), 0, size ))) return 0;
+    InitializeObjectAttributes( &attr, &name, OBJ_CASE_INSENSITIVE, keys[1], NULL );
+    for (i = 0; i < count; i++)
+    {
+        if (get_enum_name( keys[0], values, i, buffer, size, &name )) break;
+        if (values) status = NtQueryValueKey( keys[1], &name, KeyValueBasicInformation, &info, sizeof(info), &len );
+        else if (!(status = NtOpenKeyEx( &key, MAXIMUM_ALLOWED | KEY_WOW64_64KEY, &attr, 0 ))) NtClose( key );
+        if (status != STATUS_OBJECT_NAME_NOT_FOUND) ret++;
+    }
+    HeapFree( GetProcessHeap(), 0, buffer );
+    return ret;
+}
+
+/* RegQueryInfoKey counts and maximums for the merged HKCR key, on top of those of keys[0] */
+static LSTATUS merge_hkcr_info( HKEY keys[2], DWORD *subkeys, DWORD *max_subkey, DWORD *max_class,
+                                DWORD *values, DWORD *max_value, DWORD *max_data )
+{
+    DWORD other[6];
+    LSTATUS ret;
+
+    if ((ret = RegQueryInfoKeyW( keys[1], NULL, NULL, NULL, &other[0], &other[1], &other[2],
+                                 &other[3], &other[4], &other[5], NULL, NULL )))
+        return ret;
+    if (max_subkey) *max_subkey = max( *max_subkey, other[1] );
+    if (max_class) *max_class = max( *max_class, other[2] );
+    if (max_value) *max_value = max( *max_value, other[4] );
+    if (max_data) *max_data = max( *max_data, other[5] );
+    if (subkeys) *subkeys += other[0] - count_hkcr_duplicates( keys, FALSE, *subkeys );
+    if (values) *values += other[3] - count_hkcr_duplicates( keys, TRUE, *values );
+    return ERROR_SUCCESS;
+}
+
 static BOOL is_perf_key( HKEY key )
 {
     return HandleToUlong(key) == HandleToUlong(HKEY_PERFORMANCE_DATA)
@@ -529,6 +892,7 @@ NTSTATUS WINAPI RemapPredefinedHandleInternal( HKEY hkey, HKEY override )
         if (status) return status;
     }
 
+    if (hkey == HKEY_CLASSES_ROOT) hkcr_remapped = override != NULL;
     old_key = InterlockedExchangePointer( (void **)&special_root_keys[idx], override );
     if (old_key) NtClose( old_key );
     return STATUS_SUCCESS;
@@ -571,10 +935,13 @@ LSTATUS WINAPI DECLSPEC_HOTPATCH RegCreateKeyExW( HKEY hkey, LPCWSTR name, DWORD
 
     if (!retkey) return ERROR_BADKEY;
     if (reserved) return ERROR_INVALID_PARAMETER;
-    if (!(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
 
     RtlInitUnicodeString( &nameW, name );
     RtlInitUnicodeString( &classW, class );
+
+    if (is_hkcr_key( hkey ))
+        return RtlNtStatusToDosError( create_hkcr_key( retkey, hkey, nameW, options, access, &classW, dispos ) );
+    if (!(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
 
     return RtlNtStatusToDosError( create_key( retkey, hkey, nameW, options, access, &classW, dispos ) );
 }
@@ -618,7 +985,7 @@ LSTATUS WINAPI DECLSPEC_HOTPATCH RegCreateKeyExA( HKEY hkey, LPCSTR name, DWORD 
         access = MAXIMUM_ALLOWED;  /* Win95 ignores the access mask */
         if (name && *name == '\\') name++; /* win9x,ME ignores one (and only one) beginning backslash */
     }
-    if (!(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
+    if (!is_hkcr_key( hkey ) && !(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
 
     RtlInitAnsiString( &nameA, name );
     RtlInitAnsiString( &classA, class );
@@ -628,7 +995,12 @@ LSTATUS WINAPI DECLSPEC_HOTPATCH RegCreateKeyExA( HKEY hkey, LPCSTR name, DWORD 
     {
         if (!(status = RtlAnsiStringToUnicodeString( &classW, &classA, TRUE )))
         {
-            status = create_key( retkey, hkey, NtCurrentTeb()->StaticUnicodeString, options, access, &classW, dispos );
+            if (is_hkcr_key( hkey ))
+                status = create_hkcr_key( retkey, hkey, NtCurrentTeb()->StaticUnicodeString,
+                                          options, access, &classW, dispos );
+            else
+                status = create_key( retkey, hkey, NtCurrentTeb()->StaticUnicodeString,
+                                     options, access, &classW, dispos );
             RtlFreeUnicodeString( &classW );
         }
     }
@@ -658,9 +1030,11 @@ LSTATUS WINAPI DECLSPEC_HOTPATCH RegOpenKeyExW( HKEY hkey, LPCWSTR name, DWORD o
 
     if (!retkey) return ERROR_INVALID_PARAMETER;
     *retkey = NULL;
-    if (!(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
 
     RtlInitUnicodeString( &nameW, name );
+    if (is_hkcr_key( hkey )) return RtlNtStatusToDosError( open_hkcr_key( retkey, hkey, &nameW, options, access ) );
+    if (!(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
+
     return RtlNtStatusToDosError( open_key( retkey, hkey, &nameW, options, access, FALSE ) );
 }
 
@@ -705,14 +1079,15 @@ LSTATUS WINAPI DECLSPEC_HOTPATCH RegOpenKeyExA( HKEY hkey, LPCSTR name, DWORD op
         if (HandleToUlong(hkey) == HandleToUlong(HKEY_CLASSES_ROOT) && name && *name == '\\') name++;
     }
 
-    if (!(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
+    if (!is_hkcr_key( hkey ) && !(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
 
     RtlInitAnsiString( &nameA, name );
     if (!(status = RtlAnsiStringToUnicodeString( &NtCurrentTeb()->StaticUnicodeString,
                                                  &nameA, FALSE )))
     {
         UNICODE_STRING nameW = NtCurrentTeb()->StaticUnicodeString;
-        status = open_key( retkey, hkey, &nameW, options, access, FALSE );
+        if (is_hkcr_key( hkey )) status = open_hkcr_key( retkey, hkey, &nameW, options, access );
+        else status = open_key( retkey, hkey, &nameW, options, access, FALSE );
     }
     return RtlNtStatusToDosError( status );
 }
@@ -810,6 +1185,16 @@ LSTATUS WINAPI RegEnumKeyExW( HKEY hkey, DWORD index, LPWSTR name, LPDWORD name_
            name_len ? *name_len : 0, reserved, class, class_len, ft );
 
     if (reserved) return ERROR_INVALID_PARAMETER;
+    if (is_hkcr_key( hkey ))
+    {
+        LSTATUS ret;
+        HKEY key;
+
+        if ((status = get_hkcr_enum_key( hkey, FALSE, &index, &key ))) return RtlNtStatusToDosError( status );
+        ret = RegEnumKeyExW( key, index, name, name_len, reserved, class, class_len, ft );
+        close_hkcr_key( hkey, key );
+        return ret;
+    }
     if (!(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
 
     status = NtEnumerateKey( hkey, index, KeyNodeInformation,
@@ -874,6 +1259,16 @@ LSTATUS WINAPI RegEnumKeyExA( HKEY hkey, DWORD index, LPSTR name, LPDWORD name_l
            name_len ? *name_len : 0, reserved, class, class_len, ft );
 
     if (reserved) return ERROR_INVALID_PARAMETER;
+    if (is_hkcr_key( hkey ))
+    {
+        LSTATUS ret;
+        HKEY key;
+
+        if ((status = get_hkcr_enum_key( hkey, FALSE, &index, &key ))) return RtlNtStatusToDosError( status );
+        ret = RegEnumKeyExA( key, index, name, name_len, reserved, class, class_len, ft );
+        close_hkcr_key( hkey, key );
+        return ret;
+    }
     if (!(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
 
     status = NtEnumerateKey( hkey, index, KeyNodeInformation,
@@ -968,6 +1363,19 @@ LSTATUS WINAPI RegQueryInfoKeyW( HKEY hkey, LPWSTR class, LPDWORD class_len, LPD
            reserved, subkeys, max_subkey, values, max_value, max_data, security, modif );
 
     if (class && !class_len && is_version_nt()) return ERROR_INVALID_PARAMETER;
+    if (is_hkcr_key( hkey ))
+    {
+        LSTATUS ret;
+        HKEY keys[2];
+
+        if ((status = open_hkcr_keys( hkey, &keys[0], &keys[1], FALSE ))) return RtlNtStatusToDosError( status );
+        ret = RegQueryInfoKeyW( keys[0] ? keys[0] : keys[1], class, class_len, reserved, subkeys, max_subkey,
+                                max_class, values, max_value, max_data, security, modif );
+        if (!ret && keys[0] && keys[1])
+            ret = merge_hkcr_info( keys, subkeys, max_subkey, max_class, values, max_value, max_data );
+        close_hkcr_keys( hkey, keys[0], keys[1] );
+        return ret;
+    }
     if (!(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
 
     status = NtQueryKey( hkey, KeyFullInformation, buffer, sizeof(buffer), &total_size );
@@ -1058,6 +1466,19 @@ LSTATUS WINAPI RegQueryInfoKeyA( HKEY hkey, LPSTR class, LPDWORD class_len, LPDW
            reserved, subkeys, max_subkey, values, max_value, max_data, security, modif );
 
     if (class && !class_len && is_version_nt()) return ERROR_INVALID_PARAMETER;
+    if (is_hkcr_key( hkey ))
+    {
+        LSTATUS ret;
+        HKEY keys[2];
+
+        if ((status = open_hkcr_keys( hkey, &keys[0], &keys[1], FALSE ))) return RtlNtStatusToDosError( status );
+        ret = RegQueryInfoKeyA( keys[0] ? keys[0] : keys[1], class, class_len, reserved, subkeys, max_subkey,
+                                max_class, values, max_value, max_data, security, modif );
+        if (!ret && keys[0] && keys[1])
+            ret = merge_hkcr_info( keys, subkeys, max_subkey, max_class, values, max_value, max_data );
+        close_hkcr_keys( hkey, keys[0], keys[1] );
+        return ret;
+    }
     if (!(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
 
     status = NtQueryKey( hkey, KeyFullInformation, buffer, sizeof(buffer), &total_size );
@@ -1130,6 +1551,15 @@ LSTATUS WINAPI DECLSPEC_HOTPATCH RegCloseKey( HKEY hkey )
 {
     if (!hkey) return ERROR_INVALID_HANDLE;
     if (hkey >= (HKEY)0x80000000) return ERROR_SUCCESS;
+    if (is_hkcr_key( hkey ))
+    {
+        unsigned int i;
+
+        RtlEnterCriticalSection( &hkcr_enum_cs );
+        for (i = 0; i < ARRAY_SIZE(hkcr_enum_cache); i++)
+            if (hkcr_enum_cache[i].key == hkey) hkcr_enum_cache[i].key = NULL;
+        RtlLeaveCriticalSection( &hkcr_enum_cs );
+    }
     return RtlNtStatusToDosError( NtClose( hkey ) );
 }
 
@@ -1144,7 +1574,7 @@ LSTATUS WINAPI RegDeleteKeyExW( HKEY hkey, LPCWSTR name, REGSAM access, DWORD re
 
     if (!name) return ERROR_INVALID_PARAMETER;
 
-    if (!(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
+    if (!is_hkcr_key( hkey ) && !(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
 
     access &= KEY_WOW64_64KEY | KEY_WOW64_32KEY;
     if (!(ret = RegOpenKeyExW( hkey, name, 0, access | DELETE, &tmp )))
@@ -1167,7 +1597,7 @@ LSTATUS WINAPI RegDeleteKeyExA( HKEY hkey, LPCSTR name, REGSAM access, DWORD res
 
     if (!name) return ERROR_INVALID_PARAMETER;
 
-    if (!(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
+    if (!is_hkcr_key( hkey ) && !(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
 
     access &= KEY_WOW64_64KEY | KEY_WOW64_32KEY;
     if (!(ret = RegOpenKeyExA( hkey, name, 0, access | DELETE, &tmp )))
@@ -1222,10 +1652,10 @@ LSTATUS WINAPI DECLSPEC_HOTPATCH RegSetValueExW( HKEY hkey, LPCWSTR name, DWORD 
         if (str[count / sizeof(WCHAR) - 1] && !str[count / sizeof(WCHAR)])
             count += sizeof(WCHAR);
     }
-    if (!(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
+    if (!is_hkcr_key( hkey ) && !(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
 
     RtlInitUnicodeString( &nameW, name );
-    return RtlNtStatusToDosError( NtSetValueKey( hkey, &nameW, 0, type, data, count ) );
+    return RtlNtStatusToDosError( set_value_key( hkey, &nameW, type, data, count ) );
 }
 
 
@@ -1260,7 +1690,7 @@ LSTATUS WINAPI DECLSPEC_HOTPATCH RegSetValueExA( HKEY hkey, LPCSTR name, DWORD r
         if (data[count-1] && !data[count]) count++;
     }
 
-    if (!(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
+    if (!is_hkcr_key( hkey ) && !(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
 
     if (is_string( type )) /* need to convert to Unicode */
     {
@@ -1275,7 +1705,7 @@ LSTATUS WINAPI DECLSPEC_HOTPATCH RegSetValueExA( HKEY hkey, LPCSTR name, DWORD r
     RtlInitAnsiString( &nameA, name );
     if (!(status = RtlAnsiStringToUnicodeString( &nameW, &nameA, TRUE )))
     {
-        status = NtSetValueKey( hkey, &nameW, 0, type, data, count );
+        status = set_value_key( hkey, &nameW, type, data, count );
         RtlFreeUnicodeString( &nameW );
     }
     HeapFree( GetProcessHeap(), 0, dataW );
@@ -1652,6 +2082,17 @@ LSTATUS WINAPI DECLSPEC_HOTPATCH RegQueryValueExW( HKEY hkey, LPCWSTR name, LPDW
     if (is_perf_key( hkey ))
         return query_perf_data( name, type, data, count, TRUE );
 
+    if (is_hkcr_key( hkey ))
+    {
+        HKEY user, machine;
+        LSTATUS ret = ERROR_FILE_NOT_FOUND;
+
+        if ((status = open_hkcr_keys( hkey, &user, &machine, FALSE ))) return RtlNtStatusToDosError( status );
+        if (user) ret = RegQueryValueExW( user, name, reserved, type, data, count );
+        if (ret == ERROR_FILE_NOT_FOUND && machine) ret = RegQueryValueExW( machine, name, reserved, type, data, count );
+        close_hkcr_keys( hkey, user, machine );
+        return ret;
+    }
     if (!(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
 
     RtlInitUnicodeString( &name_str, name );
@@ -1742,6 +2183,17 @@ LSTATUS WINAPI DECLSPEC_HOTPATCH RegQueryValueExA( HKEY hkey, LPCSTR name, LPDWO
           hkey, debugstr_a(name), reserved, type, data, count, count ? *count : 0 );
 
     if ((data && !count) || reserved) return ERROR_INVALID_PARAMETER;
+    if (is_hkcr_key( hkey ))
+    {
+        HKEY user, machine;
+        LSTATUS ret = ERROR_FILE_NOT_FOUND;
+
+        if ((status = open_hkcr_keys( hkey, &user, &machine, FALSE ))) return RtlNtStatusToDosError( status );
+        if (user) ret = RegQueryValueExA( user, name, reserved, type, data, count );
+        if (ret == ERROR_FILE_NOT_FOUND && machine) ret = RegQueryValueExA( machine, name, reserved, type, data, count );
+        close_hkcr_keys( hkey, user, machine );
+        return ret;
+    }
     if (!(hkey = get_special_root_hkey( hkey )))
         return ERROR_INVALID_HANDLE;
 
@@ -2155,6 +2607,16 @@ LSTATUS WINAPI RegEnumValueW( HKEY hkey, DWORD index, LPWSTR value, LPDWORD val_
 
     if ((data && !count) || reserved || !value || !val_count)
         return ERROR_INVALID_PARAMETER;
+    if (is_hkcr_key( hkey ))
+    {
+        LSTATUS ret;
+        HKEY key;
+
+        if ((status = get_hkcr_enum_key( hkey, TRUE, &index, &key ))) return RtlNtStatusToDosError( status );
+        ret = RegEnumValueW( key, index, value, val_count, reserved, type, data, count );
+        close_hkcr_key( hkey, key );
+        return ret;
+    }
     if (!(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
 
     total_size = info_size + (MAX_PATH + 1) * sizeof(WCHAR);
@@ -2232,6 +2694,16 @@ LSTATUS WINAPI RegEnumValueA( HKEY hkey, DWORD index, LPSTR value, LPDWORD val_c
 
     if ((data && !count) || reserved || !value || !val_count)
         return ERROR_INVALID_PARAMETER;
+    if (is_hkcr_key( hkey ))
+    {
+        LSTATUS ret;
+        HKEY key;
+
+        if ((status = get_hkcr_enum_key( hkey, TRUE, &index, &key ))) return RtlNtStatusToDosError( status );
+        ret = RegEnumValueA( key, index, value, val_count, reserved, type, data, count );
+        close_hkcr_key( hkey, key );
+        return ret;
+    }
     if (!(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
 
     total_size = info_size + (MAX_PATH + 1) * sizeof(WCHAR);
