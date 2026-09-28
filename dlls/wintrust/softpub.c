@@ -595,6 +595,57 @@ error:
     return err;
 }
 
+static DWORD SOFTPUB_LoadBlobMessage(CRYPT_PROVIDER_DATA *data)
+{
+    const WINTRUST_BLOB_INFO *blob = data->pWintrustData->pBlob;
+    SIP_SUBJECTINFO *subject;
+    MS_ADDINFO_BLOB *info;
+    DWORD err = ERROR_SUCCESS, size;
+    BYTE *buf;
+
+    if (!blob)
+        return ERROR_INVALID_PARAMETER;
+    GetSystemTimeAsFileTime(&data->sftSystemTime);
+    data->pPDSip->gSubject = blob->gSubject;
+    err = SOFTPUB_GetSIP(data);
+    if (err)
+        return err;
+
+    /* The blob info is freed along with the subject info. */
+    subject = data->psPfns->pfnAlloc(sizeof(*subject) + sizeof(*info));
+    if (!subject)
+        return ERROR_OUTOFMEMORY;
+    info = (MS_ADDINFO_BLOB *)(subject + 1);
+    info->cbStruct = sizeof(*info);
+    info->cbMemObject = blob->cbMemObject;
+    info->pbMemObject = blob->pbMemObject;
+    info->cbMemSignedMsg = blob->cbMemSignedMsg;
+    info->pbMemSignedMsg = blob->pbMemSignedMsg;
+    subject->cbSize = sizeof(*subject);
+    subject->pgSubjectType = &data->pPDSip->gSubject;
+    subject->hProv = data->hProv;
+    subject->dwUnionChoice = MSSIP_ADDINFO_BLOB;
+    subject->psBlob = info;
+    data->pPDSip->psSipSubjectInfo = subject;
+
+    if (!data->pPDSip->pSip->pfGet(subject, &data->dwEncoding, 0, &size, NULL))
+        return TRUST_E_NOSIGNATURE;
+    buf = data->psPfns->pfnAlloc(size);
+    if (!buf)
+        return ERROR_OUTOFMEMORY;
+    if (!data->pPDSip->pSip->pfGet(subject, &data->dwEncoding, 0, &size, buf) ||
+     !(data->hMsg = CryptMsgOpenToDecode(data->dwEncoding, 0, 0, data->hProv, NULL, NULL)) ||
+     !CryptMsgUpdate(data->hMsg, buf, size, TRUE))
+        err = GetLastError();
+    data->psPfns->pfnFree(buf);
+    if (!err)
+        err = SOFTPUB_CreateStoreFromMessage(data);
+    if (!err)
+        err = SOFTPUB_DecodeInnerContent(data);
+    TRACE("returning %ld\n", err);
+    return err;
+}
+
 HRESULT WINAPI SoftpubLoadMessage(CRYPT_PROVIDER_DATA *data)
 {
     DWORD err = ERROR_SUCCESS;
@@ -614,6 +665,9 @@ HRESULT WINAPI SoftpubLoadMessage(CRYPT_PROVIDER_DATA *data)
         break;
     case WTD_CHOICE_CATALOG:
         err = SOFTPUB_LoadCatalogMessage(data);
+        break;
+    case WTD_CHOICE_BLOB:
+        err = SOFTPUB_LoadBlobMessage(data);
         break;
     default:
         FIXME("unimplemented for %ld\n", data->pWintrustData->dwUnionChoice);
