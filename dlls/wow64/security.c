@@ -204,11 +204,32 @@ NTSTATUS WINAPI wow64_NtCreateLowBoxToken( UINT *args )
     ULONG handle_count = get_ulong( &args );
     ULONG *handles32 = get_ptr( &args );
 
-    FIXME( "%p %p %lx %p %p %lu %p %lu %p: stub\n",
-           handle_ptr, token, access, attr32, sid, count, capabilities32, handle_count, handles32 );
+    struct object_attr64 attr;
+    SID_AND_ATTRIBUTES *capabilities = NULL;
+    HANDLE handle = 0, *handles = NULL;
+    NTSTATUS status;
+    ULONG i;
+
+    if (count)
+    {
+        capabilities = Wow64AllocateTemp( count * sizeof(*capabilities) );
+        for (i = 0; i < count; i++)
+        {
+            capabilities[i].Sid = ULongToPtr( capabilities32[i].Sid );
+            capabilities[i].Attributes = capabilities32[i].Attributes;
+        }
+    }
+    if (handle_count)
+    {
+        handles = Wow64AllocateTemp( handle_count * sizeof(*handles) );
+        for (i = 0; i < handle_count; i++) handles[i] = LongToHandle( handles32[i] );
+    }
 
     *handle_ptr = 0;
-    return STATUS_SUCCESS;
+    status = NtCreateLowBoxToken( &handle, token, access, objattr_32to64( &attr, attr32 ), sid,
+                                  count, capabilities, handle_count, handles );
+    put_handle( handle_ptr, handle );
+    return status;
 }
 
 
