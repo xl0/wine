@@ -1163,12 +1163,17 @@ HKLM,Software\Classes\Wow6432Node\AppId,"SymbolicLinkValue",0x60000,"\Registry\M
 HKLM,Software\Classes\Wow6432Node\Protocols,"SymbolicLinkValue",0x60000,"\Registry\Machine\Software\Classes\Protocols"
 HKLM,Software\Classes\Wow6432Node\TypeLib,"SymbolicLinkValue",0x60000,"\Registry\Machine\Software\Classes\TypeLib"
 HKLM,Software\Wow6432Node\Classes,"SymbolicLinkValue",0x60000,"\Registry\Machine\Software\Classes\Wow6432Node"
-; 32-bit redirected keys under HKLM\Software\Classes
+; 32-bit redirected keys under HKLM and HKCU\Software\Classes
 HKLM,Software\Classes\Wow6432Node\CLSID,,16
 HKLM,Software\Classes\Wow6432Node\DirectShow,,16
 HKLM,Software\Classes\Wow6432Node\Interface,,16
 HKLM,Software\Classes\Wow6432Node\Media Type,,16
 HKLM,Software\Classes\Wow6432Node\MediaFoundation,,16
+HKCU,Software\Classes\Wow6432Node\CLSID,,16
+HKCU,Software\Classes\Wow6432Node\DirectShow,,16
+HKCU,Software\Classes\Wow6432Node\Interface,,16
+HKCU,Software\Classes\Wow6432Node\Media Type,,16
+HKCU,Software\Classes\Wow6432Node\MediaFoundation,,16
 ; symlinks for shared keys under HKLM\Software
 HKLM,Software\Wow6432Node\Clients,"SymbolicLinkValue",0x60000,"\Registry\Machine\Software\Clients"
 HKLM,Software\Wow6432Node\Microsoft\Cryptography\Calais\Current,"SymbolicLinkValue",0x60000,"\Registry\Machine\Software\Microsoft\Cryptography\Calais\Current"

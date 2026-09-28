@@ -2197,7 +2197,11 @@ void init_registry(void)
             key->flags |= KEY_WOWSHARE;
             release_object( key );
         }
-        /* FIXME: handle HKCU too */
+        if ((key = create_key_recursive( hkcu, name, current_time )))
+        {
+            key->flags |= KEY_WOWSHARE;
+            release_object( key );
+        }
     }
 
     if ((key = create_key_recursive( hklm, perflib_name, current_time )))

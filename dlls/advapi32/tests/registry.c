@@ -4086,6 +4086,44 @@ cleanup:
     RegCloseKey( hkcr );
 }
 
+static void test_classesroot_wow64(void)
+{
+    static const char clsid[] = "Software\\Classes\\CLSID\\{0badc0de-0000-0000-0000-000000000028}";
+    char buffer[16];
+    LONG res, size;
+    HKEY key;
+
+    if (!has_wow64())
+    {
+        skip("no WoW64\n");
+        return;
+    }
+    res = RegCreateKeyExA( HKEY_LOCAL_MACHINE, clsid, 0, NULL, 0, KEY_SET_VALUE | KEY_WOW64_32KEY, NULL, &key, NULL );
+    if (res == ERROR_ACCESS_DENIED)
+    {
+        skip("not enough privileges to add a system class\n");
+        return;
+    }
+    ok(res == ERROR_SUCCESS, "RegCreateKeyExA failed: %ld\n", res);
+    RegSetValueExA( key, NULL, 0, REG_SZ, (const BYTE *)"machine32", 10 );
+    RegCloseKey( key );
+    RegCreateKeyExA( HKEY_CURRENT_USER, clsid, 0, NULL, 0, KEY_SET_VALUE | KEY_WOW64_64KEY, NULL, &key, NULL );
+    RegSetValueExA( key, NULL, 0, REG_SZ, (const BYTE *)"user64", 7 );
+    RegCloseKey( key );
+
+    /* the 32-bit view of HKCR\CLSID doesn't see 64-bit per-user classes */
+    res = RegOpenKeyExA( HKEY_CLASSES_ROOT, "CLSID", 0, KEY_READ | KEY_WOW64_32KEY, &key );
+    ok(res == ERROR_SUCCESS, "RegOpenKeyExA failed: %ld\n", res);
+    size = sizeof(buffer);
+    res = RegQueryValueA( key, "{0badc0de-0000-0000-0000-000000000028}", buffer, &size );
+    ok(res == ERROR_SUCCESS, "RegQueryValueA failed: %ld\n", res);
+    ok(!strcmp( buffer, "machine32" ), "got %s\n", buffer);
+    RegCloseKey( key );
+
+    RegDeleteKeyExA( HKEY_CURRENT_USER, clsid, KEY_WOW64_64KEY, 0 );
+    RegDeleteKeyExA( HKEY_LOCAL_MACHINE, clsid, KEY_WOW64_32KEY, 0 );
+}
+
 static void test_classesroot_mask(void)
 {
     HKEY hkey;
@@ -5410,6 +5448,7 @@ START_TEST(registry)
     test_classesroot();
     test_classesroot_enum();
     test_classesroot_mask();
+    test_classesroot_wow64();
     test_reg_load_key();
     test_reg_load_app_key();
     test_reg_load_key_hive();
