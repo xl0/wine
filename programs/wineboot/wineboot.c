@@ -1477,7 +1477,10 @@ static BOOL start_services_process(void)
     OpenProcessToken( GetCurrentProcess(), TOKEN_DUPLICATE, &token );
     ret = DuplicateTokenEx( token, TOKEN_ALL_ACCESS, NULL, SecurityImpersonation, TokenPrimary, &services_token );
     CloseHandle( token );
-    if (!ret || !SetTokenInformation( services_token, TokenSessionId, &session_id, sizeof(session_id) ))
+    if (ret) ret = SetTokenInformation( services_token, TokenSessionId, &session_id, sizeof(session_id) );
+    /* don't leak SeTcb to our other children, services.exe keeps it enabled */
+    RtlAdjustPrivilege( SE_TCB_PRIVILEGE, enabled, FALSE, &enabled );
+    if (!ret)
     {
         WINE_ERR("Couldn't create a session 0 token: error %lu\n", GetLastError());
         return FALSE;
