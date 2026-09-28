@@ -3024,6 +3024,19 @@ static void find_element_with_error(PCCERT_CHAIN_CONTEXT chain, DWORD error,
             }
 }
 
+static void find_chain_with_error(PCCERT_CHAIN_CONTEXT chain, DWORD error,
+ LONG *iChain)
+{
+    DWORD i;
+
+    for (i = 0; i < chain->cChain; i++)
+        if (chain->rgpChain[i]->TrustStatus.dwErrorStatus & error)
+        {
+            *iChain = i;
+            return;
+        }
+}
+
 static BOOL find_chain_first_element_with_error(PCCERT_CHAIN_CONTEXT chain, DWORD error, LONG *chain_idx,
                                                 LONG *element_idx)
 {
@@ -3076,6 +3089,14 @@ static BOOL WINAPI verify_base_policy(LPCSTR szPolicyOID,
         find_element_with_error(pChainContext,
          CERT_TRUST_IS_UNTRUSTED_ROOT, &pPolicyStatus->lChainIndex,
          &pPolicyStatus->lElementIndex);
+    }
+    if (!pPolicyStatus->dwError &&
+     pChainContext->TrustStatus.dwErrorStatus & CERT_TRUST_IS_PARTIAL_CHAIN &&
+     !(checks & CERT_CHAIN_POLICY_ALLOW_UNKNOWN_CA_FLAG))
+    {
+        pPolicyStatus->dwError = CERT_E_CHAINING;
+        find_chain_with_error(pChainContext, CERT_TRUST_IS_PARTIAL_CHAIN,
+         &pPolicyStatus->lChainIndex);
     }
     if (!pPolicyStatus->dwError &&
      pChainContext->TrustStatus.dwErrorStatus & CERT_TRUST_IS_NOT_TIME_VALID &&
@@ -3532,6 +3553,15 @@ static BOOL WINAPI verify_ssl_policy(LPCSTR szPolicyOID,
         find_element_with_error(pChainContext,
          CERT_TRUST_IS_UNTRUSTED_ROOT, &pPolicyStatus->lChainIndex,
          &pPolicyStatus->lElementIndex);
+    }
+    else if (pChainContext->TrustStatus.dwErrorStatus &
+     CERT_TRUST_IS_PARTIAL_CHAIN &&
+     !(checks & SECURITY_FLAG_IGNORE_UNKNOWN_CA) &&
+     !(baseChecks & CERT_CHAIN_POLICY_ALLOW_UNKNOWN_CA_FLAG))
+    {
+        pPolicyStatus->dwError = CERT_E_UNTRUSTEDROOT;
+        find_chain_with_error(pChainContext, CERT_TRUST_IS_PARTIAL_CHAIN,
+         &pPolicyStatus->lChainIndex);
     }
     else if (pChainContext->TrustStatus.dwErrorStatus & CERT_TRUST_IS_CYCLIC)
     {

@@ -4738,6 +4738,21 @@ static const ChainPolicyCheck invalidUsageBasePolicyCheck = {
  { 0, CERT_E_WRONG_USAGE, 0, 1, NULL}, NULL, 0
 };
 
+/* Chains without their root, i.e. partial chains */
+static const ChainPolicyCheck partialPolicyCheck[] = {
+ { { ARRAY_SIZE(chain0) - 1, chain0 + 1 },
+   { 0, CERT_E_CHAINING, 0, -1, NULL }, NULL, 0 },
+ { { ARRAY_SIZE(chain18) - 1, chain18 + 1 },
+   { 0, CERT_E_CHAINING, 0, -1, NULL }, NULL, 0 },
+};
+
+static const ChainPolicyCheck ignoredPartialPolicyCheck[] = {
+ { { ARRAY_SIZE(chain0) - 1, chain0 + 1 },
+   { 0, CERT_E_EXPIRED, 0, 0, NULL }, NULL, 0 },
+ { { ARRAY_SIZE(chain18) - 1, chain18 + 1 },
+   { 0, CERT_E_WRONG_USAGE, 0, 1, NULL }, NULL, 0 },
+};
+
 static const ChainPolicyCheck sslPolicyCheck[] = {
  { { ARRAY_SIZE(chain0), chain0 },
    { 0, CERT_E_UNTRUSTEDROOT, 0, 1, NULL }, NULL, 0 },
@@ -4779,6 +4794,13 @@ static const ChainPolicyCheck sslPolicyCheck[] = {
    { 0, CERT_E_UNTRUSTEDROOT, 0, 2, NULL }, NULL, 0 },
  { { ARRAY_SIZE(selfSignedChain), selfSignedChain },
    { 0, CERT_E_UNTRUSTEDROOT, 0, 0, NULL }, NULL, 0 },
+};
+
+static const ChainPolicyCheck sslPartialPolicyCheck[] = {
+ { { ARRAY_SIZE(chain0) - 1, chain0 + 1 },
+   { 0, CERT_E_UNTRUSTEDROOT, 0, -1, NULL }, NULL, 0 },
+ { { ARRAY_SIZE(chain18) - 1, chain18 + 1 },
+   { 0, CERT_E_UNTRUSTEDROOT, 0, -1, NULL }, NULL, 0 },
 };
 
 static const ChainPolicyCheck ignoredUnknownCAPolicyCheck = {
@@ -5096,6 +5118,14 @@ static void check_base_policy(void)
     policyPara.dwFlags = CERT_CHAIN_POLICY_ALLOW_UNKNOWN_CA_FLAG;
     CHECK_CHAIN_POLICY_STATUS(CERT_CHAIN_POLICY_BASE, NULL,
      invalidExtensionPolicyCheck, &oct2007, &policyPara);
+    CHECK_CHAIN_POLICY_STATUS_ARRAY(CERT_CHAIN_POLICY_BASE, NULL,
+     partialPolicyCheck, &oct2007, NULL);
+    policyPara.dwFlags = CERT_CHAIN_POLICY_IGNORE_ALL_NOT_TIME_VALID_FLAGS;
+    CHECK_CHAIN_POLICY_STATUS_ARRAY(CERT_CHAIN_POLICY_BASE, NULL,
+     partialPolicyCheck, &oct2007, &policyPara);
+    policyPara.dwFlags = CERT_CHAIN_POLICY_ALLOW_UNKNOWN_CA_FLAG;
+    CHECK_CHAIN_POLICY_STATUS_ARRAY(CERT_CHAIN_POLICY_BASE, NULL,
+     ignoredPartialPolicyCheck, &oct2007, &policyPara);
 }
 
 static void check_authenticode_policy(void)
@@ -5120,12 +5150,17 @@ static void check_authenticode_policy(void)
     policyPara.dwFlags |= CERT_CHAIN_POLICY_IGNORE_NOT_TIME_VALID_FLAG;
     CHECK_CHAIN_POLICY_STATUS(CERT_CHAIN_POLICY_AUTHENTICODE, NULL,
      ignoredInvalidDateBasePolicyCheck, &oct2007, &policyPara);
+    CHECK_CHAIN_POLICY_STATUS_ARRAY(CERT_CHAIN_POLICY_AUTHENTICODE, NULL,
+     partialPolicyCheck, &oct2007, NULL);
 }
 
 static void check_ssl_policy(void)
 {
     CERT_CHAIN_POLICY_PARA policyPara = { 0 };
     SSL_EXTRA_CERT_CHAIN_POLICY_PARA sslPolicyPara = { { 0 } };
+    CERT_CHAIN_POLICY_PARA partialPara = { sizeof(partialPara) };
+    SSL_EXTRA_CERT_CHAIN_POLICY_PARA partialSslPara = { { sizeof(partialSslPara) },
+     AUTHTYPE_SERVER, SECURITY_FLAG_IGNORE_UNKNOWN_CA };
     HCERTSTORE testRoot;
     CERT_CHAIN_ENGINE_CONFIG engineConfig = { sizeof(engineConfig), 0 };
     HCERTCHAINENGINE engine;
@@ -5133,6 +5168,15 @@ static void check_ssl_policy(void)
     /* Check ssl policy with no parameter */
     CHECK_CHAIN_POLICY_STATUS_ARRAY(CERT_CHAIN_POLICY_SSL, NULL, sslPolicyCheck,
      &oct2007, NULL);
+    CHECK_CHAIN_POLICY_STATUS_ARRAY(CERT_CHAIN_POLICY_SSL, NULL,
+     sslPartialPolicyCheck, &oct2007, NULL);
+    partialPara.dwFlags = CERT_CHAIN_POLICY_ALLOW_UNKNOWN_CA_FLAG;
+    CHECK_CHAIN_POLICY_STATUS_ARRAY(CERT_CHAIN_POLICY_SSL, NULL,
+     ignoredPartialPolicyCheck, &oct2007, &partialPara);
+    partialPara.dwFlags = 0;
+    partialPara.pvExtraPolicyPara = &partialSslPara;
+    CHECK_CHAIN_POLICY_STATUS_ARRAY(CERT_CHAIN_POLICY_SSL, NULL,
+     ignoredPartialPolicyCheck, &oct2007, &partialPara);
     /* Check again with a policy parameter that specifies nothing */
     CHECK_CHAIN_POLICY_STATUS_ARRAY(CERT_CHAIN_POLICY_SSL, NULL, sslPolicyCheck,
      &oct2007, &policyPara);
@@ -5207,8 +5251,10 @@ static void check_ssl_policy(void)
 
     /* Check again with the openssl cert, which has a wildcard in its name,
      * with various combinations of matching and non-matching names.
+     * Its root may be missing, making the chain partial, so ignore that.
      * With "a.openssl.org": match
      */
+    sslPolicyPara.fdwChecks = SECURITY_FLAG_IGNORE_UNKNOWN_CA;
     sslPolicyPara.pwszServerName = (WCHAR *)L"a.openssl.org";
     CHECK_CHAIN_POLICY_STATUS(CERT_CHAIN_POLICY_SSL, NULL,
      opensslPolicyCheckWithMatchingName, &oct2009, &policyPara);
@@ -5224,6 +5270,7 @@ static void check_ssl_policy(void)
     sslPolicyPara.pwszServerName = (WCHAR *)L"a.b.openssl.org";
     CHECK_CHAIN_POLICY_STATUS(CERT_CHAIN_POLICY_SSL, NULL,
      opensslPolicyCheckWithoutMatchingName, &oct2009, &policyPara);
+    sslPolicyPara.fdwChecks = 0;
     /* Check again with the cs.stanford.edu, which has both cs.stanford.edu
      * and www.cs.stanford.edu in its subject alternative name.
      * With "cs.stanford.edu": match
