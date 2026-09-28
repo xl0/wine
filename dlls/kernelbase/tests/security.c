@@ -31,6 +31,9 @@
 static BOOL (WINAPI *pDeriveCapabilitySidsFromName)(const WCHAR *, PSID **, DWORD *, PSID **, DWORD *);
 
 static NTSTATUS (WINAPI *pRtlDeriveCapabilitySidsFromName)(UNICODE_STRING *, PSID, PSID);
+static BOOL (WINAPI *pCreateAppContainerToken)(HANDLE, SECURITY_CAPABILITIES *, HANDLE *);
+static NTSTATUS (WINAPI *pNtCreateLowBoxToken)(HANDLE *, HANDLE, ACCESS_MASK, OBJECT_ATTRIBUTES *, PSID, ULONG,
+                                               SID_AND_ATTRIBUTES *, ULONG, HANDLE *);
 
 static void test_DeriveCapabilitySidsFromName(void)
 {
@@ -85,15 +88,137 @@ static void test_DeriveCapabilitySidsFromName(void)
     LocalFree(sids);
 }
 
+#define check_lowbox_token(a, b, c) check_lowbox_token_(__LINE__, a, b, c)
+static void check_lowbox_token_(unsigned int line, HANDLE token, ACCESS_MASK access, PSID package_sid)
+{
+    char buffer[256];
+    TOKEN_APPCONTAINER_INFORMATION *container = (TOKEN_APPCONTAINER_INFORMATION *)buffer;
+    TOKEN_MANDATORY_LABEL *label = (TOKEN_MANDATORY_LABEL *)buffer;
+    OBJECT_BASIC_INFORMATION info;
+    TOKEN_TYPE type;
+    DWORD size, value;
+    NTSTATUS status;
+    BOOL ret;
+
+    status = NtQueryObject(token, ObjectBasicInformation, &info, sizeof(info), NULL);
+    ok_(__FILE__, line)(!status, "got %#lx.\n", status);
+    ok_(__FILE__, line)(info.GrantedAccess == access, "got access %#lx.\n", info.GrantedAccess);
+
+    ret = GetTokenInformation(token, TokenType, &type, sizeof(type), &size);
+    ok_(__FILE__, line)(ret, "got error %lu.\n", GetLastError());
+    ok_(__FILE__, line)(type == TokenPrimary, "got type %u.\n", type);
+
+    value = 0xdeadbeef;
+    ret = GetTokenInformation(token, TokenIsAppContainer, &value, sizeof(value), &size);
+    ok_(__FILE__, line)(ret, "got error %lu.\n", GetLastError());
+    todo_wine ok_(__FILE__, line)(value == 1, "got %lu.\n", value);
+
+    ret = GetTokenInformation(token, TokenAppContainerSid, buffer, sizeof(buffer), &size);
+    ok_(__FILE__, line)(ret, "got error %lu.\n", GetLastError());
+    todo_wine ok_(__FILE__, line)(container->TokenAppContainer && EqualSid(container->TokenAppContainer, package_sid),
+                                  "wrong app container SID.\n");
+
+    ret = GetTokenInformation(token, TokenIntegrityLevel, buffer, sizeof(buffer), &size);
+    ok_(__FILE__, line)(ret, "got error %lu.\n", GetLastError());
+    todo_wine ok_(__FILE__, line)(*GetSidSubAuthority(label->Label.Sid, 0) == SECURITY_MANDATORY_LOW_RID,
+                                  "got integrity %#lx.\n", *GetSidSubAuthority(label->Label.Sid, 0));
+}
+
+static void test_CreateAppContainerToken(void)
+{
+    SID_IDENTIFIER_AUTHORITY package_authority = {SECURITY_APP_PACKAGE_AUTHORITY};
+    HANDLE process_token, token, query_token, impersonation_token;
+    SID_AND_ATTRIBUTES capability;
+    SECURITY_CAPABILITIES caps;
+    PSID package_sid, capability_sid;
+    NTSTATUS status;
+    BOOL ret;
+
+    if (!pCreateAppContainerToken)
+    {
+        win_skip("CreateAppContainerToken is not available.\n");
+        return;
+    }
+
+    AllocateAndInitializeSid(&package_authority, SECURITY_APP_PACKAGE_RID_COUNT, SECURITY_APP_PACKAGE_BASE_RID,
+                             1, 2, 3, 4, 5, 6, 7, &package_sid);
+    AllocateAndInitializeSid(&package_authority, SECURITY_BUILTIN_CAPABILITY_RID_COUNT,
+                             SECURITY_CAPABILITY_BASE_RID, 1 /* internetClient */, 0, 0, 0, 0, 0, 0,
+                             &capability_sid);
+    capability.Sid = capability_sid;
+    capability.Attributes = SE_GROUP_ENABLED;
+
+    ret = OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &process_token);
+    ok(ret, "got error %lu.\n", GetLastError());
+
+    status = pNtCreateLowBoxToken(&token, process_token, TOKEN_ALL_ACCESS, NULL, package_sid, 1, &capability, 0, NULL);
+    ok(!status, "got %#lx.\n", status);
+    check_lowbox_token(token, TOKEN_ALL_ACCESS, package_sid);
+
+    CloseHandle(token);
+
+    status = pNtCreateLowBoxToken(&query_token, process_token, TOKEN_QUERY, NULL, package_sid, 0, NULL, 0, NULL);
+    ok(!status, "got %#lx.\n", status);
+    check_lowbox_token(query_token, TOKEN_QUERY, package_sid);
+
+    status = pNtCreateLowBoxToken(&token, query_token, TOKEN_QUERY, NULL, package_sid, 0, NULL, 0, NULL);
+    ok(status == STATUS_ACCESS_DENIED, "got %#lx.\n", status);
+    CloseHandle(query_token);
+
+    status = pNtCreateLowBoxToken(&token, process_token, TOKEN_ALL_ACCESS, NULL, NULL, 0, NULL, 0, NULL);
+    ok(status == STATUS_INVALID_PARAMETER, "got %#lx.\n", status);
+    status = pNtCreateLowBoxToken(&token, process_token, TOKEN_ALL_ACCESS, NULL, capability_sid, 0, NULL, 0, NULL);
+    ok(status == STATUS_INVALID_PARAMETER, "got %#lx.\n", status);
+
+    ret = DuplicateTokenEx(process_token, TOKEN_ALL_ACCESS, NULL, SecurityImpersonation, TokenImpersonation,
+                           &impersonation_token);
+    ok(ret, "got error %lu.\n", GetLastError());
+    status = pNtCreateLowBoxToken(&token, impersonation_token, TOKEN_ALL_ACCESS, NULL, package_sid, 0, NULL, 0, NULL);
+    ok(!status, "got %#lx.\n", status);
+    check_lowbox_token(token, TOKEN_ALL_ACCESS, package_sid);
+    CloseHandle(token);
+    CloseHandle(impersonation_token);
+
+    caps.AppContainerSid = package_sid;
+    caps.Capabilities = &capability;
+    caps.CapabilityCount = 1;
+    caps.Reserved = 0;
+
+    SetLastError(0xdeadbeef);
+    ret = pCreateAppContainerToken(process_token, &caps, &token);
+    ok(ret && GetLastError() == 0xdeadbeef, "got ret %d, error %lu.\n", ret, GetLastError());
+    check_lowbox_token(token, TOKEN_ALL_ACCESS, package_sid);
+    CloseHandle(token);
+
+    SetLastError(0xdeadbeef);
+    ret = pCreateAppContainerToken(NULL, &caps, &token);
+    ok(ret && GetLastError() == 0xdeadbeef, "got ret %d, error %lu.\n", ret, GetLastError());
+    check_lowbox_token(token, TOKEN_ALL_ACCESS, package_sid);
+    CloseHandle(token);
+
+    caps.AppContainerSid = capability_sid;
+    SetLastError(0xdeadbeef);
+    ret = pCreateAppContainerToken(process_token, &caps, &token);
+    ok(!ret, "got ret %d.\n", ret);
+    todo_wine ok(GetLastError() == ERROR_NOT_APPCONTAINER, "got error %lu.\n", GetLastError());
+
+    CloseHandle(process_token);
+    FreeSid(package_sid);
+    FreeSid(capability_sid);
+}
+
 START_TEST(security)
 {
     HMODULE hmod;
 
     hmod = LoadLibraryA("kernelbase.dll");
     pDeriveCapabilitySidsFromName = (void *)GetProcAddress(hmod, "DeriveCapabilitySidsFromName");
+    pCreateAppContainerToken = (void *)GetProcAddress(hmod, "CreateAppContainerToken");
 
     hmod = LoadLibraryA("ntdll.dll");
     pRtlDeriveCapabilitySidsFromName = (void *)GetProcAddress(hmod, "RtlDeriveCapabilitySidsFromName");
+    pNtCreateLowBoxToken = (void *)GetProcAddress(hmod, "NtCreateLowBoxToken");
 
     test_DeriveCapabilitySidsFromName();
+    test_CreateAppContainerToken();
 }
