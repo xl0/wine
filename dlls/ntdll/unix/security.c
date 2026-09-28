@@ -750,12 +750,18 @@ NTSTATUS WINAPI NtCreateLowBoxToken( HANDLE *token_handle, HANDLE token, ACCESS_
                                      OBJECT_ATTRIBUTES *attr, SID *sid, ULONG count,
                                      SID_AND_ATTRIBUTES *capabilities, ULONG handle_count, HANDLE *handle )
 {
-    FIXME("(%p, %p, %x, %p, %p, %u, %p, %u, %p): stub\n",
+    static const SID_IDENTIFIER_AUTHORITY package_authority = {SECURITY_APP_PACKAGE_AUTHORITY};
+
+    FIXME("(%p, %p, %x, %p, %p, %u, %p, %u, %p): semi-stub\n",
           token_handle, token, access, attr, sid, count, capabilities, handle_count, handle );
 
-    /* we need to return a NULL handle since later it will be passed to NtClose and that must not fail */
-    *token_handle = NULL;
-    return STATUS_SUCCESS;
+    if (!sid || memcmp( &sid->IdentifierAuthority, &package_authority, sizeof(package_authority) ) ||
+        sid->SubAuthorityCount != SECURITY_APP_PACKAGE_RID_COUNT ||
+        sid->SubAuthority[0] != SECURITY_APP_PACKAGE_BASE_RID)
+        return STATUS_INVALID_PARAMETER;
+
+    /* the app container and its capabilities are not stored, the lowbox token is a primary copy of the token */
+    return NtDuplicateToken( token, access, attr, FALSE, TokenPrimary, token_handle );
 }
 
 
