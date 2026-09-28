@@ -1173,6 +1173,7 @@ BOOL WINAPI RemoveWindowSubclass(HWND hWnd, SUBCLASSPROC pfnSubclass, UINT_PTR u
    LPSUBCLASS_INFO stack;
    LPSUBCLASSPROCS prevproc = NULL;
    LPSUBCLASSPROCS proc;
+   struct subclass_frame *frame;
    BOOL ret = FALSE;
    DWORD pid, tid;
 
@@ -1197,9 +1198,10 @@ BOOL WINAPI RemoveWindowSubclass(HWND hWnd, SUBCLASSPROC pfnSubclass, UINT_PTR u
          else
             prevproc->next = proc->next;
           
-         if (stack->stackpos == proc)
-            stack->stackpos = stack->stackpos->next;
-            
+         for (frame = stack->frame; frame; frame = frame->prev)
+            if (frame->next == proc)
+               frame->next = proc->next;
+
          Free (proc);
          ret = TRUE;
          break;
@@ -1209,7 +1211,7 @@ BOOL WINAPI RemoveWindowSubclass(HWND hWnd, SUBCLASSPROC pfnSubclass, UINT_PTR u
    }
    
    /* another thread leaves the cleanup to the next message */
-   if (!stack->SubclassProcs && !stack->running && tid == GetCurrentThreadId ()) {
+   if (!stack->SubclassProcs && !stack->frame && tid == GetCurrentThreadId ()) {
       TRACE("Last Subclass removed, cleaning up\n");
       /* clean up our heap and reset the original window procedure */
       if ((WNDPROC)GetWindowLongPtrW (hWnd, GWLP_WNDPROC) != COMCTL32_SubclassProc)
@@ -1234,7 +1236,7 @@ BOOL WINAPI RemoveWindowSubclass(HWND hWnd, SUBCLASSPROC pfnSubclass, UINT_PTR u
 static LRESULT WINAPI COMCTL32_SubclassProc (HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
    LPSUBCLASS_INFO stack;
-   LPSUBCLASSPROCS proc;
+   struct subclass_frame frame;
    LRESULT ret;
 
    TRACE("%p, %#x, %#Ix, %#Ix\n", hWnd, uMsg, wParam, lParam);
@@ -1244,16 +1246,15 @@ static LRESULT WINAPI COMCTL32_SubclassProc (HWND hWnd, UINT uMsg, WPARAM wParam
       ERR ("Our sub classing stack got erased for %p!! Nothing we can do\n", hWnd);
       return 0;
    }
-    
-   /* Save our old stackpos to properly handle nested messages */
-   proc = stack->stackpos;
-   stack->stackpos = stack->SubclassProcs;
-   stack->running++;
+
+   /* Each call keeps its own position to properly handle nested messages */
+   frame.next = stack->SubclassProcs;
+   frame.prev = stack->frame;
+   stack->frame = &frame;
    ret = DefSubclassProc(hWnd, uMsg, wParam, lParam);
-   stack->running--;
-   stack->stackpos = proc;
-    
-   if (!stack->SubclassProcs && !stack->running) {
+   stack->frame = frame.prev;
+
+   if (!stack->SubclassProcs && !stack->frame) {
       TRACE("Last Subclass removed, cleaning up\n");
       /* clean up our heap and reset the original window procedure */
       if (stack->is_unicode)
@@ -1298,11 +1299,11 @@ LRESULT WINAPI DefSubclassProc (HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
 
    /* If we are at the end of stack then we have to call the original
     * window procedure */
-   if (!stack->stackpos) {
+   if (!stack->frame || !stack->frame->next) {
       ret = CallWindowProcW (stack->origproc, hWnd, uMsg, wParam, lParam);
    } else {
-      const SUBCLASSPROCS *proc = stack->stackpos;
-      stack->stackpos = stack->stackpos->next; 
+      const SUBCLASSPROCS *proc = stack->frame->next;
+      stack->frame->next = proc->next;
       /* call the Subclass procedure from the stack */
       ret = proc->subproc (hWnd, uMsg, wParam, lParam,
             proc->id, proc->ref);

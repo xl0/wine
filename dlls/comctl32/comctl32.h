@@ -216,13 +216,19 @@ typedef struct _SUBCLASSPROCS {
     struct _SUBCLASSPROCS *next;
 } SUBCLASSPROCS, *LPSUBCLASSPROCS;
 
+/* one per running COMCTL32_SubclassProc() call */
+struct subclass_frame
+{
+   SUBCLASSPROCS *next;           /* next subclass procedure to call */
+   struct subclass_frame *prev;   /* outer call */
+};
+
 typedef struct
 {
    SUBCLASSPROCS *SubclassProcs;
-   SUBCLASSPROCS *stackpos;
+   struct subclass_frame *frame;  /* innermost running call */
    WNDPROC origproc;
    int is_unicode;
-   int running;
 } SUBCLASS_INFO, *LPSUBCLASS_INFO;
 
 /* WM_NOTIFY unicode to ansi conversion and forwarding stuff */

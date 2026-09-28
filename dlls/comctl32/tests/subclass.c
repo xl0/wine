@@ -346,6 +346,51 @@ static void test_subclass(void)
     DestroyWindow(hwnd);
 }
 
+static LRESULT WINAPI nested_remove_proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam,
+                                         UINT_PTR id, DWORD_PTR ref)
+{
+    struct message msg;
+
+    if (message == WM_USER)
+    {
+        msg.wParam = wParam;
+        msg.procnum = id;
+        add_message(&msg);
+
+        /* Remove the next subclass while the outer call has yet to reach it. */
+        if (id == 5 && !wParam)
+            SendMessageA(hwnd, WM_USER, 1, 0);
+        else if (id == 5)
+            pRemoveWindowSubclass(hwnd, nested_remove_proc, 4);
+    }
+    return pDefSubclassProc(hwnd, message, wParam, lParam);
+}
+
+static void test_nested_remove(void)
+{
+    static const struct message expected[] = {{ 5, 0 }, { 5, 1 }, { 1, 1 }, { 1, 0 }, { 0 }};
+    HWND hwnd;
+    BOOL ret;
+
+    hwnd = CreateWindowA("TestSubclass", "Test subclass", WS_OVERLAPPEDWINDOW, 100, 100, 200, 200,
+                         0, 0, 0, NULL);
+    ok(hwnd != NULL, "CreateWindowA failed, error %ld.\n", GetLastError());
+    ret = pSetWindowSubclass(hwnd, nested_remove_proc, 4, 0);
+    ok(ret, "SetWindowSubclass failed.\n");
+    ret = pSetWindowSubclass(hwnd, nested_remove_proc, 5, 0);
+    ok(ret, "SetWindowSubclass failed.\n");
+    SetWindowLongA(hwnd, GWLP_USERDATA, EXPECT_UNICODE);
+
+    SendMessageA(hwnd, WM_USER, 0, 0);
+    ok_sequence(expected, "Nested remove");
+
+    ret = pRemoveWindowSubclass(hwnd, nested_remove_proc, 5);
+    ok(ret, "RemoveWindowSubclass failed.\n");
+    check_unicode(hwnd, EXPECT_WNDPROC_1);
+    SetWindowLongA(hwnd, GWLP_USERDATA, EXPECT_WNDPROC_1);
+    DestroyWindow(hwnd);
+}
+
 static HWND thread_hwnd;
 static HANDLE thread_ready, thread_done;
 
@@ -520,5 +565,6 @@ START_TEST(subclass)
 
     test_subclass();
     test_GetWindowSubclass();
+    test_nested_remove();
     test_other_thread();
 }
