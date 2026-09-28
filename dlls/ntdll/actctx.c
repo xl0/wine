@@ -589,6 +589,7 @@ struct actctx_loader
     struct assembly_identity *dependencies;
     unsigned int              num_dependencies;
     unsigned int              allocated_dependencies;
+    WCHAR                    *private_path;  /* ';'-separated privatePath from the app config */
 };
 
 static const xmlstr_t empty_xmlstr;
@@ -1004,6 +1005,7 @@ static void free_depend_manifests(struct actctx_loader* acl)
     for (i = 0; i < acl->num_dependencies; i++)
         free_assembly_identity(&acl->dependencies[i]);
     RtlFreeHeap(GetProcessHeap(), 0, acl->dependencies);
+    RtlFreeHeap(GetProcessHeap(), 0, acl->private_path);
 }
 
 static WCHAR *build_assembly_dir(struct assembly_identity* ai)
@@ -3137,6 +3139,114 @@ static NTSTATUS get_manifest_in_associated_manifest( struct actctx_loader* acl, 
     return status;
 }
 
+/* parse <configuration><windows><assemblyBinding><probing privatePath="..."/> */
+static void parse_app_config_elem( xmlbuf_t *xmlbuf, struct actctx_loader *acl,
+                                   const struct xml_elem *parent, unsigned int level )
+{
+    static const struct { const WCHAR *name, *ns; } path[] =
+    {
+        { L"windows", L"" }, { L"assemblyBinding", asmv1W }, { L"probing", asmv1W }
+    };
+    struct xml_elem elem;
+    struct xml_attr attr;
+    BOOL end = FALSE;
+
+    while (next_xml_attr( xmlbuf, &attr, &end ))
+    {
+        if (level == ARRAY_SIZE(path) && xml_attr_cmp( &attr, L"privatePath" ))
+        {
+            /* append to the list, multiple <probing> elements accumulate */
+            SIZE_T len = acl->private_path ? wcslen( acl->private_path ) : 0;
+            WCHAR *new_path;
+
+            TRACE( "privatePath=%s\n", debugstr_xmlstr(&attr.value) );
+            if (!(new_path = RtlAllocateHeap( GetProcessHeap(), 0, (len + attr.value.len + 2) * sizeof(WCHAR) )))
+            {
+                set_error( xmlbuf );
+                return;
+            }
+            if (len) memcpy( new_path, acl->private_path, len * sizeof(WCHAR) );
+            new_path[len++] = ';';
+            memcpy( new_path + len, attr.value.ptr, attr.value.len * sizeof(WCHAR) );
+            new_path[len + attr.value.len] = 0;
+            RtlFreeHeap( GetProcessHeap(), 0, acl->private_path );
+            acl->private_path = new_path;
+        }
+        else if (!is_xmlns_attr( &attr )) WARN( "unknown attr %s\n", debugstr_xml_attr(&attr) );
+    }
+    if (end) return;
+
+    while (next_xml_elem( xmlbuf, &elem, parent ))
+    {
+        if (level < ARRAY_SIZE(path) && xml_elem_cmp( &elem, path[level].name, path[level].ns ))
+            parse_app_config_elem( xmlbuf, acl, &elem, level + 1 );
+        else
+            parse_unknown_elem( xmlbuf, &elem );
+    }
+}
+
+/* load the application configuration file, <root manifest>.config with any .manifest extension removed */
+static NTSTATUS parse_app_config( struct actctx_loader *acl )
+{
+    const WCHAR *manifest = acl->actctx->assemblies->manifest.info;
+    SIZE_T len = wcslen( manifest );
+    FILE_END_OF_FILE_INFORMATION info;
+    struct xml_elem elem, parent = {};
+    IO_STATUS_BLOCK io;
+    UNICODE_STRING nameW;
+    NTSTATUS status;
+    xmlbuf_t xmlbuf;
+    WCHAR *path, *text;
+    void *data;
+    HANDLE file;
+
+    if (len > 9 && !wcsicmp( manifest + len - 9, L".manifest" )) len -= 9;
+    if (!(path = RtlAllocateHeap( GetProcessHeap(), 0, len * sizeof(WCHAR) + sizeof(L".Config") )))
+        return STATUS_NO_MEMORY;
+    memcpy( path, manifest, len * sizeof(WCHAR) );
+    wcscpy( path + len, L".Config" );
+
+    if (!RtlDosPathNameToNtPathName_U( path, &nameW, NULL, NULL )) status = STATUS_OBJECT_PATH_INVALID;
+    else
+    {
+        status = open_nt_file( &file, &nameW );
+        RtlFreeUnicodeString( &nameW );
+    }
+    if (status)
+    {
+        RtlFreeHeap( GetProcessHeap(), 0, path );
+        return STATUS_SUCCESS;
+    }
+    TRACE( "loading %s\n", debugstr_w(path) );
+    acl->actctx->config.type = ACTIVATION_CONTEXT_PATH_TYPE_WIN32_FILE;
+    acl->actctx->config.info = path;
+
+    status = NtQueryInformationFile( file, &io, &info, sizeof(info), FileEndOfFileInformation );
+    if (!status && !(data = RtlAllocateHeap( GetProcessHeap(), 0, info.EndOfFile.QuadPart )))
+        status = STATUS_NO_MEMORY;
+    if (!status)
+    {
+        status = NtReadFile( file, 0, NULL, NULL, &io, data, info.EndOfFile.QuadPart, NULL, NULL );
+        if (!status && !(text = get_xml_text( data, io.Information, &xmlbuf.end )))
+            status = STATUS_NO_MEMORY;
+        RtlFreeHeap( GetProcessHeap(), 0, data );
+    }
+    NtClose( file );
+    if (status) return status;
+
+    xmlbuf.ptr = text;
+    xmlbuf.error = FALSE;
+    xmlbuf.ns_pos = 0;
+    if (!next_xml_elem( &xmlbuf, &elem, &parent ) ||
+        (xmlstr_cmp( &elem.name, L"?xml" ) &&
+         (!parse_xml_header( &xmlbuf ) || !next_xml_elem( &xmlbuf, &elem, &parent ))) ||
+        !xml_elem_cmp( &elem, L"configuration", L"" ))
+        set_error( &xmlbuf );
+    else parse_app_config_elem( &xmlbuf, acl, &elem, 0 );
+    RtlFreeHeap( GetProcessHeap(), 0, text );
+    return xmlbuf.error ? STATUS_SXS_CANT_GEN_ACTCTX : STATUS_SUCCESS;
+}
+
 static void append_field( WCHAR *buffer, const WCHAR *str, unsigned int maxlen )
 {
     static const WCHAR valid_chars[] = L"-.0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
@@ -3371,9 +3481,9 @@ static NTSTATUS lookup_assembly(struct actctx_loader* acl,
                                 struct assembly_identity* ai)
 {
     WCHAR *buffer, *p, *directory;
-    const WCHAR *lang = ai->language;
+    const WCHAR *lang = ai->language, *path, *next;
     NTSTATUS status;
-    DWORD len, total;
+    DWORD len, total, dir_len;
 
     TRACE( "looking for name=%s version=%s arch=%s lang=%s\n",
            debugstr_w(ai->name), debugstr_version(&ai->version),
@@ -3386,6 +3496,7 @@ static NTSTATUS lookup_assembly(struct actctx_loader* acl,
     len = max(RtlGetFullPathName_U(acl->actctx->assemblies->manifest.info, 0, NULL, NULL) / sizeof(WCHAR),
         wcslen(acl->actctx->appdir.info));
     total = len + 2 * wcslen(ai->name) + wcslen(lang) + 12;
+    if (acl->private_path) total += wcslen(acl->private_path);
 
     if (!(buffer = RtlAllocateHeap( GetProcessHeap(), 0, total * sizeof(WCHAR) ))) return STATUS_NO_MEMORY;
 
@@ -3401,7 +3512,8 @@ static NTSTATUS lookup_assembly(struct actctx_loader* acl,
      *           <dir>\name\name.manifest
      *
      * First 'appdir' is used as <dir>, if that failed
-     * it tries application manifest file path.
+     * it tries application manifest file path, then the
+     * privatePath directories relative to it.
      */
     wcscpy( buffer, acl->actctx->appdir.info );
     p = buffer + wcslen(buffer);
@@ -3421,6 +3533,20 @@ static NTSTATUS lookup_assembly(struct actctx_loader* acl,
 
         swprintf( p, total - (p - buffer), L"%s\\", ai->name );
         status = open_manifest_file( acl, ai, lang, directory, buffer, total );
+
+        for (path = acl->private_path; path && status == STATUS_SXS_ASSEMBLY_NOT_FOUND; path = next)
+        {
+            if ((next = wcschr( path, ';' ))) dir_len = next++ - path;
+            else dir_len = wcslen( path );
+            if (!dir_len) continue;
+
+            swprintf( p, total - (p - buffer), L"%.*s\\", dir_len, path );
+            status = open_manifest_file( acl, ai, lang, directory, buffer, total );
+            if (status != STATUS_SXS_ASSEMBLY_NOT_FOUND) break;
+
+            swprintf( p, total - (p - buffer), L"%.*s\\%s\\", dir_len, path, ai->name );
+            status = open_manifest_file( acl, ai, lang, directory, buffer, total );
+        }
     }
 
 done:
@@ -5386,6 +5512,7 @@ NTSTATUS WINAPI RtlCreateActivationContext( ACTIVATION_CONTEXT **new_actctx, con
     acl.dependencies = NULL;
     acl.num_dependencies = 0;
     acl.allocated_dependencies = 0;
+    acl.private_path = NULL;
 
     if (pActCtx->dwFlags & ACTCTX_FLAG_LANGID_VALID) lang = pActCtx->wLangId;
     if (pActCtx->dwFlags & ACTCTX_FLAG_ASSEMBLY_DIRECTORY_VALID) directory = pActCtx->lpAssemblyDirectory;
@@ -5419,6 +5546,7 @@ NTSTATUS WINAPI RtlCreateActivationContext( ACTIVATION_CONTEXT **new_actctx, con
     if (file) NtClose( file );
     RtlFreeUnicodeString( &nameW );
 
+    if (status == STATUS_SUCCESS) status = parse_app_config(&acl);
     if (status == STATUS_SUCCESS) status = parse_depend_manifests(&acl);
     free_depend_manifests( &acl );
 
