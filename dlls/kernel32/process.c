@@ -538,10 +538,7 @@ HRESULT WINAPI RegisterApplicationRestart(PCWSTR pwzCommandLine, DWORD dwFlags)
  */
 DWORD WINAPI WTSGetActiveConsoleSessionId(void)
 {
-    static int once;
-    if (!once++) FIXME("stub\n");
-    /* Return current session id. */
-    return NtCurrentTeb()->Peb->SessionId;
+    return user_shared_data->ActiveConsoleId;
 }
 
 /**********************************************************************
