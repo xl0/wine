@@ -458,8 +458,13 @@ static void test_packager(void)
     RECTL bounds = {0, 0, 100, 100};
     IViewObject2 *view;
     SIZEL size, view_size;
+    ILockBytes *lockbytes;
+    IStorage *save_stg;
+    IStream *stream;
+    BYTE saved[512];
     CLSID clsid;
     HDC hdc;
+    DWORD i;
 
     hr = CoCreateInstance(&CLSID_Package, NULL, CLSCTX_INPROC_SERVER | CLSCTX_INPROC_HANDLER,
             &IID_IOleObject, (void**)&oleobj);
@@ -505,8 +510,14 @@ static void test_packager(void)
     ok(hr == S_OK, "GetClassID failed: %08lx\n", hr);
     ok(IsEqualCLSID(&clsid, &CLSID_Package_Alt), "got %s\n", wine_dbgstr_guid(&clsid));
 
+    hr = IPersistStorage_IsDirty(persist);
+    ok(hr == S_OK, "IsDirty returned %08lx\n", hr);
+
     hr = IPersistStorage_Load(persist, &stg);
     ok(hr == S_OK, "Load failed: %08lx\n", hr);
+
+    hr = IPersistStorage_IsDirty(persist);
+    ok(hr == S_FALSE, "IsDirty returned %08lx\n", hr);
 
     hr = IOleObject_QueryInterface(oleobj, &IID_IViewObject2, (void **)&view);
     ok(hr == S_OK, "QueryInterface(IViewObject2) failed: %08lx\n", hr);
@@ -521,6 +532,30 @@ static void test_packager(void)
     ok(hr == S_OK, "Draw failed: %08lx\n", hr);
     DeleteEnhMetaFile(CloseEnhMetaFile(hdc));
     IViewObject2_Release(view);
+
+    hr = CreateILockBytesOnHGlobal(NULL, TRUE, &lockbytes);
+    ok(hr == S_OK, "CreateILockBytesOnHGlobal failed: %08lx\n", hr);
+    hr = StgCreateDocfileOnILockBytes(lockbytes, STGM_CREATE | STGM_READWRITE | STGM_SHARE_EXCLUSIVE, 0, &save_stg);
+    ok(hr == S_OK, "StgCreateDocfileOnILockBytes failed: %08lx\n", hr);
+    hr = IPersistStorage_Save(persist, save_stg, FALSE);
+    ok(hr == S_OK, "Save failed: %08lx\n", hr);
+    hr = ReadClassStg(save_stg, &clsid);
+    ok(hr == S_OK, "ReadClassStg failed: %08lx\n", hr);
+    ok(IsEqualCLSID(&clsid, &CLSID_Package_Alt), "got %s\n", wine_dbgstr_guid(&clsid));
+    hr = IStorage_OpenStream(save_stg, L"\1Ole10Native", NULL, STGM_READ | STGM_SHARE_EXCLUSIVE, 0, &stream);
+    ok(hr == S_OK, "OpenStream failed: %08lx\n", hr);
+    memset(saved, 0, sizeof(saved));
+    hr = IStream_Read(stream, saved, sizeof(saved), &bytes_read);
+    ok(hr == S_OK || hr == S_FALSE, "Read failed: %08lx\n", hr);
+    /* Windows rewrites the stream with the path of its temporary file; the payload is kept */
+    for (i = 0; i + 10 <= bytes_read; i++)
+        if (!memcmp(saved + i, "some text\n", 10)) break;
+    ok(i + 10 <= bytes_read, "payload not found in %lu bytes\n", bytes_read);
+    IStream_Release(stream);
+    IStorage_Release(save_stg);
+    ILockBytes_Release(lockbytes);
+    hr = IPersistStorage_SaveCompleted(persist, NULL);
+    ok(hr == S_OK, "SaveCompleted failed: %08lx\n", hr);
 
     if(extended){
         len = GetTempPathW(ARRAY_SIZE(filename), filename);

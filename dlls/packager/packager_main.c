@@ -47,6 +47,11 @@ struct Package {
     WCHAR icon_path[MAX_PATH];
     WORD icon_index;
 
+    /* contents of the \1Ole10Native stream, written back by Save */
+    BYTE *data;
+    DWORD data_size;
+    BOOL dirty;
+
     IOleClientSite *clientsite;
     IOleAdviseHolder *advise_holder;
 
@@ -141,6 +146,7 @@ static ULONG WINAPI OleObject_Release(IOleObject *iface)
             IOleAdviseHolder_Release(This->advise_holder);
         if(This->view_sink)
             IAdviseSink_Release(This->view_sink);
+        HeapFree(GetProcessHeap(), 0, This->data);
 
         if(*This->filename)
             DeleteFileW(This->filename);
@@ -420,16 +426,16 @@ static HRESULT WINAPI PersistStorage_GetClassID(IPersistStorage* iface,
 static HRESULT WINAPI PersistStorage_IsDirty(IPersistStorage* iface)
 {
     struct Package *This = impl_from_IPersistStorage(iface);
-    FIXME("(%p)\n", This);
-    return E_NOTIMPL;
+    TRACE("(%p)\n", This);
+    return This->dirty ? S_OK : S_FALSE;
 }
 
 static HRESULT WINAPI PersistStorage_InitNew(IPersistStorage* iface,
         IStorage *pStg)
 {
     struct Package *This = impl_from_IPersistStorage(iface);
-    FIXME("(%p)->(%p)\n", This, pStg);
-    return E_NOTIMPL;
+    TRACE("(%p)->(%p)\n", This, pStg);
+    return S_OK;
 }
 
 /* read an ANSI zero-terminated string, truncated to MAX_PATH characters */
@@ -460,7 +466,7 @@ static HRESULT WINAPI PersistStorage_Load(IPersistStorage* iface,
 {
     struct Package *This = impl_from_IPersistStorage(iface);
     IStream *stream;
-    DWORD payload_size, len, stream_filename_len, filenameA_len, i, bytes_read;
+    DWORD size, payload_size, len, stream_filename_len, filenameA_len, i, bytes_read;
     ULARGE_INTEGER payload_pos;
     LARGE_INTEGER seek;
     HRESULT hr;
@@ -479,9 +485,14 @@ static HRESULT WINAPI PersistStorage_Load(IPersistStorage* iface,
         return hr;
     }
 
-    /* skip stream size & two unknown bytes */
-    seek.QuadPart = 6;
-    hr = IStream_Seek(stream, seek, STREAM_SEEK_SET, NULL);
+    /* size of the rest of the stream */
+    hr = IStream_Read(stream, &size, 4, NULL);
+    if(FAILED(hr))
+        goto exit;
+
+    /* skip two unknown bytes */
+    seek.QuadPart = 2;
+    hr = IStream_Seek(stream, seek, STREAM_SEEK_CUR, NULL);
     if(FAILED(hr))
         goto exit;
 
@@ -597,6 +608,24 @@ static HRESULT WINAPI PersistStorage_Load(IPersistStorage* iface,
         WriteFile(file, data, nbytes, &written, NULL);
     }
 
+    /* keep the whole stream for Save */
+    HeapFree(GetProcessHeap(), 0, This->data);
+    This->data_size = size + 4;
+    if(!(This->data = HeapAlloc(GetProcessHeap(), 0, This->data_size))){
+        hr = E_OUTOFMEMORY;
+        goto exit;
+    }
+    seek.QuadPart = 0;
+    hr = IStream_Seek(stream, seek, STREAM_SEEK_SET, NULL);
+    if(FAILED(hr))
+        goto exit;
+    hr = IStream_Read(stream, This->data, This->data_size, &bytes_read);
+    if(SUCCEEDED(hr) && bytes_read != This->data_size)
+        hr = E_FAIL;
+    if(FAILED(hr))
+        goto exit;
+
+    This->dirty = FALSE;
     hr = S_OK;
 
 exit:
@@ -615,23 +644,42 @@ static HRESULT WINAPI PersistStorage_Save(IPersistStorage* iface,
         IStorage *pStgSave, BOOL fSameAsLoad)
 {
     struct Package *This = impl_from_IPersistStorage(iface);
-    FIXME("(%p)->(%p, %u)\n", This, pStgSave, fSameAsLoad);
-    return E_NOTIMPL;
+    IStream *stream;
+    HRESULT hr;
+
+    TRACE("(%p)->(%p, %u)\n", This, pStgSave, fSameAsLoad);
+
+    hr = WriteClassStg(pStgSave, &CLSID_Package_Alt);
+    if(SUCCEEDED(hr))
+        hr = WriteFmtUserTypeStg(pStgSave, 0, (LPOLESTR)L"OLE Package");
+    if(FAILED(hr))
+        return hr;
+
+    hr = IStorage_CreateStream(pStgSave, L"\1Ole10Native",
+            STGM_CREATE | STGM_WRITE | STGM_SHARE_EXCLUSIVE, 0, 0, &stream);
+    if(FAILED(hr))
+        return hr;
+
+    if(This->data_size)
+        hr = IStream_Write(stream, This->data, This->data_size, NULL);
+    IStream_Release(stream);
+    return hr;
 }
 
 static HRESULT WINAPI PersistStorage_SaveCompleted(IPersistStorage* iface,
         IStorage *pStgNew)
 {
     struct Package *This = impl_from_IPersistStorage(iface);
-    FIXME("(%p)->(%p)\n", This, pStgNew);
-    return E_NOTIMPL;
+    TRACE("(%p)->(%p)\n", This, pStgNew);
+    This->dirty = FALSE;
+    return S_OK;
 }
 
 static HRESULT WINAPI PersistStorage_HandsOffStorage(IPersistStorage* iface)
 {
     struct Package *This = impl_from_IPersistStorage(iface);
-    FIXME("(%p)\n", This);
-    return E_NOTIMPL;
+    TRACE("(%p)\n", This);
+    return S_OK;
 }
 
 static IPersistStorageVtbl PersistStorage_Vtbl = {
@@ -836,6 +884,7 @@ static HRESULT WINAPI PackageCF_CreateInstance(IClassFactory *iface, IUnknown *o
     package->IOleObject_iface.lpVtbl = &OleObject_Vtbl;
     package->IPersistStorage_iface.lpVtbl = &PersistStorage_Vtbl;
     package->IViewObject2_iface.lpVtbl = &ViewObject_Vtbl;
+    package->dirty = TRUE;
 
     return IOleObject_QueryInterface(&package->IOleObject_iface, iid, obj);
 }
