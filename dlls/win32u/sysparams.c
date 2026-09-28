@@ -357,12 +357,10 @@ static HANDLE get_display_device_init_mutex( void )
     WCHAR bufferW[256];
     UNICODE_STRING name = {.Buffer = bufferW};
     OBJECT_ATTRIBUTES attr;
-    char buffer[256];
     HANDLE mutex;
 
-    snprintf( buffer, ARRAY_SIZE(buffer), "\\Sessions\\%u\\BaseNamedObjects\\display_device_init",
-              RtlGetCurrentPeb()->SessionId );
-    name.MaximumLength = asciiz_to_unicode( bufferW, buffer );
+    /* the display devices registry is shared by all sessions */
+    name.MaximumLength = asciiz_to_unicode( bufferW, "\\BaseNamedObjects\\display_device_init" );
     name.Length = name.MaximumLength - sizeof(WCHAR);
 
     InitializeObjectAttributes( &attr, &name, OBJ_OPENIF, NULL, NULL );
