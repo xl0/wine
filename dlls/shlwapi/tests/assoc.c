@@ -262,6 +262,33 @@ cleanup:
 
 }
 
+static void test_getstring_user_protocol(void)
+{
+    static const char command[] = "\"C:\\winetest.exe\" \"%1\"";
+    char buf[MAX_PATH];
+    DWORD len = sizeof(buf);
+    HRESULT hr;
+    HKEY hkey;
+    LONG ret;
+
+    /* URL protocol registered for the current user only, visible through the merged HKCR */
+    ret = RegCreateKeyExA(HKEY_CURRENT_USER, "Software\\Classes\\winetestproto", 0, NULL, 0,
+                          KEY_SET_VALUE, NULL, &hkey, NULL);
+    ok(!ret, "RegCreateKeyExA failed: %ld\n", ret);
+    ret = RegSetValueExA(hkey, "URL Protocol", 0, REG_SZ, (const BYTE *)"", 1);
+    ok(!ret, "RegSetValueExA failed: %ld\n", ret);
+    RegCloseKey(hkey);
+    ret = RegSetValueA(HKEY_CURRENT_USER, "Software\\Classes\\winetestproto\\shell\\open\\command",
+                       REG_SZ, command, strlen(command));
+    ok(!ret, "RegSetValueA failed: %ld\n", ret);
+
+    hr = pAssocQueryStringA(ASSOCF_IS_PROTOCOL, ASSOCSTR_COMMAND, "winetestproto", NULL, buf, &len);
+    ok(hr == S_OK, "AssocQueryStringA failed: %08lx\n", hr);
+    if (hr == S_OK) ok(!strcmp(buf, command), "got %s\n", buf);
+
+    SHDeleteKeyA(HKEY_CURRENT_USER, "Software\\Classes\\winetestproto");
+}
+
 static void test_assoc_create(void)
 {
     HRESULT hr;
@@ -312,5 +339,6 @@ START_TEST(assoc)
     test_getstring_bad();
     test_getstring_basic();
     test_getstring_no_extra();
+    test_getstring_user_protocol();
     test_assoc_create();
 }
