@@ -1611,6 +1611,46 @@ static BOOL WINTRUST_GetSignedMsgFromCatFile(SIP_SUBJECTINFO *pSubjectInfo,
     return ret;
 }
 
+/* An AppxSignature.p7x blob is a "PKCX" magic followed by a PKCS #7 message. */
+static BOOL WINTRUST_GetSignedMsgFromP7xBlob(SIP_SUBJECTINFO *pSubjectInfo,
+ DWORD *pdwEncodingType, DWORD dwIndex, DWORD *pcbSignedDataMsg,
+ BYTE *pbSignedDataMsg)
+{
+    static const BYTE magic[] = { 'P','K','C','X' };
+    const MS_ADDINFO_BLOB *blob = pSubjectInfo->psBlob;
+    DWORD len;
+
+    TRACE("(%p %p %ld %p %p)\n", pSubjectInfo, pdwEncodingType, dwIndex,
+          pcbSignedDataMsg, pbSignedDataMsg);
+
+    if (pSubjectInfo->dwUnionChoice != MSSIP_ADDINFO_BLOB || !blob)
+    {
+        FIXME("unsupported union choice %ld\n", pSubjectInfo->dwUnionChoice);
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    if (blob->cbMemObject <= sizeof(magic) ||
+     memcmp(blob->pbMemObject, magic, sizeof(magic)))
+    {
+        SetLastError(TRUST_E_SUBJECT_FORM_UNKNOWN);
+        return FALSE;
+    }
+    len = blob->cbMemObject - sizeof(magic);
+    if (pbSignedDataMsg && *pcbSignedDataMsg < len)
+    {
+        *pcbSignedDataMsg = len;
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
+        return FALSE;
+    }
+    if (pbSignedDataMsg)
+    {
+        memcpy(pbSignedDataMsg, blob->pbMemObject + sizeof(magic), len);
+        *pdwEncodingType = X509_ASN_ENCODING | PKCS_7_ASN_ENCODING;
+    }
+    *pcbSignedDataMsg = len;
+    return TRUE;
+}
+
 /* GUIDs used by CryptSIPGetSignedDataMsg and CryptSIPPutSignedDataMsg */
 static const GUID unknown = { 0xC689AAB8, 0x8E78, 0x11D0, { 0x8C,0x47,
     0x00,0xC0,0x4F,0xC2,0x95,0xEE } };
@@ -1618,6 +1658,8 @@ static const GUID cabGUID = { 0xC689AABA, 0x8E78, 0x11D0, { 0x8C,0x47,
     0x00,0xC0,0x4F,0xC2,0x95,0xEE } };
 static const GUID catGUID = { 0xDE351A43, 0x8E59, 0x11D0, { 0x8C,0x47,
      0x00,0xC0,0x4F,0xC2,0x95,0xEE }};
+static const GUID p7xGUID = { 0x5598CFF1, 0x68DB, 0x4340, { 0xB5,0x7F,
+     0x1C,0xAC,0xF8,0x8C,0x9A,0x51 }};
 
 /***********************************************************************
  *      CryptSIPGetSignedDataMsg  (WINTRUST.@)
@@ -1644,6 +1686,9 @@ BOOL WINAPI CryptSIPGetSignedDataMsg(SIP_SUBJECTINFO* pSubjectInfo, DWORD* pdwEn
          dwIndex, pcbSignedDataMsg, pbSignedDataMsg);
     else if (!memcmp(pSubjectInfo->pgSubjectType, &catGUID, sizeof(catGUID)))
         ret = WINTRUST_GetSignedMsgFromCatFile(pSubjectInfo, pdwEncodingType,
+         dwIndex, pcbSignedDataMsg, pbSignedDataMsg);
+    else if (!memcmp(pSubjectInfo->pgSubjectType, &p7xGUID, sizeof(p7xGUID)))
+        ret = WINTRUST_GetSignedMsgFromP7xBlob(pSubjectInfo, pdwEncodingType,
          dwIndex, pcbSignedDataMsg, pbSignedDataMsg);
     else
     {
