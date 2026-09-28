@@ -2492,6 +2492,7 @@ static BOOL expose_window_surface( HWND hwnd, UINT flags, const RECT *rect )
     struct window_surface *surface;
     struct window_rects rects;
     RECT exposed_rect;
+    HRGN region = 0;
     WND *win;
 
     if (!(win = get_win_ptr( hwnd )) || win == WND_DESKTOP || win == WND_OTHER_PROCESS) return FALSE;
@@ -2514,16 +2515,35 @@ static BOOL expose_window_surface( HWND hwnd, UINT flags, const RECT *rect )
     }
 
     window_surface_lock( surface );
-    if (!rect) add_bounds_rect( &surface->bounds, &surface->rect );
+    if (!rect) exposed_rect = surface->rect;
     else
     {
         OffsetRect( &exposed_rect, rects.client.left - rects.visible.left, rects.client.top - rects.visible.top );
         intersect_rect( &exposed_rect, &exposed_rect, &surface->rect );
-        add_bounds_rect( &surface->bounds, &exposed_rect );
+    }
+    add_bounds_rect( &surface->bounds, &exposed_rect );
+
+    /* the surface doesn't paint outside of its clip region (client surfaces), let the window repaint it */
+    if (surface->clip_region && (region = NtGdiCreateRectRgn( exposed_rect.left, exposed_rect.top,
+                                                              exposed_rect.right, exposed_rect.bottom )))
+    {
+        if (NtGdiCombineRgn( region, region, surface->clip_region, RGN_DIFF ) > NULLREGION)
+            NtGdiOffsetRgn( region, rects.visible.left - rects.client.left, rects.visible.top - rects.client.top );
+        else
+        {
+            NtGdiDeleteObjectApp( region );
+            region = 0;
+        }
     }
     window_surface_unlock( surface );
     window_surface_flush( surface );
     window_surface_release( surface );
+
+    if (region)
+    {
+        NtUserRedrawWindow( hwnd, NULL, region, flags );
+        NtGdiDeleteObjectApp( region );
+    }
     return TRUE;
 }
 
