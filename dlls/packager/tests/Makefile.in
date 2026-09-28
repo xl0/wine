@@ -1,5 +1,5 @@
 TESTDLL = packager.dll
-IMPORTS = ole32
+IMPORTS = ole32 gdi32
 
 SOURCES = \
 	oleobj.c

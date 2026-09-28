@@ -1,5 +1,5 @@
 MODULE = packager.dll
-IMPORTS = uuid shell32 shlwapi user32
+IMPORTS = uuid ole32 shell32 shlwapi user32 gdi32
 
 SOURCES = \
 	packager.rc \

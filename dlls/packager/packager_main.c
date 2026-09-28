@@ -33,15 +33,25 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(packager);
 
+static const CLSID CLSID_Package_Alt = {0x0003000c, 0, 0, {0xc0, 0, 0, 0, 0, 0, 0, 0x46}};
+
 struct Package {
     IOleObject IOleObject_iface;
     IPersistStorage IPersistStorage_iface;
+    IViewObject2 IViewObject2_iface;
 
     LONG ref;
 
     WCHAR filename[MAX_PATH];
+    WCHAR label[MAX_PATH];
+    WCHAR icon_path[MAX_PATH];
+    WORD icon_index;
 
     IOleClientSite *clientsite;
+    IOleAdviseHolder *advise_holder;
+
+    IAdviseSink *view_sink;
+    DWORD view_aspects, view_advf;
 };
 
 static inline struct Package *impl_from_IOleObject(IOleObject *iface)
@@ -54,6 +64,33 @@ static inline struct Package *impl_from_IPersistStorage(IPersistStorage *iface)
     return CONTAINING_RECORD(iface, struct Package, IPersistStorage_iface);
 }
 
+static inline struct Package *impl_from_IViewObject2(IViewObject2 *iface)
+{
+    return CONTAINING_RECORD(iface, struct Package, IViewObject2_iface);
+}
+
+/* The package is shown as its icon with the label below it. */
+static HGLOBAL get_metafilepict(struct Package *This)
+{
+    HICON icon = ExtractIconW(NULL, This->icon_path, This->icon_index);
+    HGLOBAL ret;
+
+    if (icon == (HICON)1) icon = NULL;
+    ret = OleMetafilePictFromIconAndLabel(icon ? icon : LoadIconW(NULL, (const WCHAR *)IDI_APPLICATION),
+            This->label, NULL, 0);
+    if (icon) DestroyIcon(icon);
+    return ret;
+}
+
+static void free_metafilepict(HGLOBAL hmfp)
+{
+    METAFILEPICT *mfp = GlobalLock(hmfp);
+
+    DeleteMetaFile(mfp->hMF);
+    GlobalUnlock(hmfp);
+    GlobalFree(hmfp);
+}
+
 static HRESULT WINAPI OleObject_QueryInterface(IOleObject *iface, REFIID riid, void **obj)
 {
     struct Package *This = impl_from_IOleObject(iface);
@@ -62,9 +99,14 @@ static HRESULT WINAPI OleObject_QueryInterface(IOleObject *iface, REFIID riid, v
             IsEqualGUID(riid, &IID_IOleObject)) {
         TRACE("(%p)->(IID_IOleObject, %p)\n", This, obj);
         *obj = &This->IOleObject_iface;
-    }else if(IsEqualGUID(riid, &IID_IPersistStorage)){
+    }else if(IsEqualGUID(riid, &IID_IPersist) ||
+            IsEqualGUID(riid, &IID_IPersistStorage)){
         TRACE("(%p)->(IID_IPersistStorage, %p)\n", This, obj);
         *obj = &This->IPersistStorage_iface;
+    }else if(IsEqualGUID(riid, &IID_IViewObject) ||
+            IsEqualGUID(riid, &IID_IViewObject2)){
+        TRACE("(%p)->(IID_IViewObject2, %p)\n", This, obj);
+        *obj = &This->IViewObject2_iface;
     }else {
         FIXME("(%p)->(%s, %p)\n", This, debugstr_guid(riid), obj);
         *obj = NULL;
@@ -95,6 +137,10 @@ static ULONG WINAPI OleObject_Release(IOleObject *iface)
     if(!ref){
         if(This->clientsite)
             IOleClientSite_Release(This->clientsite);
+        if(This->advise_holder)
+            IOleAdviseHolder_Release(This->advise_holder);
+        if(This->view_sink)
+            IAdviseSink_Release(This->view_sink);
 
         if(*This->filename)
             DeleteFileW(This->filename);
@@ -124,15 +170,21 @@ static HRESULT WINAPI OleObject_SetClientSite(IOleObject *iface, IOleClientSite 
 static HRESULT WINAPI OleObject_GetClientSite(IOleObject *iface, IOleClientSite **ppClientSite)
 {
     struct Package *This = impl_from_IOleObject(iface);
-    FIXME("(%p)->(%p)\n", This, ppClientSite);
-    return E_NOTIMPL;
+
+    TRACE("(%p)->(%p)\n", This, ppClientSite);
+
+    *ppClientSite = This->clientsite;
+    if(This->clientsite)
+        IOleClientSite_AddRef(This->clientsite);
+
+    return S_OK;
 }
 
 static HRESULT WINAPI OleObject_SetHostNames(IOleObject *iface, LPCOLESTR szContainerApp, LPCOLESTR szContainerObj)
 {
     struct Package *This = impl_from_IOleObject(iface);
-    FIXME("(%p)->(%s, %s)\n", This, debugstr_w(szContainerApp), debugstr_w(szContainerObj));
-    return E_NOTIMPL;
+    TRACE("(%p)->(%s, %s)\n", This, debugstr_w(szContainerApp), debugstr_w(szContainerObj));
+    return S_OK;
 }
 
 static HRESULT WINAPI OleObject_Close(IOleObject *iface, DWORD dwSaveOption)
@@ -208,29 +260,30 @@ static HRESULT WINAPI OleObject_EnumVerbs(IOleObject *iface, IEnumOLEVERB **ppEn
 static HRESULT WINAPI OleObject_Update(IOleObject *iface)
 {
     struct Package *This = impl_from_IOleObject(iface);
-    FIXME("(%p)\n", This);
-    return E_NOTIMPL;
+    TRACE("(%p)\n", This);
+    return S_OK;
 }
 
 static HRESULT WINAPI OleObject_IsUpToDate(IOleObject *iface)
 {
     struct Package *This = impl_from_IOleObject(iface);
-    FIXME("(%p)\n", This);
-    return E_NOTIMPL;
+    TRACE("(%p)\n", This);
+    return S_OK;
 }
 
 static HRESULT WINAPI OleObject_GetUserClassID(IOleObject *iface, CLSID *pClsid)
 {
     struct Package *This = impl_from_IOleObject(iface);
-    FIXME("(%p)->(%p)\n", This, pClsid);
-    return E_NOTIMPL;
+    TRACE("(%p)->(%p)\n", This, pClsid);
+    *pClsid = CLSID_Package_Alt;
+    return S_OK;
 }
 
 static HRESULT WINAPI OleObject_GetUserType(IOleObject *iface, DWORD dwFormOfType, LPOLESTR *pszUserType)
 {
     struct Package *This = impl_from_IOleObject(iface);
-    FIXME("(%p)->(%ld, %p)\n", This, dwFormOfType, pszUserType);
-    return E_NOTIMPL;
+    TRACE("(%p)->(%ld, %p)\n", This, dwFormOfType, pszUserType);
+    return OleRegGetUserType(&CLSID_Package, dwFormOfType, pszUserType);
 }
 
 static HRESULT WINAPI OleObject_SetExtent(IOleObject *iface, DWORD dwDrawAspect, SIZEL *psizel)
@@ -243,29 +296,46 @@ static HRESULT WINAPI OleObject_SetExtent(IOleObject *iface, DWORD dwDrawAspect,
 static HRESULT WINAPI OleObject_GetExtent(IOleObject *iface, DWORD dwDrawAspect, SIZEL *psizel)
 {
     struct Package *This = impl_from_IOleObject(iface);
-    FIXME("(%p)->(%ld, %p)\n", This, dwDrawAspect, psizel);
-    return E_NOTIMPL;
+    TRACE("(%p)->(%ld, %p)\n", This, dwDrawAspect, psizel);
+    return IViewObject2_GetExtent(&This->IViewObject2_iface, dwDrawAspect, -1, NULL, psizel);
 }
 
 static HRESULT WINAPI OleObject_Advise(IOleObject *iface, IAdviseSink *pAdvSink, DWORD *pdwConnection)
 {
     struct Package *This = impl_from_IOleObject(iface);
-    FIXME("(%p)->(%p, %p)\n", This, pAdvSink, pdwConnection);
-    return E_NOTIMPL;
+    HRESULT hr;
+
+    TRACE("(%p)->(%p, %p)\n", This, pAdvSink, pdwConnection);
+
+    if(!This->advise_holder && FAILED(hr = CreateOleAdviseHolder(&This->advise_holder)))
+        return hr;
+
+    return IOleAdviseHolder_Advise(This->advise_holder, pAdvSink, pdwConnection);
 }
 
 static HRESULT WINAPI OleObject_Unadvise(IOleObject *iface, DWORD dwConnection)
 {
     struct Package *This = impl_from_IOleObject(iface);
-    FIXME("(%p)->(%ld)\n", This, dwConnection);
-    return E_NOTIMPL;
+
+    TRACE("(%p)->(%ld)\n", This, dwConnection);
+
+    if(!This->advise_holder)
+        return OLE_E_NOCONNECTION;
+
+    return IOleAdviseHolder_Unadvise(This->advise_holder, dwConnection);
 }
 
 static HRESULT WINAPI OleObject_EnumAdvise(IOleObject *iface, IEnumSTATDATA **ppenumAdvise)
 {
     struct Package *This = impl_from_IOleObject(iface);
-    FIXME("(%p)->(%p)\n", This, ppenumAdvise);
-    return E_NOTIMPL;
+
+    TRACE("(%p)->(%p)\n", This, ppenumAdvise);
+
+    *ppenumAdvise = NULL;
+    if(!This->advise_holder)
+        return S_OK;
+
+    return IOleAdviseHolder_EnumAdvise(This->advise_holder, ppenumAdvise);
 }
 
 static HRESULT WINAPI OleObject_GetMiscStatus(IOleObject *iface, DWORD dwAspect, DWORD *pdwStatus)
@@ -342,8 +412,9 @@ static HRESULT WINAPI PersistStorage_GetClassID(IPersistStorage* iface,
         CLSID *pClassID)
 {
     struct Package *This = impl_from_IPersistStorage(iface);
-    FIXME("(%p)->(%p)\n", This, pClassID);
-    return E_NOTIMPL;
+    TRACE("(%p)->(%p)\n", This, pClassID);
+    *pClassID = CLSID_Package_Alt;
+    return S_OK;
 }
 
 static HRESULT WINAPI PersistStorage_IsDirty(IPersistStorage* iface)
@@ -361,9 +432,11 @@ static HRESULT WINAPI PersistStorage_InitNew(IPersistStorage* iface,
     return E_NOTIMPL;
 }
 
-static HRESULT discard_string(struct Package *This, IStream *stream)
+/* read an ANSI zero-terminated string, truncated to MAX_PATH characters */
+static HRESULT read_string(struct Package *This, IStream *stream, WCHAR *str)
 {
-    ULONG nbytes;
+    char buf[MAX_PATH];
+    ULONG nbytes, len = 0;
     HRESULT hr;
     char chr = 0;
 
@@ -373,8 +446,12 @@ static HRESULT discard_string(struct Package *This, IStream *stream)
             TRACE("Unexpected end of stream or Read failed with %08lx\n", hr);
             return (hr == S_OK || hr == S_FALSE) ? E_FAIL : hr;
         }
+        if(len < ARRAY_SIZE(buf) - 1)
+            buf[len++] = chr;
     }while(chr);
+    buf[len] = 0;
 
+    MultiByteToWideChar(CP_ACP, 0, buf, -1, str, MAX_PATH);
     return S_OK;
 }
 
@@ -408,18 +485,20 @@ static HRESULT WINAPI PersistStorage_Load(IPersistStorage* iface,
     if(FAILED(hr))
         goto exit;
 
-    /* read and discard label */
-    hr = discard_string(This, stream);
+    hr = read_string(This, stream, This->label);
     if(FAILED(hr))
         goto exit;
 
-    /* read and discard filename */
-    hr = discard_string(This, stream);
+    hr = read_string(This, stream, This->icon_path);
+    if(FAILED(hr))
+        goto exit;
+
+    hr = IStream_Read(stream, &This->icon_index, 2, NULL);
     if(FAILED(hr))
         goto exit;
 
     /* skip more unknown data */
-    seek.QuadPart = 4;
+    seek.QuadPart = 2;
     hr = IStream_Seek(stream, seek, STREAM_SEEK_CUR, NULL);
     if(FAILED(hr))
         goto exit;
@@ -568,6 +647,150 @@ static IPersistStorageVtbl PersistStorage_Vtbl = {
     PersistStorage_HandsOffStorage
 };
 
+static HRESULT WINAPI ViewObject_QueryInterface(IViewObject2 *iface, REFIID riid, void **obj)
+{
+    struct Package *This = impl_from_IViewObject2(iface);
+    return OleObject_QueryInterface(&This->IOleObject_iface, riid, obj);
+}
+
+static ULONG WINAPI ViewObject_AddRef(IViewObject2 *iface)
+{
+    struct Package *This = impl_from_IViewObject2(iface);
+    return OleObject_AddRef(&This->IOleObject_iface);
+}
+
+static ULONG WINAPI ViewObject_Release(IViewObject2 *iface)
+{
+    struct Package *This = impl_from_IViewObject2(iface);
+    return OleObject_Release(&This->IOleObject_iface);
+}
+
+static HRESULT WINAPI ViewObject_Draw(IViewObject2 *iface, DWORD aspect, LONG index, void *aspect_info,
+        DVTARGETDEVICE *td, HDC hdc_target, HDC hdc, const RECTL *bounds, const RECTL *win_bounds,
+        BOOL (STDMETHODCALLTYPE *cont)(ULONG_PTR), ULONG_PTR cont_arg)
+{
+    struct Package *This = impl_from_IViewObject2(iface);
+    METAFILEPICT *mfp;
+    HGLOBAL hmfp;
+    int state;
+
+    TRACE("(%p)->(%ld, %ld, %p, %p, %p, %p, %s, %s, %p, %#Ix)\n", This, aspect, index, aspect_info, td,
+            hdc_target, hdc, wine_dbgstr_rect((const RECT *)bounds), wine_dbgstr_rect((const RECT *)win_bounds),
+            cont, cont_arg);
+
+    if(!bounds)
+        return E_INVALIDARG;
+
+    if(!(hmfp = get_metafilepict(This)))
+        return E_OUTOFMEMORY;
+
+    mfp = GlobalLock(hmfp);
+    state = SaveDC(hdc);
+    SetMapMode(hdc, mfp->mm);
+    SetWindowExtEx(hdc, mfp->xExt, mfp->yExt, NULL);
+    SetViewportExtEx(hdc, bounds->right - bounds->left, bounds->bottom - bounds->top, NULL);
+    SetViewportOrgEx(hdc, bounds->left, bounds->top, NULL);
+    PlayMetaFile(hdc, mfp->hMF);
+    RestoreDC(hdc, state);
+    GlobalUnlock(hmfp);
+    free_metafilepict(hmfp);
+
+    return S_OK;
+}
+
+static HRESULT WINAPI ViewObject_GetColorSet(IViewObject2 *iface, DWORD aspect, LONG index, void *aspect_info,
+        DVTARGETDEVICE *td, HDC hdc_target, LOGPALETTE **colors)
+{
+    struct Package *This = impl_from_IViewObject2(iface);
+    FIXME("(%p)->(%ld, %ld, %p, %p, %p, %p)\n", This, aspect, index, aspect_info, td, hdc_target, colors);
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI ViewObject_Freeze(IViewObject2 *iface, DWORD aspect, LONG index, void *aspect_info,
+        DWORD *freeze)
+{
+    struct Package *This = impl_from_IViewObject2(iface);
+    FIXME("(%p)->(%ld, %ld, %p, %p)\n", This, aspect, index, aspect_info, freeze);
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI ViewObject_Unfreeze(IViewObject2 *iface, DWORD freeze)
+{
+    struct Package *This = impl_from_IViewObject2(iface);
+    FIXME("(%p)->(%ld)\n", This, freeze);
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI ViewObject_SetAdvise(IViewObject2 *iface, DWORD aspects, DWORD advf, IAdviseSink *sink)
+{
+    struct Package *This = impl_from_IViewObject2(iface);
+
+    TRACE("(%p)->(%ld, %ld, %p)\n", This, aspects, advf, sink);
+
+    if(sink)
+        IAdviseSink_AddRef(sink);
+    if(This->view_sink)
+        IAdviseSink_Release(This->view_sink);
+    This->view_sink = sink;
+    This->view_aspects = aspects;
+    This->view_advf = advf;
+
+    return S_OK;
+}
+
+static HRESULT WINAPI ViewObject_GetAdvise(IViewObject2 *iface, DWORD *aspects, DWORD *advf, IAdviseSink **sink)
+{
+    struct Package *This = impl_from_IViewObject2(iface);
+
+    TRACE("(%p)->(%p, %p, %p)\n", This, aspects, advf, sink);
+
+    if(aspects)
+        *aspects = This->view_aspects;
+    if(advf)
+        *advf = This->view_advf;
+    if(sink){
+        *sink = This->view_sink;
+        if(*sink)
+            IAdviseSink_AddRef(*sink);
+    }
+
+    return S_OK;
+}
+
+static HRESULT WINAPI ViewObject_GetExtent(IViewObject2 *iface, DWORD aspect, LONG index,
+        DVTARGETDEVICE *td, SIZEL *size)
+{
+    struct Package *This = impl_from_IViewObject2(iface);
+    METAFILEPICT *mfp;
+    HGLOBAL hmfp;
+
+    TRACE("(%p)->(%ld, %ld, %p, %p)\n", This, aspect, index, td, size);
+
+    if(!(hmfp = get_metafilepict(This)))
+        return E_OUTOFMEMORY;
+
+    mfp = GlobalLock(hmfp);
+    size->cx = mfp->xExt;
+    size->cy = mfp->yExt;
+    GlobalUnlock(hmfp);
+    free_metafilepict(hmfp);
+
+    return S_OK;
+}
+
+static const IViewObject2Vtbl ViewObject_Vtbl = {
+    ViewObject_QueryInterface,
+    ViewObject_AddRef,
+    ViewObject_Release,
+    ViewObject_Draw,
+    ViewObject_GetColorSet,
+    ViewObject_Freeze,
+    ViewObject_Unfreeze,
+    ViewObject_SetAdvise,
+    ViewObject_GetAdvise,
+    ViewObject_GetExtent
+};
+
 static HRESULT WINAPI PackageCF_QueryInterface(IClassFactory *iface, REFIID riid, void **obj)
 {
     TRACE("(static)->(%s, %p)\n", debugstr_guid(riid), obj);
@@ -612,6 +835,7 @@ static HRESULT WINAPI PackageCF_CreateInstance(IClassFactory *iface, IUnknown *o
 
     package->IOleObject_iface.lpVtbl = &OleObject_Vtbl;
     package->IPersistStorage_iface.lpVtbl = &PersistStorage_Vtbl;
+    package->IViewObject2_iface.lpVtbl = &ViewObject_Vtbl;
 
     return IOleObject_QueryInterface(&package->IOleObject_iface, iid, obj);
 }

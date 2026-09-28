@@ -404,6 +404,47 @@ static IOleClientSite clientsite = {
     &clientsite_vtbl
 };
 
+static void test_interfaces(IOleObject *oleobj)
+{
+    static const struct
+    {
+        const IID *iid;
+        BOOL supported;
+        BOOL todo;
+    }
+    tests[] =
+    {
+        {&IID_IPersist, TRUE},
+        {&IID_IPersistStorage, TRUE},
+        {&IID_IViewObject, TRUE},
+        {&IID_IViewObject2, TRUE},
+        {&IID_IDataObject, TRUE, TRUE},
+        {&IID_IOleCache, TRUE, TRUE},
+        {&IID_IOleCache2, TRUE, TRUE},
+        {&IID_IOleCacheControl, TRUE, TRUE},
+        {&IID_IRunnableObject, TRUE, TRUE},
+        {&IID_IPersistFile, TRUE, TRUE},
+        {&IID_IExternalConnection, TRUE, TRUE},
+        {&IID_IAdviseSink, TRUE, TRUE},
+        {&IID_IOleLink, FALSE},
+        {&IID_IOleInPlaceObject, FALSE},
+        {&IID_IPersistStream, FALSE},
+    };
+    IUnknown *unk;
+    unsigned int i;
+    HRESULT hr;
+
+    for (i = 0; i < ARRAY_SIZE(tests); i++)
+    {
+        winetest_push_context("%s", wine_dbgstr_guid(tests[i].iid));
+        hr = IOleObject_QueryInterface(oleobj, tests[i].iid, (void **)&unk);
+        todo_wine_if(tests[i].todo)
+        ok(hr == (tests[i].supported ? S_OK : E_NOINTERFACE), "got %#lx.\n", hr);
+        if (SUCCEEDED(hr)) IUnknown_Release(unk);
+        winetest_pop_context();
+    }
+}
+
 static void test_packager(void)
 {
     IOleObject *oleobj;
@@ -414,6 +455,11 @@ static void test_packager(void)
     WCHAR filename[MAX_PATH];
     char contents[11];
     BOOL br, extended = FALSE;
+    RECTL bounds = {0, 0, 100, 100};
+    IViewObject2 *view;
+    SIZEL size, view_size;
+    CLSID clsid;
+    HDC hdc;
 
     hr = CoCreateInstance(&CLSID_Package, NULL, CLSCTX_INPROC_SERVER | CLSCTX_INPROC_HANDLER,
             &IID_IOleObject, (void**)&oleobj);
@@ -430,6 +476,12 @@ static void test_packager(void)
     hr = CoCreateInstance(&CLSID_Package_Alt, NULL, CLSCTX_INPROC_SERVER | CLSCTX_INPROC_HANDLER,
             &IID_IOleObject, (void**)&oleobj);
     ok(hr == S_OK, "CoCreateInstance(CLSID_Package_Alt) failed: %08lx\n", hr);
+
+    test_interfaces(oleobj);
+
+    hr = IOleObject_GetUserClassID(oleobj, &clsid);
+    ok(hr == S_OK, "GetUserClassID failed: %08lx\n", hr);
+    ok(IsEqualCLSID(&clsid, &CLSID_Package_Alt), "got %s\n", wine_dbgstr_guid(&clsid));
 
     hr = IOleObject_SetClientSite(oleobj, NULL);
     ok(hr == S_OK, "SetClientSite failed: %08lx\n", hr);
@@ -449,8 +501,26 @@ static void test_packager(void)
     hr = IOleObject_QueryInterface(oleobj, &IID_IPersistStorage, (void**)&persist);
     ok(hr == S_OK, "QueryInterface(IPersistStorage) failed: %08lx\n", hr);
 
+    hr = IPersistStorage_GetClassID(persist, &clsid);
+    ok(hr == S_OK, "GetClassID failed: %08lx\n", hr);
+    ok(IsEqualCLSID(&clsid, &CLSID_Package_Alt), "got %s\n", wine_dbgstr_guid(&clsid));
+
     hr = IPersistStorage_Load(persist, &stg);
     ok(hr == S_OK, "Load failed: %08lx\n", hr);
+
+    hr = IOleObject_QueryInterface(oleobj, &IID_IViewObject2, (void **)&view);
+    ok(hr == S_OK, "QueryInterface(IViewObject2) failed: %08lx\n", hr);
+    hr = IViewObject2_GetExtent(view, DVASPECT_CONTENT, -1, NULL, &view_size);
+    ok(hr == S_OK, "GetExtent failed: %08lx\n", hr);
+    ok(view_size.cx > 0 && view_size.cy > 0, "got %ldx%ld\n", view_size.cx, view_size.cy);
+    hr = IOleObject_GetExtent(oleobj, DVASPECT_CONTENT, &size);
+    ok(hr == S_OK, "GetExtent failed: %08lx\n", hr);
+    ok(size.cx == view_size.cx && size.cy == view_size.cy, "got %ldx%ld\n", size.cx, size.cy);
+    hdc = CreateEnhMetaFileW(NULL, NULL, NULL, NULL);
+    hr = IViewObject2_Draw(view, DVASPECT_CONTENT, -1, NULL, NULL, NULL, hdc, &bounds, NULL, NULL, 0);
+    ok(hr == S_OK, "Draw failed: %08lx\n", hr);
+    DeleteEnhMetaFile(CloseEnhMetaFile(hdc));
+    IViewObject2_Release(view);
 
     if(extended){
         len = GetTempPathW(ARRAY_SIZE(filename), filename);
