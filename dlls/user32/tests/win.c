@@ -7539,6 +7539,33 @@ static void test_set_window_style(void)
     UnregisterClassA(cls.lpszClassName, cls.hInstance);
 }
 
+static void test_syscommand_hidden(void)
+{
+    HWND hwnd;
+
+    /* Already maximized / minimized hidden windows stay hidden. */
+    hwnd = CreateWindowA("MainWindowClass", NULL, WS_OVERLAPPEDWINDOW | WS_MAXIMIZE, 10, 10, 200, 200, 0, 0, 0, NULL);
+    ok(hwnd != NULL, "CreateWindow failed, error %lu.\n", GetLastError());
+    DefWindowProcA(hwnd, WM_SYSCOMMAND, SC_MAXIMIZE, 0);
+    ok(!IsWindowVisible(hwnd), "window should be hidden\n");
+    ok(IsZoomed(hwnd), "window should be maximized\n");
+    DestroyWindow(hwnd);
+
+    hwnd = CreateWindowA("MainWindowClass", NULL, WS_OVERLAPPEDWINDOW | WS_MINIMIZE, 10, 10, 200, 200, 0, 0, 0, NULL);
+    ok(hwnd != NULL, "CreateWindow failed, error %lu.\n", GetLastError());
+    DefWindowProcA(hwnd, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+    ok(!IsWindowVisible(hwnd), "window should be hidden\n");
+    ok(IsIconic(hwnd), "window should be minimized\n");
+    DestroyWindow(hwnd);
+
+    hwnd = CreateWindowA("MainWindowClass", NULL, WS_OVERLAPPEDWINDOW, 10, 10, 200, 200, 0, 0, 0, NULL);
+    ok(hwnd != NULL, "CreateWindow failed, error %lu.\n", GetLastError());
+    DefWindowProcA(hwnd, WM_SYSCOMMAND, SC_MAXIMIZE, 0);
+    ok(IsWindowVisible(hwnd), "window should be visible\n");
+    ok(IsZoomed(hwnd), "window should be maximized\n");
+    DestroyWindow(hwnd);
+}
+
 static void test_ShowWindow(void)
 {
     HWND hwnd;
@@ -14795,6 +14822,7 @@ START_TEST(win)
     test_SetWindowLong();
     test_set_window_style();
     test_ShowWindow();
+    test_syscommand_hidden();
     test_ShowWindow_owned(hwndMain);
     test_ShowWindow_child(hwndMain);
     test_ShowWindow_mdichild();
