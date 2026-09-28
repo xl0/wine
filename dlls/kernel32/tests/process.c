@@ -5562,7 +5562,6 @@ static void test_services_exe(void)
     } while (spi->NextEntryOffset != 0);
 
     ok(services_pid != 0, "services.exe not found\n");
-    todo_wine
     ok(services_session_id == 0, "got services.exe SessionId %lu\n", services_session_id);
 }
 

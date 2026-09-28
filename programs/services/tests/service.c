@@ -83,6 +83,16 @@ static void test_winstation(void)
     service_ok(!(flags.dwFlags & WSF_VISIBLE), "winstation has flags %lx\n", flags.dwFlags);
 }
 
+static void test_session(void)
+{
+    DWORD session_id = ~0u;
+    BOOL r;
+
+    r = ProcessIdToSessionId(GetCurrentProcessId(), &session_id);
+    service_ok(r, "ProcessIdToSessionId failed: %lu\n", GetLastError());
+    service_ok(!session_id, "got session %lu\n", session_id);
+}
+
 /*
  * Test creating window in a service process. Although services run in non-interactive,
  * they may create windows that will never be visible.
@@ -195,6 +205,7 @@ static DWORD WINAPI service_handler(DWORD ctrl, DWORD event_type, void *event_da
         return NO_ERROR;
     case 128:
         test_winstation();
+        test_session();
         test_create_window();
         test_monitors();
         service_event("CUSTOM");
