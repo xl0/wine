@@ -1971,7 +1971,16 @@ void rpc_execute_call(struct dispatch_params *params)
     old_causality_id = tlsdata->causality_id;
     tlsdata->causality_id = orpcthis.cid;
     tlsdata->pending_call_count_server++;
-    params->hr = IRpcStubBuffer_Invoke(params->stub, params->msg, params->chan);
+    __TRY
+    {
+        params->hr = IRpcStubBuffer_Invoke(params->stub, params->msg, params->chan);
+    }
+    __EXCEPT_ALL
+    {
+        WARN("exception %#lx in the server\n", GetExceptionCode());
+        params->hr = RPC_E_SERVERFAULT;
+    }
+    __ENDTRY
     tlsdata->pending_call_count_server--;
     tlsdata->causality_id = old_causality_id;
 

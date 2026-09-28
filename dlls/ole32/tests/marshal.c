@@ -3093,6 +3093,95 @@ static void test_proxy_interfaces(void)
     end_host_object(tid, thread);
 }
 
+static DWORD server_exception;
+static DWORD server_exception_flags;
+
+static HRESULT WINAPI ThrowingPersist_QueryInterface(IPersist *iface, REFIID riid, void **ppv)
+{
+    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IPersist))
+    {
+        *ppv = iface;
+        return S_OK;
+    }
+    *ppv = NULL;
+    return E_NOINTERFACE;
+}
+
+static ULONG WINAPI ThrowingPersist_AddRef(IPersist *iface)
+{
+    return 2;
+}
+
+static ULONG WINAPI ThrowingPersist_Release(IPersist *iface)
+{
+    return 1;
+}
+
+static HRESULT WINAPI ThrowingPersist_GetClassID(IPersist *iface, CLSID *clsid)
+{
+    if (server_exception)
+        RaiseException(server_exception, server_exception_flags, 0, NULL);
+    *clsid = CLSID_WineTestPSFactoryBuffer;
+    return S_OK;
+}
+
+static const IPersistVtbl ThrowingPersistVtbl =
+{
+    ThrowingPersist_QueryInterface,
+    ThrowingPersist_AddRef,
+    ThrowingPersist_Release,
+    ThrowingPersist_GetClassID,
+};
+
+static IPersist ThrowingPersist = { &ThrowingPersistVtbl };
+
+static void test_server_exception(void)
+{
+    static const struct
+    {
+        DWORD code, flags;
+    }
+    tests[] =
+    {
+        { 0xe06d7363, EXCEPTION_NONCONTINUABLE }, /* C++ exception */
+        { EXCEPTION_ACCESS_VIOLATION, 0 },
+        { RPC_X_BAD_STUB_DATA, 0 },
+    };
+    IStream *stream;
+    IPersist *proxy;
+    HANDLE thread;
+    CLSID clsid;
+    HRESULT hr;
+    DWORD tid;
+    int i;
+
+    hr = CreateStreamOnHGlobal(NULL, TRUE, &stream);
+    ok_ole_success(hr, CreateStreamOnHGlobal);
+    tid = start_host_object(stream, &IID_IPersist, (IUnknown *)&ThrowingPersist, MSHLFLAGS_NORMAL, &thread);
+
+    IStream_Seek(stream, ullZero, STREAM_SEEK_SET, NULL);
+    hr = CoUnmarshalInterface(stream, &IID_IPersist, (void **)&proxy);
+    ok_ole_success(hr, CoUnmarshalInterface);
+    IStream_Release(stream);
+
+    for (i = 0; i < ARRAY_SIZE(tests); i++)
+    {
+        server_exception = tests[i].code;
+        server_exception_flags = tests[i].flags;
+        hr = IPersist_GetClassID(proxy, &clsid);
+        todo_wine_if(i) ok(hr == RPC_E_SERVERFAULT, "%d: got %#lx\n", i, hr);
+    }
+
+    /* the server survives */
+    server_exception = 0;
+    hr = IPersist_GetClassID(proxy, &clsid);
+    ok(hr == S_OK, "got %#lx\n", hr);
+    ok(IsEqualGUID(&clsid, &CLSID_WineTestPSFactoryBuffer), "got %s\n", wine_dbgstr_guid(&clsid));
+
+    IPersist_Release(proxy);
+    end_host_object(tid, thread);
+}
+
 typedef struct
 {
     IUnknown IUnknown_iface;
@@ -4954,6 +5043,7 @@ START_TEST(marshal)
     test_message_filter();
     test_bad_marshal_stream();
     test_proxy_interfaces();
+    test_server_exception();
     test_stubbuffer(&IID_IClassFactory);
     test_proxybuffer(&IID_IClassFactory);
     test_message_reentrancy();
