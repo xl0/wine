@@ -348,6 +348,7 @@ static void create_user_shared_data(void)
     data->NtMinorVersion              = version.dwMinorVersion;
     data->SuiteMask                   = version.wSuiteMask;
     wcscpy( data->NtSystemRoot, L"C:\\windows" );
+    data->ActiveConsoleId             = NtCurrentTeb()->Peb->SessionId;
 
     UnmapViewOfFile( data );
 }
