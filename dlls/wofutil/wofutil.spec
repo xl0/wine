@@ -2,7 +2,7 @@
 @ stub WofFileEnumFiles
 @ stub WofGetDriverVersion
 @ stdcall WofIsExternalFile(wstr ptr ptr ptr ptr)
-@ stub WofSetFileDataLocation
+@ stdcall WofSetFileDataLocation(long long ptr long)
 @ stdcall WofShouldCompressBinaries(wstr ptr)
 @ stub WofWimAddEntry
 @ stub WofWimEnumFiles

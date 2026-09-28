@@ -18,6 +18,8 @@
 
 #include <stdarg.h>
 #include "windef.h"
+#include "winbase.h"
+#include "winioctl.h"
 #include "wofapi.h"
 #include "wine/debug.h"
 
@@ -36,4 +38,32 @@ BOOL WINAPI WofShouldCompressBinaries( const WCHAR *volume, ULONG *alg )
 {
     FIXME( "%s, %p\n", debugstr_w(volume), alg );
     return FALSE;
+}
+
+HRESULT WINAPI WofSetFileDataLocation( HANDLE file, ULONG provider, void *info, ULONG length )
+{
+    struct
+    {
+        WOF_EXTERNAL_INFO wof;
+        FILE_PROVIDER_EXTERNAL_INFO_V1 file;
+    } in;
+    DWORD size;
+
+    TRACE( "%p, %lu, %p, %lu\n", file, provider, info, length );
+
+    if (provider != WOF_PROVIDER_FILE)
+    {
+        FIXME( "provider %lu not supported\n", provider );
+        return E_NOTIMPL;
+    }
+    if (!info || length < sizeof(WOF_FILE_COMPRESSION_INFO)) return E_INVALIDARG;
+
+    in.wof.Version = WOF_CURRENT_VERSION;
+    in.wof.Provider = WOF_PROVIDER_FILE;
+    in.file.Version = FILE_PROVIDER_CURRENT_VERSION;
+    in.file.Algorithm = ((WOF_FILE_COMPRESSION_INFO *)info)->Algorithm;
+    in.file.Flags = 0;
+    if (!DeviceIoControl( file, FSCTL_SET_EXTERNAL_BACKING, &in, sizeof(in), NULL, 0, &size, NULL ))
+        return HRESULT_FROM_WIN32( GetLastError() );
+    return S_OK;
 }
