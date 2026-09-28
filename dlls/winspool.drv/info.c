@@ -1091,7 +1091,7 @@ void WINSPOOL_LoadSystemPrinters(void)
     WCHAR               PrinterName[256];
 
     /* FIXME: The init code should be moved to spoolsv.exe */
-    init_mutex = CreateMutexW( NULL, TRUE, L"__WINE_WINSPOOL_MUTEX__" );
+    init_mutex = CreateMutexW( NULL, TRUE, L"Global\\__WINE_WINSPOOL_MUTEX__" );
     if (!init_mutex)
     {
         ERR( "Failed to create mutex\n" );
