@@ -795,6 +795,81 @@ static const char cf_custom_action_dat[] =
     "rf_immediate\t1\tcustom.dll\tcf_present\n"
     "rf_deferred\t1025\tcustom.dll\tcf_absent\n";
 
+static const char ef_directory_dat[] =
+    "Directory\tDirectory_Parent\tDefaultDir\n"
+    "s72\tS72\tl255\n"
+    "Directory\tDirectory\n"
+    "NEWDIR\tMSITESTDIR\tnew\n"
+    "EXISTINGDIR\tMSITESTDIR\texisting\n"
+    "EXISTINGCOMPDIR\tMSITESTDIR\texistingcomp\n"
+    "MSITESTDIR\tProgramFilesFolder\tmsitest\n"
+    "ProgramFilesFolder\tTARGETDIR\t.\n"
+    "TARGETDIR\t\tSourceDir";
+
+static const char ef_component_dat[] =
+    "Component\tComponentId\tDirectory_\tAttributes\tCondition\tKeyPath\n"
+    "s72\tS38\ts72\ti2\tS255\tS72\n"
+    "Component\tComponent\n"
+    "One\t{4F3E2CD6-7A1B-4B39-9E0A-3C2F1D5E8B71}\tNEWDIR\t0\t\tone.txt\n"
+    "Two\t{8C1A5B2E-3D4F-4E6A-9B7C-1D2E3F4A5B6C}\tEXISTINGCOMPDIR\t0\t\ttwo.txt\n"
+    "Three\t{2B7D9E1F-5A3C-4D8B-A6E2-7F1C3B5D9A4E}\tMSITESTDIR\t0\t\t\n";
+
+static const char ef_feature_dat[] =
+    "Feature\tFeature_Parent\tTitle\tDescription\tDisplay\tLevel\tDirectory_\tAttributes\n"
+    "s38\tS38\tL64\tL255\tI2\ti2\tS72\ti2\n"
+    "Feature\tFeature\n"
+    "One\t\tOne\tThe One Feature\t1\t3\tMSITESTDIR\t0\n";
+
+static const char ef_feature_comp_dat[] =
+    "Feature_\tComponent_\n"
+    "s38\ts72\n"
+    "FeatureComponents\tFeature_\tComponent_\n"
+    "One\tOne\n"
+    "One\tTwo\n"
+    "One\tThree\n";
+
+static const char ef_file_dat[] =
+    "File\tComponent_\tFileName\tFileSize\tVersion\tLanguage\tAttributes\tSequence\n"
+    "s72\ts72\tl255\ti4\tS72\tS20\tI2\ti2\n"
+    "File\tFile\n"
+    "one.txt\tOne\tone.txt\t0\t\t\t0\t1\n"
+    "two.txt\tTwo\ttwo.txt\t0\t\t\t0\t2\n";
+
+static const char ef_create_folders_dat[] =
+    "Directory_\tComponent_\n"
+    "s72\ts72\n"
+    "CreateFolder\tDirectory_\tComponent_\n"
+    "EXISTINGDIR\tThree\n";
+
+static const char ef_install_exec_seq_dat[] =
+    "Action\tCondition\tSequence\n"
+    "s72\tS255\tI2\n"
+    "InstallExecuteSequence\tAction\n"
+    "LaunchConditions\t\t100\n"
+    "CostInitialize\t\t800\n"
+    "FileCost\t\t900\n"
+    "CostFinalize\t\t1000\n"
+    "InstallValidate\t\t1400\n"
+    "InstallInitialize\t\t1500\n"
+    "ProcessComponents\t\t1600\n"
+    "UnpublishFeatures\t\t1800\n"
+    "RemoveFiles\t\t3500\n"
+    "RemoveFolders\t\t3800\n"
+    "CreateFolders\t\t3900\n"
+    "InstallFiles\t\t4000\n"
+    "InstallExecute\t\t4500\n"
+    "fail\tFAIL\t4600\n"
+    "RegisterProduct\t\t6100\n"
+    "PublishFeatures\t\t6300\n"
+    "PublishProduct\t\t6400\n"
+    "InstallFinalize\t\t6600\n";
+
+static const char ef_custom_action_dat[] =
+    "Action\tType\tSource\tTarget\n"
+    "s72\ti2\tS64\tS0\n"
+    "CustomAction\tAction\n"
+    "fail\t19\t\tinstall failed\n";
+
 static const char sr_file_dat[] =
     "File\tComponent_\tFileName\tFileSize\tVersion\tLanguage\tAttributes\tSequence\n"
     "s72\ts72\tl255\ti4\tS72\tS20\tI2\ti2\n"
@@ -2092,6 +2167,20 @@ static const msi_table cf_tables[] =
     ADD_TABLE(cf_create_folders),
     ADD_TABLE(cf_install_exec_seq),
     ADD_TABLE(cf_custom_action),
+    ADD_TABLE(media),
+    ADD_TABLE(property)
+};
+
+static const msi_table ef_tables[] =
+{
+    ADD_TABLE(ef_component),
+    ADD_TABLE(ef_directory),
+    ADD_TABLE(ef_feature),
+    ADD_TABLE(ef_feature_comp),
+    ADD_TABLE(ef_file),
+    ADD_TABLE(ef_create_folders),
+    ADD_TABLE(ef_install_exec_seq),
+    ADD_TABLE(ef_custom_action),
     ADD_TABLE(media),
     ADD_TABLE(property)
 };
@@ -5121,6 +5210,73 @@ error:
     DeleteFileA(msifile);
 }
 
+static void test_remove_existing_folders(void)
+{
+    UINT r;
+
+    if (!is_process_elevated())
+    {
+        skip("process is limited\n");
+        return;
+    }
+
+    CreateDirectoryA("msitest", NULL);
+    CreateDirectoryA("msitest\\new", NULL);
+    CreateDirectoryA("msitest\\existingcomp", NULL);
+    create_file("msitest\\new\\one.txt", 1000);
+    create_file("msitest\\existingcomp\\two.txt", 1000);
+    create_database(msifile, ef_tables, ARRAY_SIZE(ef_tables));
+
+    MsiSetInternalUI(INSTALLUILEVEL_NONE, NULL);
+
+    create_pf("msitest", FALSE);
+    create_pf("msitest\\existing", FALSE);
+    create_pf("msitest\\existingcomp", FALSE);
+
+    r = MsiInstallProductA(msifile, NULL);
+    if (r == ERROR_INSTALL_PACKAGE_REJECTED)
+    {
+        skip("Not enough rights to perform tests\n");
+        goto error;
+    }
+    ok(r == ERROR_SUCCESS, "Expected ERROR_SUCCESS, got %u\n", r);
+    ok(pf_exists("msitest\\new\\one.txt"), "file not installed\n");
+    ok(pf_exists("msitest\\existingcomp\\two.txt"), "file not installed\n");
+
+    r = MsiInstallProductA(msifile, "REMOVE=ALL");
+    ok(r == ERROR_SUCCESS, "Expected ERROR_SUCCESS, got %u\n", r);
+    ok(!pf_exists("msitest\\new\\one.txt"), "file not removed\n");
+    ok(!pf_exists("msitest\\existingcomp\\two.txt"), "file not removed\n");
+    ok(!pf_exists("msitest\\new"), "directory not removed\n");
+    ok(pf_exists("msitest\\existingcomp"), "existing directory removed\n");
+    ok(pf_exists("msitest\\existing"), "existing directory removed\n");
+    ok(pf_exists("msitest"), "existing directory removed\n");
+
+    /* rollback */
+    r = MsiInstallProductA(msifile, "FAIL=1");
+    ok(r == ERROR_INSTALL_FAILURE, "Expected ERROR_INSTALL_FAILURE, got %u\n", r);
+    ok(!pf_exists("msitest\\new\\one.txt"), "file not removed\n");
+    ok(!pf_exists("msitest\\existingcomp\\two.txt"), "file not removed\n");
+    ok(!pf_exists("msitest\\new"), "directory not removed\n");
+    ok(pf_exists("msitest\\existingcomp"), "existing directory removed\n");
+    ok(pf_exists("msitest\\existing"), "existing directory removed\n");
+    ok(pf_exists("msitest"), "existing directory removed\n");
+
+error:
+    delete_pf("msitest\\new\\one.txt", TRUE);
+    delete_pf("msitest\\existingcomp\\two.txt", TRUE);
+    delete_pf("msitest\\new", FALSE);
+    delete_pf("msitest\\existingcomp", FALSE);
+    delete_pf("msitest\\existing", FALSE);
+    delete_pf("msitest", FALSE);
+    DeleteFileA("msitest\\new\\one.txt");
+    DeleteFileA("msitest\\existingcomp\\two.txt");
+    RemoveDirectoryA("msitest\\new");
+    RemoveDirectoryA("msitest\\existingcomp");
+    RemoveDirectoryA("msitest");
+    DeleteFileA(msifile);
+}
+
 static void test_start_stop_services(void)
 {
     UINT r;
@@ -6694,6 +6850,7 @@ START_TEST(action)
     test_write_registry_values();
     test_envvar();
     test_create_remove_folder();
+    test_remove_existing_folders();
     test_start_stop_services();
     test_delete_services();
     test_install_services();

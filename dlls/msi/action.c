@@ -710,7 +710,7 @@ static void remove_persistent_folder( MSIFOLDER *folder )
     }
     if (folder->persistent && folder->State != FOLDER_STATE_REMOVED)
     {
-        if (RemoveDirectoryW( folder->ResolvedTarget )) folder->State = FOLDER_STATE_REMOVED;
+        if (msi_remove_created_folder( folder->ResolvedTarget )) folder->State = FOLDER_STATE_REMOVED;
     }
 }
 

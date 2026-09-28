@@ -85,12 +85,30 @@ BOOL msi_delete_file( MSIPACKAGE *package, const WCHAR *filename )
     return ret;
 }
 
+/* folders created by the installer, only these are removed when they become empty */
+static const WCHAR installer_folders_keyW[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\Folders";
+
 static BOOL create_directory( MSIPACKAGE *package, const WCHAR *path )
 {
+    WCHAR *name;
     BOOL ret;
+    HKEY key;
+
     msi_disable_fs_redirection( package );
     ret = CreateDirectoryW( path, NULL );
     msi_revert_fs_redirection( package );
+
+    if (ret && !RegCreateKeyExW( HKEY_LOCAL_MACHINE, installer_folders_keyW, 0, NULL, 0,
+                                 KEY_SET_VALUE | KEY_WOW64_64KEY, NULL, &key, NULL ))
+    {
+        if ((name = malloc( (wcslen( path ) + 2) * sizeof(WCHAR) )))
+        {
+            swprintf( name, wcslen( path ) + 2, L"%s\\", path );
+            msi_reg_set_val_str( key, name, NULL );
+            free( name );
+        }
+        RegCloseKey( key );
+    }
     return ret;
 }
 
@@ -100,6 +118,23 @@ BOOL msi_remove_directory( MSIPACKAGE *package, const WCHAR *path )
     msi_disable_fs_redirection( package );
     ret = RemoveDirectoryW( path );
     msi_revert_fs_redirection( package );
+    return ret;
+}
+
+/* remove a folder with trailing backslash if it was created by the installer and is empty */
+BOOL msi_remove_created_folder( const WCHAR *path )
+{
+    BOOL ret = FALSE;
+    HKEY key;
+
+    if (RegOpenKeyExW( HKEY_LOCAL_MACHINE, installer_folders_keyW, 0,
+                       KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY, &key )) return FALSE;
+    if (!RegQueryValueExW( key, path, NULL, NULL, NULL, NULL ) && RemoveDirectoryW( path ))
+    {
+        RegDeleteValueW( key, path );
+        ret = TRUE;
+    }
+    RegCloseKey( key );
     return ret;
 }
 
@@ -1535,7 +1570,7 @@ static void remove_folder( MSIFOLDER *folder )
     }
     if (!folder->persistent && folder->State != FOLDER_STATE_REMOVED)
     {
-        if (RemoveDirectoryW( folder->ResolvedTarget )) folder->State = FOLDER_STATE_REMOVED;
+        if (msi_remove_created_folder( folder->ResolvedTarget )) folder->State = FOLDER_STATE_REMOVED;
     }
 }
 
