@@ -686,6 +686,40 @@ static BOOL WINTRUST_GetTimeFromCounterSigner(
     return foundTimeStamp;
 }
 
+/* Gets genTime from the TSTInfo content of an RFC 3161 time-stamp token. */
+static BOOL WINTRUST_GetTimeFromTimeStampToken(const CRYPT_ATTR_BLOB *token,
+ FILETIME *time)
+{
+    static const DWORD encoding = X509_ASN_ENCODING | PKCS_7_ASN_ENCODING;
+    CRYPT_SEQUENCE_OF_ANY *tst_info = NULL;
+    BYTE *content = NULL;
+    DWORD size;
+    HCRYPTMSG msg;
+    BOOL ret = FALSE;
+
+    /* FIXME: need to verify the time-stamp token signature too */
+    if (!(msg = CryptMsgOpenToDecode(encoding, 0, 0, 0, NULL, NULL)))
+        return FALSE;
+    if (CryptMsgUpdate(msg, token->pbData, token->cbData, TRUE) &&
+     CryptMsgGetParam(msg, CMSG_CONTENT_PARAM, 0, NULL, &size) &&
+     (content = malloc(size)) &&
+     CryptMsgGetParam(msg, CMSG_CONTENT_PARAM, 0, content, &size) &&
+     CryptDecodeObjectEx(encoding, X509_SEQUENCE_OF_ANY, content, size,
+     CRYPT_DECODE_ALLOC_FLAG, NULL, &tst_info, &size) &&
+     tst_info->cValue > 4)
+    {
+        /* version, policy, messageImprint, serialNumber, genTime, ... */
+        size = sizeof(*time);
+        ret = CryptDecodeObjectEx(encoding, X509_CHOICE_OF_TIME,
+         tst_info->rgValue[4].pbData, tst_info->rgValue[4].cbData, 0, NULL,
+         time, &size);
+    }
+    LocalFree(tst_info);
+    free(content);
+    CryptMsgClose(msg);
+    return ret;
+}
+
 static LPCSTR filetime_to_str(const FILETIME *time)
 {
     static char date[80];
@@ -732,6 +766,19 @@ static FILETIME WINTRUST_GetTimeFromSigner(const CRYPT_PROVIDER_DATA *data,
                     LocalFree(counterSignerInfo);
                 }
             }
+        }
+    }
+    for (i = 0; !foundTimeStamp && i < signerInfo->UnauthAttrs.cAttr; i++)
+    {
+        if (!strcmp(signerInfo->UnauthAttrs.rgAttr[i].pszObjId,
+         szOID_RFC3161_counterSign))
+        {
+            const CRYPT_ATTRIBUTE *attr = &signerInfo->UnauthAttrs.rgAttr[i];
+            DWORD j;
+
+            for (j = 0; !foundTimeStamp && j < attr->cValue; j++)
+                foundTimeStamp = WINTRUST_GetTimeFromTimeStampToken(
+                 &attr->rgValue[j], &time);
         }
     }
     if (!foundTimeStamp)

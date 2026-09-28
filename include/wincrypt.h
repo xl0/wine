@@ -3072,6 +3072,7 @@ typedef struct _CTL_FIND_SUBJECT_PARA
 #define szOID_PKCS_12_FRIENDLY_NAME_ATTR     "1.2.840.113549.1.9.20"
 #define szOID_PKCS_12_LOCAL_KEY_ID           "1.2.840.113549.1.9.21"
 #define szOID_CERT_EXTENSIONS                "1.3.6.1.4.1.311.2.1.14"
+#define szOID_RFC3161_counterSign            "1.3.6.1.4.1.311.3.3.1"
 #define szOID_NEXT_UPDATE_LOCATION           "1.3.6.1.4.1.311.10.2"
 #define szOID_KP_CTL_USAGE_SIGNING           "1.3.6.1.4.1.311.10.3.1"
 #define szOID_KP_TIME_STAMP_SIGNING          "1.3.6.1.4.1.311.10.3.2"
