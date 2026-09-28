@@ -779,6 +779,9 @@ static DWORD WINAPI composite_thread_proc(void *iface)
     /* TODO: Implement and use D3DKMTWaitForVerticalBlankEvent() */
     hdc = GetDC(0);
     frequency = GetDeviceCaps(hdc, VREFRESH);
+    /* 0 and 1 mean the hardware default refresh rate. */
+    if (frequency <= 1)
+        frequency = 60;
     refresh_period = 1000 / frequency;
     ReleaseDC(0, hdc);
 
