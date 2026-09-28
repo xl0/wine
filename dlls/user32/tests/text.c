@@ -55,6 +55,7 @@ static void test_DrawTextCalcRect(void)
     BOOL ret;
     DRAWTEXTPARAMS dtp;
     BOOL conform_xp = TRUE;
+    SIZE size;
 
     /* Initialization */
     hwnd = CreateWindowExA(0, "static", NULL, WS_POPUP,
@@ -690,6 +691,14 @@ static void test_DrawTextCalcRect(void)
     dtp.cbSize = sizeof(dtp);
     textheight = DrawTextExW(hdc, complex_format_textW, -1, &rect, DT_EXPANDTABS, &dtp);
     ok(dtp.uiLengthDrawn == 37, "Unexpected uiLengthDrawn %d\n", dtp.uiLengthDrawn );
+
+    /* lines break after a tab too */
+    GetTextExtentPoint32W(hdc, L"aaaa-bb", 7, &size);
+    SetRect(&rect, 0, 0, size.cx, 25);
+    memset(&dtp, 0, sizeof(dtp));
+    dtp.cbSize = sizeof(dtp);
+    DrawTextExW(hdc, (WCHAR *)L"aaaa\tbbbb cc", -1, &rect, DT_EDITCONTROL | DT_NOPREFIX | DT_WORDBREAK, &dtp);
+    ok(dtp.uiLengthDrawn == 5, "Unexpected uiLengthDrawn %d\n", dtp.uiLengthDrawn);
 
 
     SelectObject(hdc, hOldFont);

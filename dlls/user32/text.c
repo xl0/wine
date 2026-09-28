@@ -368,8 +368,9 @@ static void TEXT_WordBreak (HDC hdc, WCHAR *str, unsigned int max_str,
 
     ScriptBreak(str, *len_str, &sa, sla);
 
-    /* Work back from the last character that did fit to either a space or the
-     * last character of a word, whichever is met first.
+    /* Work back from the last character that did fit to either a space, a tab
+     * or the last character of a word, whichever is met first.  A tab stays
+     * on the line.
      */
     p = str + chars_fit; /* The character that doesn't fit */
     i = chars_fit;
@@ -383,9 +384,9 @@ static void TEXT_WordBreak (HDC hdc, WCHAR *str, unsigned int max_str,
     }
     else
     {
-        while (i > 0 && !sla[(--i)+1].fWhiteSpace) p--;
+        while (i > 0 && !sla[(--i)+1].fWhiteSpace && str[i] != TAB) p--;
         p--;
-        word_fits = (i != 0 || sla[i+1].fWhiteSpace );
+        word_fits = (i != 0 || sla[i+1].fWhiteSpace || str[i] == TAB);
     }
 
     /* If there was one. */
