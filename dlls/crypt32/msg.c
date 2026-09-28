@@ -2438,6 +2438,15 @@ static BOOL CDecodeMsg_FinalizeEnvelopedContent(CDecodeMsg *msg,
     return CRYPT_ConstructBlob(&msg->u.enveloped_data.content, content);
 }
 
+/* Data content is an OCTET STRING, and so is any content of a CMS (version 3
+ * or later) message.
+ */
+static BOOL signed_content_is_octets(const CRYPT_SIGNED_INFO *info)
+{
+    return info->version >= CMSG_SIGNED_DATA_V3 ||
+     !strcmp(info->content.pszObjId, szOID_RSA_data);
+}
+
 static BOOL CDecodeMsg_FinalizeSignedContent(CDecodeMsg *msg,
  CRYPT_DER_BLOB *blob)
 {
@@ -2467,8 +2476,7 @@ static BOOL CDecodeMsg_FinalizeSignedContent(CDecodeMsg *msg,
              * content if the type is szOID_RSA_data.
              */
             if (!(msg->base.open_flags & CMSG_DETACHED_FLAG) &&
-             !strcmp(msg->u.signed_data.info->content.pszObjId,
-             szOID_RSA_data))
+             signed_content_is_octets(msg->u.signed_data.info))
             {
                 CRYPT_DATA_BLOB *rsa_blob;
 
@@ -3080,8 +3088,7 @@ static BOOL CDecodeSignedMsg_GetParam(CDecodeMsg *msg, DWORD dwParamType,
     case CMSG_CONTENT_PARAM:
         if (msg->u.signed_data.info)
         {
-            if (!strcmp(msg->u.signed_data.info->content.pszObjId,
-             szOID_RSA_data))
+            if (signed_content_is_octets(msg->u.signed_data.info))
             {
                 CRYPT_DATA_BLOB *blob;
                 DWORD size;
