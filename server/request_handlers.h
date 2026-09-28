@@ -240,6 +240,7 @@ DECL_HANDLER(get_token_sid);
 DECL_HANDLER(get_token_groups);
 DECL_HANDLER(get_token_default_dacl);
 DECL_HANDLER(set_token_default_dacl);
+DECL_HANDLER(set_token_session_id);
 DECL_HANDLER(set_security_object);
 DECL_HANDLER(get_security_object);
 DECL_HANDLER(get_system_handles);
@@ -552,6 +553,7 @@ static const req_handler req_handlers[REQ_NB_REQUESTS] =
     (req_handler)req_get_token_groups,
     (req_handler)req_get_token_default_dacl,
     (req_handler)req_set_token_default_dacl,
+    (req_handler)req_set_token_session_id,
     (req_handler)req_set_security_object,
     (req_handler)req_get_security_object,
     (req_handler)req_get_system_handles,
@@ -2016,6 +2018,9 @@ C_ASSERT( offsetof(struct get_token_default_dacl_reply, acl_len) == 8 );
 C_ASSERT( sizeof(struct get_token_default_dacl_reply) == 16 );
 C_ASSERT( offsetof(struct set_token_default_dacl_request, handle) == 12 );
 C_ASSERT( sizeof(struct set_token_default_dacl_request) == 16 );
+C_ASSERT( offsetof(struct set_token_session_id_request, handle) == 12 );
+C_ASSERT( offsetof(struct set_token_session_id_request, session_id) == 16 );
+C_ASSERT( sizeof(struct set_token_session_id_request) == 24 );
 C_ASSERT( offsetof(struct set_security_object_request, handle) == 12 );
 C_ASSERT( offsetof(struct set_security_object_request, security_info) == 16 );
 C_ASSERT( sizeof(struct set_security_object_request) == 24 );

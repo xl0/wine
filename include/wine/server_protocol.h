@@ -5033,6 +5033,18 @@ struct set_token_default_dacl_reply
     struct reply_header __header;
 };
 
+struct set_token_session_id_request
+{
+    struct request_header __header;
+    obj_handle_t    handle;
+    unsigned int    session_id;
+    char __pad_20[4];
+};
+struct set_token_session_id_reply
+{
+    struct reply_header __header;
+};
+
 struct set_security_object_request
 {
     struct request_header __header;
@@ -6481,6 +6493,7 @@ enum request
     REQ_get_token_groups,
     REQ_get_token_default_dacl,
     REQ_set_token_default_dacl,
+    REQ_set_token_session_id,
     REQ_set_security_object,
     REQ_get_security_object,
     REQ_get_system_handles,
@@ -6796,6 +6809,7 @@ union generic_request
     struct get_token_groups_request get_token_groups_request;
     struct get_token_default_dacl_request get_token_default_dacl_request;
     struct set_token_default_dacl_request set_token_default_dacl_request;
+    struct set_token_session_id_request set_token_session_id_request;
     struct set_security_object_request set_security_object_request;
     struct get_security_object_request get_security_object_request;
     struct get_system_handles_request get_system_handles_request;
@@ -7109,6 +7123,7 @@ union generic_reply
     struct get_token_groups_reply get_token_groups_reply;
     struct get_token_default_dacl_reply get_token_default_dacl_reply;
     struct set_token_default_dacl_reply set_token_default_dacl_reply;
+    struct set_token_session_id_reply set_token_session_id_reply;
     struct set_security_object_reply set_security_object_reply;
     struct get_security_object_reply get_security_object_reply;
     struct get_system_handles_reply get_system_handles_reply;

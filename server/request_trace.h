@@ -2751,6 +2751,12 @@ static void dump_set_token_default_dacl_request( const struct set_token_default_
     dump_varargs_acl( ", acl=", cur_size );
 }
 
+static void dump_set_token_session_id_request( const struct set_token_session_id_request *req )
+{
+    fprintf( stderr, " handle=%04x", req->handle );
+    fprintf( stderr, ", session_id=%08x", req->session_id );
+}
+
 static void dump_set_security_object_request( const struct set_security_object_request *req )
 {
     fprintf( stderr, " handle=%04x", req->handle );
@@ -3776,6 +3782,7 @@ static const dump_func req_dumpers[REQ_NB_REQUESTS] =
     (dump_func)dump_get_token_groups_request,
     (dump_func)dump_get_token_default_dacl_request,
     (dump_func)dump_set_token_default_dacl_request,
+    (dump_func)dump_set_token_session_id_request,
     (dump_func)dump_set_security_object_request,
     (dump_func)dump_get_security_object_request,
     (dump_func)dump_get_system_handles_request,
@@ -4089,6 +4096,7 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] =
     (dump_func)dump_get_token_default_dacl_reply,
     NULL,
     NULL,
+    NULL,
     (dump_func)dump_get_security_object_reply,
     (dump_func)dump_get_system_handles_reply,
     (dump_func)dump_get_tcp_connections_reply,
@@ -4400,6 +4408,7 @@ static const char * const req_names[REQ_NB_REQUESTS] =
     "get_token_groups",
     "get_token_default_dacl",
     "set_token_default_dacl",
+    "set_token_session_id",
     "set_security_object",
     "get_security_object",
     "get_system_handles",

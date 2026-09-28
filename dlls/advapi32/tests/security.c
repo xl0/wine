@@ -1757,7 +1757,7 @@ static void test_token_attr(void)
     TOKEN_OWNER *Owner;
     TOKEN_DEFAULT_DACL *Dacl;
     BOOL ret;
-    DWORD i, GLE;
+    DWORD i, GLE, session_id;
     LPSTR SidString;
     SECURITY_IMPERSONATION_LEVEL ImpersonationLevel;
     ACL *acl;
@@ -1977,6 +1977,15 @@ static void test_token_attr(void)
         win_skip("TOKEN_DEFAULT_DACL size too small on WoW64\n");
 
     free(Dacl);
+
+    /* changing the session id requires SeTcbPrivilege */
+    ret = GetTokenInformation(Token, TokenSessionId, &session_id, sizeof(session_id), &Size);
+    ok(ret, "GetTokenInformation(TokenSessionId) failed with error %lu\n", GetLastError());
+    SetLastError(0xdeadbeef);
+    ret = SetTokenInformation(Token, TokenSessionId, &session_id, sizeof(session_id));
+    ok(!ret, "SetTokenInformation(TokenSessionId) succeeded\n");
+    ok(GetLastError() == ERROR_PRIVILEGE_NOT_HELD, "got error %lu\n", GetLastError());
+
     CloseHandle(Token);
 }
 

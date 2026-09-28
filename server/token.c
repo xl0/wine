@@ -1596,6 +1596,24 @@ DECL_HANDLER(set_token_default_dacl)
     }
 }
 
+DECL_HANDLER(set_token_session_id)
+{
+    struct token *token;
+
+    if (!thread_single_check_privilege( current, SeTcbPrivilege ))
+    {
+        set_error( STATUS_PRIVILEGE_NOT_HELD );
+        return;
+    }
+
+    if ((token = (struct token *)get_handle_obj( current->process, req->handle,
+                                                 TOKEN_ADJUST_SESSIONID, &token_ops )))
+    {
+        token->session_id = req->session_id;
+        release_object( token );
+    }
+}
+
 DECL_HANDLER(create_linked_token)
 {
     struct token *token, *linked;
