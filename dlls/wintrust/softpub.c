@@ -1524,18 +1524,26 @@ HRESULT WINAPI GenericChainFinalProv(CRYPT_PROVIDER_DATA *data)
     return err == NO_ERROR ? S_OK : S_FALSE;
 }
 
+static void free_signer(CRYPT_PROVIDER_DATA *data, CRYPT_PROVIDER_SGNR *signer)
+{
+    DWORD i;
+
+    for (i = 0; i < signer->csCertChain; i++)
+        CertFreeCertificateContext(signer->pasCertChain[i].pCert);
+    data->psPfns->pfnFree(signer->pasCertChain);
+    data->psPfns->pfnFree(signer->psSigner);
+    CertFreeCertificateChain(signer->pChainContext);
+    for (i = 0; i < signer->csCounterSigners; i++)
+        free_signer(data, &signer->pasCounterSigners[i]);
+    data->psPfns->pfnFree(signer->pasCounterSigners);
+}
+
 HRESULT WINAPI SoftpubCleanup(CRYPT_PROVIDER_DATA *data)
 {
-    DWORD i, j;
+    DWORD i;
 
     for (i = 0; i < data->csSigners; i++)
-    {
-        for (j = 0; j < data->pasSigners[i].csCertChain; j++)
-            CertFreeCertificateContext(data->pasSigners[i].pasCertChain[j].pCert);
-        data->psPfns->pfnFree(data->pasSigners[i].pasCertChain);
-        data->psPfns->pfnFree(data->pasSigners[i].psSigner);
-        CertFreeCertificateChain(data->pasSigners[i].pChainContext);
-    }
+        free_signer(data, &data->pasSigners[i]);
     data->psPfns->pfnFree(data->pasSigners);
 
     for (i = 0; i < data->chStores; i++)

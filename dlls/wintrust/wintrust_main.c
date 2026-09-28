@@ -1002,9 +1002,24 @@ BOOL WINAPI WINTRUST_AddSgnr(CRYPT_PROVIDER_DATA *data,
     }
     if (fCounterSigner)
     {
-        FIXME("unimplemented for counter signers\n");
-        SetLastError(ERROR_INVALID_PARAMETER);
-        return FALSE;
+        CRYPT_PROVIDER_SGNR *signer = &data->pasSigners[idxSigner];
+        CRYPT_PROVIDER_SGNR *counterSigners = realloc(signer->pasCounterSigners,
+         (signer->csCounterSigners + 1) * sizeof(CRYPT_PROVIDER_SGNR));
+
+        if (!counterSigners)
+        {
+            SetLastError(ERROR_OUTOFMEMORY);
+            return FALSE;
+        }
+        signer->pasCounterSigners = counterSigners;
+        /* Ownership of psSigner is passed, as for signers. */
+        if (sgnr->cbStruct == sizeof(CRYPT_PROVIDER_SGNR))
+            counterSigners[signer->csCounterSigners] = *sgnr;
+        else
+            memset(&counterSigners[signer->csCounterSigners], 0,
+             sizeof(CRYPT_PROVIDER_SGNR));
+        signer->csCounterSigners++;
+        return TRUE;
     }
     data->pasSigners = realloc(data->pasSigners,
      (data->csSigners + 1) * sizeof(CRYPT_PROVIDER_SGNR));
@@ -1038,30 +1053,24 @@ BOOL WINAPI WINTRUST_AddSgnr(CRYPT_PROVIDER_DATA *data,
 BOOL WINAPI WINTRUST_AddCert(CRYPT_PROVIDER_DATA *data, DWORD idxSigner,
  BOOL fCounterSigner, DWORD idxCounterSigner, PCCERT_CONTEXT pCert2Add)
 {
+    CRYPT_PROVIDER_SGNR *signer = &data->pasSigners[idxSigner];
     BOOL ret = FALSE;
 
     TRACE("(%p, %ld, %d, %ld, %p)\n", data, idxSigner, fCounterSigner,
-     idxSigner, pCert2Add);
+     idxCounterSigner, pCert2Add);
 
     if (fCounterSigner)
+        signer = &signer->pasCounterSigners[idxCounterSigner];
+    signer->pasCertChain = realloc(signer->pasCertChain,
+     (signer->csCertChain + 1) * sizeof(CRYPT_PROVIDER_CERT));
+    if (signer->pasCertChain)
     {
-        FIXME("unimplemented for counter signers\n");
-        SetLastError(ERROR_INVALID_PARAMETER);
-        return FALSE;
-    }
-    data->pasSigners[idxSigner].pasCertChain =
-     realloc(data->pasSigners[idxSigner].pasCertChain,
-     (data->pasSigners[idxSigner].csCertChain + 1) *
-     sizeof(CRYPT_PROVIDER_CERT));
-    if (data->pasSigners[idxSigner].pasCertChain)
-    {
-        CRYPT_PROVIDER_CERT *cert = &data->pasSigners[idxSigner].pasCertChain[
-         data->pasSigners[idxSigner].csCertChain];
+        CRYPT_PROVIDER_CERT *cert = &signer->pasCertChain[signer->csCertChain];
 
         memset(cert, 0, sizeof(*cert));
         cert->cbStruct = sizeof(CRYPT_PROVIDER_CERT);
         cert->pCert = CertDuplicateCertificateContext(pCert2Add);
-        data->pasSigners[idxSigner].csCertChain++;
+        signer->csCertChain++;
         ret = TRUE;
     }
     else
