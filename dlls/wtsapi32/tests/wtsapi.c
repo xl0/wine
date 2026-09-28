@@ -403,6 +403,46 @@ static void test_WTSQueryUserToken(void)
     ok(GetLastError()==ERROR_PRIVILEGE_NOT_HELD, "expected ERROR_PRIVILEGE_NOT_HELD got: %ld\n", GetLastError());
 }
 
+static void test_services_session(void)
+{
+    WTS_CONNECTSTATE_CLASS *state;
+    DWORD count, session_id;
+    WTSINFOW *info;
+    WCHAR *buf;
+    BOOL ret;
+
+    ProcessIdToSessionId(GetCurrentProcessId(), &session_id);
+    if (!session_id)
+    {
+        skip("running in session 0\n");
+        return;
+    }
+
+    ret = WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, 0, WTSConnectState, (WCHAR **)&state, &count);
+    ok(ret, "got error %lu\n", GetLastError());
+    ok(*state == WTSDisconnected, "got %d.\n", *state);
+    WTSFreeMemory(state);
+
+    ret = WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, 0, WTSUserName, &buf, &count);
+    ok(ret, "got error %lu\n", GetLastError());
+    ok(!wcscmp(buf, L""), "got %s\n", wine_dbgstr_w(buf));
+    ok(count == sizeof(WCHAR), "got %lu\n", count);
+    WTSFreeMemory(buf);
+
+    ret = WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, 0, WTSSessionInfo, (WCHAR **)&info, &count);
+    ok(ret, "got error %lu\n", GetLastError());
+    ok(info->State == WTSDisconnected, "got %d.\n", info->State);
+    ok(!info->SessionId, "got %lu\n", info->SessionId);
+    ok(!wcscmp(info->WinStationName, L"Services"), "got %s\n", wine_dbgstr_w(info->WinStationName));
+    ok(!wcscmp(info->UserName, L""), "got %s\n", wine_dbgstr_w(info->UserName));
+    WTSFreeMemory(info);
+
+    SetLastError(0xdeadbeef);
+    ret = WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, 0xdead, WTSConnectState, (WCHAR **)&state, &count);
+    ok(!ret, "expected failure\n");
+    ok(GetLastError() == ERROR_FILE_NOT_FOUND, "got %lu\n", GetLastError());
+}
+
 static void test_WTSEnumerateSessions(void)
 {
     BOOL console_found = FALSE, services_found = FALSE;
@@ -414,7 +454,7 @@ static void test_WTSEnumerateSessions(void)
 
     bret = WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &info, &count);
     ok(bret, "got error %lu.\n", GetLastError());
-    todo_wine_if(count == 1) ok(count >= 2, "got %lu.\n", count);
+    ok(count >= 2, "got %lu.\n", count);
 
     bret = WTSEnumerateSessionsA(WTS_CURRENT_SERVER_HANDLE, 0, 1, &infoA, &count2);
     ok(bret, "got error %lu.\n", GetLastError());
@@ -437,7 +477,7 @@ static void test_WTSEnumerateSessions(void)
         }
     }
     ok(console_found, "Console session not found.\n");
-    todo_wine ok(services_found, "Services session not found.\n");
+    ok(services_found, "Services session not found.\n");
 
     WTSFreeMemory(info);
     WTSFreeMemory(infoA);
@@ -452,4 +492,5 @@ START_TEST (wtsapi)
     test_WTSQuerySessionInformation();
     test_WTSQueryUserToken();
     test_WTSEnumerateSessions();
+    test_services_session();
 }

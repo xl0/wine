@@ -347,27 +347,29 @@ BOOL WINAPI WTSEnumerateSessionsA(HANDLE server, DWORD reserved, DWORD version,
 BOOL WINAPI WTSEnumerateSessionsW(HANDLE server, DWORD reserved, DWORD version,
         PWTS_SESSION_INFOW *session_info, DWORD *count)
 {
-    static const WCHAR session_name[] = L"Console";
+    static const WCHAR services_name[] = L"Services", console_name[] = L"Console";
+    WTS_SESSION_INFOW *info;
+    WCHAR *names;
 
-    FIXME("%p 0x%08lx 0x%08lx %p %p semi-stub.\n", server, reserved, version, session_info, count);
+    TRACE("%p 0x%08lx 0x%08lx %p %p.\n", server, reserved, version, session_info, count);
 
     if (!session_info || !count) return FALSE;
 
-    if (!(*session_info = malloc(sizeof(**session_info) + sizeof(session_name))))
+    /* session 0 runs the services, the user is logged on to the console session */
+    if (!(info = malloc(2 * sizeof(*info) + sizeof(services_name) + sizeof(console_name))))
     {
         SetLastError(ERROR_OUTOFMEMORY);
         return FALSE;
     }
-    if (!ProcessIdToSessionId( GetCurrentProcessId(), &(*session_info)->SessionId))
-    {
-        WTSFreeMemory(*session_info);
-        return FALSE;
-    }
-    *count = 1;
-    (*session_info)->State = WTSActive;
-    (*session_info)->pWinStationName = (WCHAR *)((char *)*session_info + sizeof(**session_info));
-    memcpy((*session_info)->pWinStationName, session_name, sizeof(session_name));
-
+    names = (WCHAR *)(info + 2);
+    info[0].SessionId = 0;
+    info[0].State = WTSDisconnected;
+    info[0].pWinStationName = wcscpy(names, services_name);
+    info[1].SessionId = WTSGetActiveConsoleSessionId();
+    info[1].State = WTSActive;
+    info[1].pWinStationName = wcscpy(names + ARRAY_SIZE(services_name), console_name);
+    *session_info = info;
+    *count = 2;
     return TRUE;
 }
 
@@ -546,6 +548,8 @@ BOOL WINAPI WTSQuerySessionInformationA(HANDLE server, DWORD session_id, WTS_INF
  */
 BOOL WINAPI WTSQuerySessionInformationW(HANDLE server, DWORD session_id, WTS_INFO_CLASS class, WCHAR **buffer, DWORD *count)
 {
+    BOOL services;
+
     TRACE("%p 0x%08lx %d %p %p\n", server, session_id, class, buffer, count);
 
     if (!buffer || !count)
@@ -554,12 +558,21 @@ BOOL WINAPI WTSQuerySessionInformationW(HANDLE server, DWORD session_id, WTS_INF
         return FALSE;
     }
 
+    if (session_id == WTS_CURRENT_SESSION && !ProcessIdToSessionId(GetCurrentProcessId(), &session_id))
+        return FALSE;
+    services = session_id != WTSGetActiveConsoleSessionId();
+    if (services && session_id)
+    {
+        SetLastError(ERROR_FILE_NOT_FOUND);
+        return FALSE;
+    }
+
     if (class == WTSConnectState)
     {
         WTS_CONNECTSTATE_CLASS *state;
 
         if (!(state = malloc(sizeof(*state)))) return FALSE;
-        *state = WTSActive;
+        *state = services ? WTSDisconnected : WTSActive;
         *buffer = (WCHAR *)state;
         *count = sizeof(*state);
         return TRUE;
@@ -583,7 +596,12 @@ BOOL WINAPI WTSQuerySessionInformationW(HANDLE server, DWORD session_id, WTS_INF
         WCHAR *username;
 
         if (!(username = malloc(size * sizeof(WCHAR)))) return FALSE;
-        GetUserNameW(username, &size);
+        if (services)
+        {
+            *username = 0;
+            size = 1;
+        }
+        else GetUserNameW(username, &size);
         *buffer = username;
         *count = size * sizeof(WCHAR);
         return TRUE;
@@ -595,7 +613,12 @@ BOOL WINAPI WTSQuerySessionInformationW(HANDLE server, DWORD session_id, WTS_INF
         WCHAR *computername;
 
         if (!(computername = malloc(size * sizeof(WCHAR)))) return FALSE;
-        GetComputerNameW(computername, &size);
+        if (services)
+        {
+            *computername = 0;
+            size = 0;
+        }
+        else GetComputerNameW(computername, &size);
         *buffer = computername;
         /* GetComputerNameW() return size doesn't include terminator */
         size++;
@@ -612,17 +635,16 @@ BOOL WINAPI WTSQuerySessionInformationW(HANDLE server, DWORD session_id, WTS_INF
         if (!(info = malloc(sizeof(*info)))) return FALSE;
         FIXME("returning partial WTSINFO\n");
         memset(info, 0, sizeof(*info));
-        info->State = WTSActive;
-        if (!ProcessIdToSessionId(GetCurrentProcessId(), &info->SessionId))
+        info->State = services ? WTSDisconnected : WTSActive;
+        info->SessionId = session_id;
+        wcscpy(info->WinStationName, services ? L"Services" : L"Console");
+        if (!services)
         {
-            free(info);
-            return FALSE;
+            size = sizeof(info->Domain) / sizeof(WCHAR);
+            GetComputerNameW(info->Domain, &size);
+            size = sizeof(info->UserName) / sizeof(WCHAR);
+            GetUserNameW(info->UserName, &size);
         }
-        wcscpy(info->WinStationName, L"Console");
-        size = sizeof(info->Domain) / sizeof(WCHAR);
-        GetComputerNameW(info->Domain, &size);
-        size = sizeof(info->UserName) / sizeof(WCHAR);
-        GetUserNameW(info->UserName, &size);
         GetSystemTimeAsFileTime(&ft);
         info->CurrentTime.LowPart = ft.dwLowDateTime;
         info->CurrentTime.HighPart = ft.dwHighDateTime;
