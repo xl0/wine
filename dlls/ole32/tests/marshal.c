@@ -3169,7 +3169,7 @@ static void test_server_exception(void)
         server_exception = tests[i].code;
         server_exception_flags = tests[i].flags;
         hr = IPersist_GetClassID(proxy, &clsid);
-        todo_wine_if(i) ok(hr == RPC_E_SERVERFAULT, "%d: got %#lx\n", i, hr);
+        ok(hr == RPC_E_SERVERFAULT, "%d: got %#lx\n", i, hr);
     }
 
     /* the server survives */

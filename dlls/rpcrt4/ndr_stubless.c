@@ -1394,6 +1394,7 @@ LONG WINAPI NdrStubCall2(
         {
         case STUBLESS_CALLSERVER:
             /* call the server function */
+            *pdwStubPhase = STUB_CALL_SERVER;
             if (pServerInfo->ThunkTable && pServerInfo->ThunkTable[pRpcMsg->ProcNum])
                 pServerInfo->ThunkTable[pRpcMsg->ProcNum](&stubMsg);
             else
@@ -1419,6 +1420,7 @@ LONG WINAPI NdrStubCall2(
                 else
                     TRACE("void stub implementation\n");
             }
+            *pdwStubPhase = STUB_MARSHAL;
 
             stubMsg.Buffer = NULL;
             stubMsg.BufferLength = 0;

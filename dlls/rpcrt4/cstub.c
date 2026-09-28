@@ -39,9 +39,10 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(ole);
 
-static LONG WINAPI stub_filter(EXCEPTION_POINTERS *eptr)
+static LONG WINAPI stub_filter(EXCEPTION_POINTERS *eptr, void *phase)
 {
-    if (eptr->ExceptionRecord->ExceptionFlags & EXCEPTION_NONCONTINUABLE)
+    /* exceptions in the server method are left to the channel */
+    if (*(DWORD *)phase == STUB_CALL_SERVER)
         return EXCEPTION_CONTINUE_SEARCH;
     return EXCEPTION_EXECUTE_HANDLER;
 }
@@ -297,7 +298,7 @@ HRESULT WINAPI CStdStubBuffer_Invoke(LPRPCSTUBBUFFER iface,
     else /* pure interpreted */
       NdrStubCall2(iface, pChannel, (PRPC_MESSAGE)pMsg, &dwPhase);
   }
-  __EXCEPT(stub_filter)
+  __EXCEPT_CTX(stub_filter, &dwPhase)
   {
     DWORD dwExceptionCode = GetExceptionCode();
     WARN("a stub call failed with exception 0x%08lx (%ld)\n", dwExceptionCode, dwExceptionCode);
