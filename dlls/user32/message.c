@@ -1076,6 +1076,25 @@ static BOOL CALLBACK bcast_winsta( LPWSTR winsta, LPARAM lp )
     return ret;
 }
 
+/* Services run in session 0 and broadcast device changes (plugplay, mountmgr), which
+ * Windows' PnP manager forwards to every session. Deliver them to the console session. */
+static BOOL bcast_console_session( BroadcastParm *parm )
+{
+    WCHAR buffer[64];
+    UNICODE_STRING str;
+    OBJECT_ATTRIBUTES attr;
+    BOOL ret;
+
+    swprintf( buffer, ARRAY_SIZE(buffer), L"\\Sessions\\%u\\Windows\\WindowStations\\WinSta0",
+              WTSGetActiveConsoleSessionId() );
+    RtlInitUnicodeString( &str, buffer );
+    InitializeObjectAttributes( &attr, &str, OBJ_CASE_INSENSITIVE, 0, NULL );
+    if (!(parm->winsta = NtUserOpenWindowStation( &attr, WINSTA_ENUMDESKTOPS ))) return TRUE;
+    ret = EnumDesktopsW( parm->winsta, bcast_desktop, (LPARAM)parm );
+    NtUserCloseWindowStation( parm->winsta );
+    return ret;
+}
+
 /***********************************************************************
  *		BroadcastSystemMessageA (USER32.@)
  *		BroadcastSystemMessage  (USER32.@)
@@ -1139,7 +1158,11 @@ LONG WINAPI BroadcastSystemMessageExW( DWORD flags, LPDWORD recipients, UINT msg
     parm.success = TRUE;
 
     if (*recipients & BSM_ALLDESKTOPS || *recipients == BSM_ALLCOMPONENTS)
+    {
         ret = EnumWindowStationsW(bcast_winsta, (LONG_PTR)&parm);
+        if (ret && NtCurrentTeb()->Peb->SessionId != WTSGetActiveConsoleSessionId())
+            ret = bcast_console_session( &parm );
+    }
     else if (*recipients & BSM_APPLICATIONS)
     {
         EnumWindows(bcast_childwindow, (LONG_PTR)&parm);
