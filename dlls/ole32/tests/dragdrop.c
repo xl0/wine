@@ -628,9 +628,15 @@ static ATOM register_dummy_class(void)
     return RegisterClassA(&wc);
 }
 
+static DWORD CALLBACK revoke_thread(void *hwnd)
+{
+    return RevokeDragDrop(hwnd);
+}
+
 static void test_Register_Revoke(void)
 {
-    HANDLE prop;
+    HANDLE prop, thread;
+    DWORD ret;
     HRESULT hr;
     HWND hwnd;
 
@@ -697,6 +703,30 @@ static void test_Register_Revoke(void)
 
     hr = RevokeDragDrop(hwnd);
     ok(hr == DRAGDROP_E_INVALIDHWND, "got 0x%08lx\n", hr);
+
+    /* only the registering thread may revoke, the registration is removed anyway */
+    hwnd = CreateWindowA("WineOleTestClass", "Test", 0,
+        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, NULL,
+        NULL, NULL, NULL);
+
+    droptarget_refs = 0;
+    hr = RegisterDragDrop(hwnd, &DropTarget);
+    ok(hr == S_OK, "got 0x%08lx\n", hr);
+
+    thread = CreateThread(NULL, 0, revoke_thread, hwnd, 0, NULL);
+    WaitForSingleObject(thread, INFINITE);
+    GetExitCodeThread(thread, &ret);
+    CloseHandle(thread);
+    ok(ret == RPC_E_WRONG_THREAD, "got 0x%08lx\n", ret);
+    ok(droptarget_refs == 1, "got %d refs\n", droptarget_refs);
+    ok(!GetPropA(hwnd, "OleDropTargetInterface"), "prop still set\n");
+
+    hr = RevokeDragDrop(hwnd);
+    ok(hr == DRAGDROP_E_NOTREGISTERED, "got 0x%08lx\n", hr);
+    ok(droptarget_refs == 1, "got %d refs\n", droptarget_refs);
+
+    DestroyWindow(hwnd);
+    droptarget_refs = 0;
 
     OleUninitialize();
 }

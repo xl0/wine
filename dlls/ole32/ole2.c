@@ -116,6 +116,9 @@ static const WCHAR prop_oledroptarget[] = L"OleDropTargetInterface";
 /* property to store Marshalled IDropTarget pointer */
 static const WCHAR prop_marshalleddroptarget[] = L"WineMarshalledDropTarget";
 
+/* property to store the id of the thread that registered the IDropTarget */
+static const WCHAR prop_droptargetthread[] = L"WineDropTargetThread";
+
 /******************************************************************************
  * These are the prototypes of miscellaneous utility methods
  */
@@ -608,6 +611,7 @@ HRESULT WINAPI RegisterDragDrop(HWND hwnd, LPDROPTARGET pDropTarget)
       IDropTarget_AddRef(pDropTarget);
       SetPropW(hwnd, prop_oledroptarget, pDropTarget);
       SetPropW(hwnd, prop_marshalleddroptarget, map);
+      SetPropW(hwnd, prop_droptargetthread, UlongToHandle(GetCurrentThreadId()));
     }
     else
     {
@@ -627,10 +631,11 @@ HRESULT WINAPI RegisterDragDrop(HWND hwnd, LPDROPTARGET pDropTarget)
  */
 HRESULT WINAPI RevokeDragDrop(HWND hwnd)
 {
+  DWORD pid;
   HANDLE map;
   IStream *stream;
   IDropTarget *drop_target;
-  HRESULT hr;
+  HRESULT hr, ret = S_OK;
 
   TRACE("(%p)\n", hwnd);
 
@@ -644,11 +649,21 @@ HRESULT WINAPI RevokeDragDrop(HWND hwnd)
   if (!(map = get_droptarget_handle(hwnd)))
     return DRAGDROP_E_NOTREGISTERED;
 
-  drop_target = GetPropW(hwnd, prop_oledroptarget);
-  if(drop_target) IDropTarget_Release(drop_target);
+  /* Only the registering thread may revoke. Windows then still removes the
+   * registration without releasing the target; we can't do that for windows
+   * of another process, whose target pointer isn't even valid here. */
+  if (GetPropW(hwnd, prop_droptargetthread) != UlongToHandle(GetCurrentThreadId()))
+  {
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid != GetCurrentProcessId()) return RPC_E_WRONG_THREAD;
+    ret = RPC_E_WRONG_THREAD;
+  }
+  else if ((drop_target = GetPropW(hwnd, prop_oledroptarget)))
+    IDropTarget_Release(drop_target);
 
   RemovePropW(hwnd, prop_oledroptarget);
   RemovePropW(hwnd, prop_marshalleddroptarget);
+  RemovePropW(hwnd, prop_droptargetthread);
 
   hr = create_stream_from_map(map, &stream);
   if(SUCCEEDED(hr))
@@ -658,7 +673,7 @@ HRESULT WINAPI RevokeDragDrop(HWND hwnd)
   }
   CloseHandle(map);
 
-  return hr;
+  return FAILED(hr) ? hr : ret;
 }
 
 /***********************************************************************
