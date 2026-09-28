@@ -3922,6 +3922,26 @@ static void test_file_disposition_information(void)
     UnmapViewOfFile( view );
     DeleteFileA( buffer );
 
+    /* POSIX semantics delete a file while another handle holds a lock on it */
+    GetTempFileNameA( tmp_path, "dis", 0, buffer );
+    handle = CreateFileA( buffer, GENERIC_WRITE | DELETE, FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, CREATE_ALWAYS, 0, 0 );
+    ok( handle != INVALID_HANDLE_VALUE, "failed to create file, error %lu\n", GetLastError() );
+    handle2 = CreateFileA( buffer, GENERIC_WRITE, FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, 0 );
+    ok( handle2 != INVALID_HANDLE_VALUE, "failed to open file, error %lu\n", GetLastError() );
+    ok( LockFile( handle2, 0, 0, 1, 0 ), "LockFile failed, error %lu\n", GetLastError() );
+    fdie.Flags = FILE_DISPOSITION_DELETE | FILE_DISPOSITION_POSIX_SEMANTICS;
+    res = pNtSetInformationFile( handle, &io, &fdie, sizeof(fdie), FileDispositionInformationEx );
+    ok( res == STATUS_SUCCESS || res == STATUS_INVALID_INFO_CLASS, "got %#lx\n", res );
+    CloseHandle( handle );
+    if (res == STATUS_SUCCESS)
+    {
+        fileDeleted = GetFileAttributesA( buffer ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
+        ok( fileDeleted, "File should have been deleted\n" );
+    }
+    ok( UnlockFile( handle2, 0, 0, 1, 0 ), "UnlockFile failed, error %lu\n", GetLastError() );
+    CloseHandle( handle2 );
+    DeleteFileA( buffer );
+
     /* pending delete flag is shared across handles */
     GetTempFileNameA( tmp_path, "dis", 0, buffer );
     handle = CreateFileA(buffer, GENERIC_WRITE | DELETE, FILE_SHARE_DELETE, NULL, CREATE_ALWAYS, 0, 0);

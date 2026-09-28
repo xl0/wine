@@ -1157,6 +1157,13 @@ static void inode_add_closed_fd( struct inode *inode, struct closed_fd *fd )
 {
     if (!list_empty( &inode->locks ))
     {
+        if ((fd->disp_flags & FILE_DISPOSITION_DELETE) &&
+            (fd->disp_flags & FILE_DISPOSITION_POSIX_SEMANTICS))
+        {
+            /* unlink it at once, but keep the fd open to preserve the locks */
+            unlink_closed_fd( inode, fd );
+            fd->disp_flags = 0;
+        }
         list_add_head( &inode->closed, &fd->entry );
     }
     else if ((fd->disp_flags & FILE_DISPOSITION_DELETE) &&
