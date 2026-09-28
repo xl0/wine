@@ -118,6 +118,12 @@ static const struct message Sub_MixDelPrevTest[] = {
     { 0 }
 };
 
+static const struct message Sub_WndProc3Test[] = {
+    { 3, 1 },
+    { 1, 1 },
+    { 0 }
+};
+
 static void add_message(const struct message *msg)
 {
     if (!sequence)
@@ -342,6 +348,10 @@ static void test_subclass(void)
     pRemoveWindowSubclass(hwnd, wnd_proc_sub, 5);
 
     check_unicode(hwnd, EXPECT_WNDPROC_3);
+
+    /* wnd_proc_3 still calls our window procedure */
+    SendMessageA(hwnd, WM_USER, 1, 0);
+    ok_sequence(Sub_WndProc3Test, "All removed below wnd_proc_3");
 
     DestroyWindow(hwnd);
 }

@@ -1153,6 +1153,25 @@ done:
 }
 
 
+/* Free the subclass stack once it is empty and unused, unless another window
+ * procedure was set on top of ours and still calls it. */
+static void subclass_cleanup (HWND hWnd, SUBCLASS_INFO *stack)
+{
+   if (stack->SubclassProcs || stack->frame)
+      return;
+   if ((WNDPROC)GetWindowLongPtrW (hWnd, GWLP_WNDPROC) != COMCTL32_SubclassProc)
+      return;
+
+   TRACE("Last Subclass removed, cleaning up\n");
+   /* clean up our heap and reset the original window procedure */
+   if (stack->is_unicode)
+      SetWindowLongPtrW (hWnd, GWLP_WNDPROC, (DWORD_PTR)stack->origproc);
+   else
+      SetWindowLongPtrA (hWnd, GWLP_WNDPROC, (DWORD_PTR)stack->origproc);
+   Free (stack);
+   RemovePropW( hWnd, COMCTL32_wSubclass );
+}
+
 /***********************************************************************
  * RemoveWindowSubclass [COMCTL32.412]
  *
@@ -1211,19 +1230,9 @@ BOOL WINAPI RemoveWindowSubclass(HWND hWnd, SUBCLASSPROC pfnSubclass, UINT_PTR u
    }
    
    /* another thread leaves the cleanup to the next message */
-   if (!stack->SubclassProcs && !stack->frame && tid == GetCurrentThreadId ()) {
-      TRACE("Last Subclass removed, cleaning up\n");
-      /* clean up our heap and reset the original window procedure */
-      if ((WNDPROC)GetWindowLongPtrW (hWnd, GWLP_WNDPROC) != COMCTL32_SubclassProc)
-         WARN("Window procedure has been modified, skipping restore\n");
-      else if (stack->is_unicode)
-         SetWindowLongPtrW (hWnd, GWLP_WNDPROC, (DWORD_PTR)stack->origproc);
-      else
-         SetWindowLongPtrA (hWnd, GWLP_WNDPROC, (DWORD_PTR)stack->origproc);
-      Free (stack);
-      RemovePropW( hWnd, COMCTL32_wSubclass );
-   }
-   
+   if (tid == GetCurrentThreadId ())
+      subclass_cleanup (hWnd, stack);
+
    return ret;
 }
 
@@ -1254,16 +1263,7 @@ static LRESULT WINAPI COMCTL32_SubclassProc (HWND hWnd, UINT uMsg, WPARAM wParam
    ret = DefSubclassProc(hWnd, uMsg, wParam, lParam);
    stack->frame = frame.prev;
 
-   if (!stack->SubclassProcs && !stack->frame) {
-      TRACE("Last Subclass removed, cleaning up\n");
-      /* clean up our heap and reset the original window procedure */
-      if (stack->is_unicode)
-         SetWindowLongPtrW (hWnd, GWLP_WNDPROC, (DWORD_PTR)stack->origproc);
-      else
-         SetWindowLongPtrA (hWnd, GWLP_WNDPROC, (DWORD_PTR)stack->origproc);
-      Free (stack);
-      RemovePropW( hWnd, COMCTL32_wSubclass );
-   }
+   subclass_cleanup (hWnd, stack);
    return ret;
 }
 
