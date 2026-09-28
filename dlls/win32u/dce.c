@@ -505,6 +505,25 @@ static BOOL set_surface_shape( struct window_surface *surface, const RECT *rect,
     }
     }
 
+    /* areas outside the clip region belong to client surfaces, keep them opaque */
+    if (surface->clip_region)
+    {
+        HRGN region = NtGdiCreateRectRgn( 0, 0, width, height );
+
+        NtGdiCombineRgn( region, region, surface->clip_region, RGN_DIFF );
+        if (surface->shape_region) NtGdiCombineRgn( region, region, surface->shape_region, RGN_AND );
+        if ((data = GDI_GetObjPtr( region, NTGDI_OBJ_REGION )))
+        {
+            for (shape_rect = data->rects; shape_rect < data->rects + data->numRects; shape_rect++)
+            {
+                if (!intersect_rect( &tmp_rect, shape_rect, dirty )) continue;
+                set_surface_shape_rect( shape_bits, shape_stride, &tmp_rect );
+            }
+            GDI_ReleaseObj( region );
+        }
+        NtGdiDeleteObjectApp( region );
+    }
+
     ret = is_new || memcmp( old_shape, shape_bits, shape_info->bmiHeader.biSizeImage );
     free( old_shape );
     return ret;
@@ -689,6 +708,7 @@ void window_surface_set_clip( struct window_surface *surface, HRGN clip_region )
         NtGdiDeleteObjectApp( surface->clip_region );
         surface->clip_region = 0;
         surface->funcs->set_clip( surface, NULL, 0 );
+        if (surface->color_key != CLR_INVALID || surface->alpha_mask) surface->bounds = surface->rect;
     }
     else if (clip_region && !NtGdiEqualRgn( clip_region, surface->clip_region ))
     {
@@ -699,6 +719,7 @@ void window_surface_set_clip( struct window_surface *surface, HRGN clip_region )
 
         if (!surface->clip_region) surface->clip_region = NtGdiCreateRectRgn( 0, 0, 0, 0 );
         NtGdiCombineRgn( surface->clip_region, clip_region, 0, RGN_COPY );
+        if (surface->color_key != CLR_INVALID || surface->alpha_mask) surface->bounds = surface->rect;
 
         if ((data = GDI_GetObjPtr( clip_region, NTGDI_OBJ_REGION )))
         {
