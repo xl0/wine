@@ -2248,8 +2248,13 @@ static void test_wintrust_blob(void)
                    "got %#lx\n", signer->pChainContext ? signer->pChainContext->TrustStatus.dwErrorStatus : 0);
                 ok(signer->csCounterSigners == 1, "got %lu\n", signer->csCounterSigners);
                 if (signer->csCounterSigners == 1)
-                    ok(!CompareFileTime(&signer->pasCounterSigners[0].sftVerifyAsOf, &signer->sftVerifyAsOf),
-                       "got different time\n");
+                {
+                    CRYPT_PROVIDER_SGNR *counter = &signer->pasCounterSigners[0];
+
+                    ok(!CompareFileTime(&counter->sftVerifyAsOf, &signer->sftVerifyAsOf), "got different time\n");
+                    ok(counter->pChainContext && counter->pChainContext->TrustStatus.dwErrorStatus == CERT_TRUST_IS_UNTRUSTED_ROOT,
+                       "got %#lx\n", counter->pChainContext ? counter->pChainContext->TrustStatus.dwErrorStatus : 0);
+                }
             }
             else
             {

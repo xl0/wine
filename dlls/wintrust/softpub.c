@@ -1296,7 +1296,7 @@ static DWORD WINTRUST_CreateChainForSigner(CRYPT_PROVIDER_DATA *data,
  DWORD signer, PWTD_GENERIC_CHAIN_POLICY_CREATE_INFO createInfo,
  PCERT_CHAIN_PARA chainPara)
 {
-    DWORD err = ERROR_SUCCESS;
+    DWORD err = ERROR_SUCCESS, i;
     HCERTSTORE store = NULL;
 
     if (data->chStores)
@@ -1305,8 +1305,6 @@ static DWORD WINTRUST_CreateChainForSigner(CRYPT_PROVIDER_DATA *data,
          CERT_STORE_CREATE_NEW_FLAG, NULL);
         if (store)
         {
-            DWORD i;
-
             for (i = 0; i < data->chStores; i++)
                 CertAddStoreToCollection(store, data->pahStores[i], 0, 0);
         }
@@ -1354,6 +1352,19 @@ static DWORD WINTRUST_CreateChainForSigner(CRYPT_PROVIDER_DATA *data,
             }
             else
                 err = GetLastError();
+            for (i = 0; !err && i < data->pasSigners[signer].csCounterSigners; i++)
+            {
+                CRYPT_PROVIDER_SGNR *counterSigner =
+                 &data->pasSigners[signer].pasCounterSigners[i];
+                CERT_CHAIN_PARA counterChainPara = { sizeof(counterChainPara) };
+
+                if (!CertGetCertificateChain(createInfo->hChainEngine,
+                 counterSigner->pasCertChain[0].pCert,
+                 &counterSigner->sftVerifyAsOf, store, &counterChainPara,
+                 createInfo->dwFlags, createInfo->pvReserved,
+                 &counterSigner->pChainContext))
+                    err = GetLastError();
+            }
         }
         CertCloseStore(store, 0);
     }
@@ -1451,7 +1462,7 @@ HRESULT WINAPI SoftpubAuthenticode(CRYPT_PROVIDER_DATA *data)
     }
     else
     {
-        DWORD i;
+        DWORD i, j;
 
         ret = TRUE;
         for (i = 0; ret && i < data->csSigners; i++)
@@ -1509,6 +1520,17 @@ HRESULT WINAPI SoftpubAuthenticode(CRYPT_PROVIDER_DATA *data)
                  data->pasSigners[i].pChainContext, &policyPara, &policyStatus);
                 if (policyStatus.dwError != NO_ERROR)
                     ret = FALSE;
+                for (j = 0; ret && j < data->pasSigners[i].csCounterSigners; j++)
+                {
+                    CertVerifyCertificateChainPolicy(CERT_CHAIN_POLICY_BASE,
+                     data->pasSigners[i].pasCounterSigners[j].pChainContext,
+                     &policyPara, &policyStatus);
+                    if (policyStatus.dwError != NO_ERROR)
+                    {
+                        policyStatus.dwError = TRUST_E_TIME_STAMP;
+                        ret = FALSE;
+                    }
+                }
             }
         }
     }
