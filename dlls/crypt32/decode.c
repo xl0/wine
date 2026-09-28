@@ -634,7 +634,7 @@ static BOOL CRYPT_AsnDecodeArray(const struct AsnArrayDescriptor *arrayDesc,
 
         if ((ret = CRYPT_GetLengthIndefinite(pbEncoded, cbEncoded, &dataLen)))
         {
-            DWORD bytesNeeded = arrayDesc->minArraySize, cItems = 0, capacity = 0, decoded;
+            DWORD bytesNeeded = arrayDesc->minArraySize, cItems = 0, cEntries = 0, capacity = 0, decoded;
             BYTE lenBytes = GET_LEN_BYTES(pbEncoded[1]);
             /* There can be arbitrarily many items, but there is often only one.
              */
@@ -686,14 +686,7 @@ static BOOL CRYPT_AsnDecodeArray(const struct AsnArrayDescriptor *arrayDesc,
                              &itemDecoded);
                         if (ret)
                         {
-                            /* Ignore an item that failed to decode but the decoder doesn't want to fail the whole process */
-                            if (!size)
-                            {
-                                ptr += itemEncoded;
-                                continue;
-                            }
-
-                            if (++cItems <= 1)
+                            if (++cEntries <= 1)
                                 itemSizes = &itemSize;
                             else if (itemSizes == &itemSize)
                             {
@@ -701,16 +694,19 @@ static BOOL CRYPT_AsnDecodeArray(const struct AsnArrayDescriptor *arrayDesc,
                                 itemSizes = CryptMemAlloc(capacity * sizeof(struct AsnArrayItemSize));
                                 if (itemSizes) *itemSizes = itemSize;
                             }
-                            else if (cItems > capacity)
+                            else if (cEntries > capacity)
                             {
                                 capacity = capacity * 3 / 2;
                                 itemSizes = CryptMemRealloc(itemSizes, capacity * sizeof(struct AsnArrayItemSize));
                             }
                             if (itemSizes)
                             {
-                                decoded += itemDecoded;
-                                itemSizes[cItems - 1].encodedLen = itemEncoded;
-                                itemSizes[cItems - 1].size = size;
+                                /* A size of 0 means the decoder wants the item to be skipped */
+                                if (size)
+                                    cItems++;
+                                decoded += size ? itemDecoded : itemEncoded;
+                                itemSizes[cEntries - 1].encodedLen = itemEncoded;
+                                itemSizes[cEntries - 1].size = size;
                                 bytesNeeded += size;
                                 ptr += itemEncoded;
                             }
@@ -729,7 +725,7 @@ static BOOL CRYPT_AsnDecodeArray(const struct AsnArrayDescriptor *arrayDesc,
                 else if ((ret = CRYPT_DecodeEnsureSpace(dwFlags, pDecodePara,
                  pvStructInfo, pcbStructInfo, bytesNeeded)))
                 {
-                    DWORD i, *pcItems;
+                    DWORD i, j, *pcItems;
                     BYTE *nextData;
                     const BYTE *ptr;
                     void *rgItems;
@@ -750,24 +746,30 @@ static BOOL CRYPT_AsnDecodeArray(const struct AsnArrayDescriptor *arrayDesc,
                         rgItems = *(void **)((BYTE *)pcItems -
                          arrayDesc->countOffset + arrayDesc->arrayOffset);
                     nextData = (BYTE *)rgItems + cItems * arrayDesc->itemSize;
-                    for (i = 0, ptr = pbEncoded + 1 + lenBytes; ret &&
-                     i < cItems && ptr - pbEncoded - 1 - lenBytes <
-                     dataLen; i++)
+                    for (i = 0, j = 0, ptr = pbEncoded + 1 + lenBytes; ret &&
+                     j < cEntries && ptr - pbEncoded - 1 - lenBytes <
+                     dataLen; j++)
                     {
                         DWORD itemDecoded;
 
+                        if (!itemSizes[j].size)
+                        {
+                            ptr += itemSizes[j].encodedLen;
+                            continue;
+                        }
                         if (arrayDesc->hasPointer)
                             *(BYTE **)((BYTE *)rgItems + i * arrayDesc->itemSize
                              + arrayDesc->pointerOffset) = nextData;
                         ret = arrayDesc->decodeFunc(ptr,
-                         itemSizes[i].encodedLen,
+                         itemSizes[j].encodedLen,
                          dwFlags & ~CRYPT_DECODE_ALLOC_FLAG,
                          (BYTE *)rgItems + i * arrayDesc->itemSize,
-                         &itemSizes[i].size, &itemDecoded);
+                         &itemSizes[j].size, &itemDecoded);
                         if (ret)
                         {
-                            nextData += itemSizes[i].size - arrayDesc->itemSize;
+                            nextData += itemSizes[j].size - arrayDesc->itemSize;
                             ptr += itemDecoded;
+                            i++;
                         }
                     }
                     if (!ret && (dwFlags & CRYPT_DECODE_ALLOC_FLAG))
