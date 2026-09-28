@@ -68,6 +68,8 @@ struct composition_target
     IDCompositionVisual *root;
     BOOL topmost;
     HWND hwnd;
+    IDXGISwapChain1 *swapchain;
+    UINT width, height;
     HANDLE shared_visual_handle;
     struct list entry;
     LONG ref;

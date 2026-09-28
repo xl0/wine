@@ -82,6 +82,8 @@ static ULONG STDMETHODCALLTYPE target_Release(IDCompositionTarget *iface)
         }
         if (target->shared_visual_handle)
             CloseHandle(target->shared_visual_handle);
+        if (target->swapchain)
+            IDXGISwapChain1_Release(target->swapchain);
         free(target);
     }
 

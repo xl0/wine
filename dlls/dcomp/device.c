@@ -405,7 +405,72 @@ done:
     return hr;
 }
 
-static void do_composite_dxgi_surface(const struct composition_target *target,
+/* GDI can't draw on a window whose top-level window belongs to another process (e.g. a
+ * Chromium GPU process child window parented to the browser window). Present the surface
+ * through a swapchain on the target window instead. Only the root content is shown. */
+static BOOL present_to_foreign_target(struct composition_target *target, ID3D11Device1 *device,
+        ID3D11DeviceContext *context, IDXGISurface *surface, const DXGI_SURFACE_DESC *surface_desc)
+{
+    DXGI_SWAP_CHAIN_DESC1 desc = {0};
+    ID3D11Resource *src, *dst;
+    IDXGIDevice *dxgi_device;
+    IDXGIFactory2 *factory;
+    IDXGIAdapter *adapter;
+    DWORD pid = 0;
+    HRESULT hr;
+
+    GetWindowThreadProcessId(GetAncestor(target->hwnd, GA_ROOT), &pid);
+    if (pid == GetCurrentProcessId())
+        return FALSE;
+
+    if (target->swapchain && (target->width != surface_desc->Width || target->height != surface_desc->Height))
+    {
+        if (FAILED(hr = IDXGISwapChain1_ResizeBuffers(target->swapchain, 0, surface_desc->Width,
+                surface_desc->Height, DXGI_FORMAT_UNKNOWN, 0)))
+        {
+            ERR("Failed to resize swapchain, hr %#lx.\n", hr);
+            return TRUE;
+        }
+        target->width = surface_desc->Width;
+        target->height = surface_desc->Height;
+    }
+
+    if (!target->swapchain)
+    {
+        ID3D11Device1_QueryInterface(device, &IID_IDXGIDevice, (void **)&dxgi_device);
+        IDXGIDevice_GetAdapter(dxgi_device, &adapter);
+        IDXGIAdapter_GetParent(adapter, &IID_IDXGIFactory2, (void **)&factory);
+        desc.Width = surface_desc->Width;
+        desc.Height = surface_desc->Height;
+        desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        desc.SampleDesc.Count = 1;
+        desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        desc.BufferCount = 1;
+        desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+        hr = IDXGIFactory2_CreateSwapChainForHwnd(factory, (IUnknown *)device, target->hwnd, &desc,
+                NULL, NULL, &target->swapchain);
+        IDXGIFactory2_Release(factory);
+        IDXGIAdapter_Release(adapter);
+        IDXGIDevice_Release(dxgi_device);
+        if (FAILED(hr))
+        {
+            ERR("Failed to create swapchain for window %p, hr %#lx.\n", target->hwnd, hr);
+            return TRUE;
+        }
+        target->width = desc.Width;
+        target->height = desc.Height;
+    }
+
+    IDXGISwapChain1_GetBuffer(target->swapchain, 0, &IID_ID3D11Resource, (void **)&dst);
+    IDXGISurface_QueryInterface(surface, &IID_ID3D11Resource, (void **)&src);
+    ID3D11DeviceContext_CopyResource(context, dst, src);
+    ID3D11Resource_Release(src);
+    ID3D11Resource_Release(dst);
+    IDXGISwapChain1_Present(target->swapchain, 0, 0);
+    return TRUE;
+}
+
+static void do_composite_dxgi_surface(struct composition_target *target,
                                       const struct composition_visual *visual,
                                       IDXGISurface *dxgi_surface)
 {
@@ -507,6 +572,9 @@ static void do_composite_dxgi_surface(const struct composition_target *target,
         goto done;
     }
 
+    if (present_to_foreign_target(target, d3d11_device, d3d11_device_context, dxgi_surface, &surface_desc))
+        goto done;
+
     size.width = surface_desc.Width;
     size.height = surface_desc.Height;
     bitmap_desc.pixelFormat.format = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -607,7 +675,7 @@ static struct composition_visual * shared_visual_target_get_root(HANDLE shared_v
     return visual;
 }
 
-static HRESULT do_composite(const struct composition_target *target, struct composition_visual *visual)
+static HRESULT do_composite(struct composition_target *target, struct composition_visual *visual)
 {
     struct composition_visual *child_visual;
     IDXGISurface *dxgi_surface;
