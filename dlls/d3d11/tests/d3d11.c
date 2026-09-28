@@ -21431,7 +21431,8 @@ static void check_format_support(ID3D11Device *device, const unsigned int *forma
 
         if (formats[i].fl_required <= feature_level)
         {
-            todo_wine_if (feature_flag == D3D11_FORMAT_SUPPORT_DISPLAY)
+            todo_wine_if (feature_flag == D3D11_FORMAT_SUPPORT_DISPLAY
+                    && format == DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM)
                 ok(supported || broken(warp),
                         "Format %#x - %s not supported, format support %#x.\n",
                         format, feature_name, format_support[format]);

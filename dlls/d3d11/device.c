@@ -4720,6 +4720,29 @@ static HRESULT STDMETHODCALLTYPE d3d11_device_CheckFormatSupport(ID3D11Device5 *
                 | D3D11_FORMAT_SUPPORT_MULTISAMPLE_LOAD;
     }
 
+    if (*format_support & D3D11_FORMAT_SUPPORT_RENDER_TARGET)
+    {
+        switch (format)
+        {
+            case DXGI_FORMAT_R8G8B8A8_UNORM:
+            case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+            case DXGI_FORMAT_B8G8R8A8_UNORM:
+            case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+                *format_support |= D3D11_FORMAT_SUPPORT_DISPLAY;
+                break;
+
+            case DXGI_FORMAT_R16G16B16A16_FLOAT:
+            case DXGI_FORMAT_R10G10B10A2_UNORM:
+            case DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM:
+                if (feature_level >= D3D_FEATURE_LEVEL_10_0)
+                    *format_support |= D3D11_FORMAT_SUPPORT_DISPLAY;
+                break;
+
+            default:
+                break;
+        }
+    }
+
     return *format_support ? S_OK : E_FAIL;
 }
 
