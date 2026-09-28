@@ -2693,11 +2693,16 @@ static void set_fd_disposition( struct fd *fd, unsigned int flags )
 
     if (flags & FILE_DISPOSITION_DELETE)
     {
+        unsigned int mapping_access = FILE_MAPPING_ACCESS;
         struct fd *fd_ptr;
+
+        /* POSIX semantics only refuse to delete image mappings, unless asked to check all sections */
+        if ((flags & FILE_DISPOSITION_POSIX_SEMANTICS) && !(flags & FILE_DISPOSITION_FORCE_IMAGE_SECTION_CHECK))
+            mapping_access = FILE_MAPPING_IMAGE;
 
         LIST_FOR_EACH_ENTRY( fd_ptr, &fd->inode->open, struct fd, inode_entry )
         {
-            if (fd_ptr->access & FILE_MAPPING_ACCESS)
+            if (fd_ptr->access & mapping_access)
             {
                 set_error( STATUS_CANNOT_DELETE );
                 return;

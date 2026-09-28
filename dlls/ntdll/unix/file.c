@@ -5411,9 +5411,6 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
         {
             FILE_DISPOSITION_INFORMATION_EX *info = ptr;
 
-            if (info->Flags & FILE_DISPOSITION_FORCE_IMAGE_SECTION_CHECK)
-                FIXME( "FILE_DISPOSITION_FORCE_IMAGE_SECTION_CHECK not supported\n" );
-
             SERVER_START_REQ( set_fd_disp_info )
             {
                 req->handle   = wine_server_obj_handle( handle );

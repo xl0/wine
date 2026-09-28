@@ -3895,6 +3895,33 @@ static void test_file_disposition_information(void)
     ok( !res, "expected failure\n" );
     ok( GetLastError() == ERROR_FILE_NOT_FOUND, "got error %lu\n", GetLastError() );
 
+    /* POSIX semantics delete a file with an open view, unless asked to check all sections */
+    GetTempFileNameA( tmp_path, "dis", 0, buffer );
+    handle = CreateFileA( buffer, GENERIC_READ | GENERIC_WRITE | DELETE, 0, NULL, CREATE_ALWAYS, 0, 0 );
+    ok( handle != INVALID_HANDLE_VALUE, "failed to create file, error %lu\n", GetLastError() );
+    WriteFile(handle, "data", 4, &size, NULL);
+    mapping = CreateFileMappingA( handle, NULL, PAGE_READONLY, 0, 4, NULL );
+    ok( !!mapping, "failed to create mapping, error %lu\n", GetLastError() );
+    view = MapViewOfFile( mapping, FILE_MAP_READ, 0, 0, 4 );
+    ok( !!view, "failed to map view, error %lu\n", GetLastError() );
+    CloseHandle( mapping );
+
+    fdie.Flags = FILE_DISPOSITION_DELETE | FILE_DISPOSITION_POSIX_SEMANTICS | FILE_DISPOSITION_FORCE_IMAGE_SECTION_CHECK;
+    res = pNtSetInformationFile( handle, &io, &fdie, sizeof(fdie), FileDispositionInformationEx );
+    ok( res == STATUS_CANNOT_DELETE || res == STATUS_INVALID_INFO_CLASS, "got %#lx\n", res );
+    fdie.Flags = FILE_DISPOSITION_DELETE | FILE_DISPOSITION_POSIX_SEMANTICS;
+    res = pNtSetInformationFile( handle, &io, &fdie, sizeof(fdie), FileDispositionInformationEx );
+    ok( res == STATUS_SUCCESS || res == STATUS_INVALID_INFO_CLASS, "got %#lx\n", res );
+    CloseHandle( handle );
+    if (res == STATUS_SUCCESS)
+    {
+        fileDeleted = GetFileAttributesA( buffer ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
+        ok( fileDeleted, "File should have been deleted\n" );
+        ok( !memcmp( view, "data", 4 ), "got %.4s\n", (char *)view );
+    }
+    UnmapViewOfFile( view );
+    DeleteFileA( buffer );
+
     /* pending delete flag is shared across handles */
     GetTempFileNameA( tmp_path, "dis", 0, buffer );
     handle = CreateFileA(buffer, GENERIC_WRITE | DELETE, FILE_SHARE_DELETE, NULL, CREATE_ALWAYS, 0, 0);
