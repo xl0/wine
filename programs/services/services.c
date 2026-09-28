@@ -1215,9 +1215,9 @@ static void load_registry_parameters(void)
 
     if (RegOpenKeyW( HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control", &key )) return;
 
-    count = sizeof(buffer);
-    if (!RegQueryValueExW( key, L"ServicesPipeTimeout", NULL, &type, (BYTE *)buffer, &count ) &&
-        type == REG_SZ && (val = wcstol( buffer, NULL, 10 )))
+    count = sizeof(val);
+    if (!RegQueryValueExW( key, L"ServicesPipeTimeout", NULL, &type, (BYTE *)&val, &count ) &&
+        type == REG_DWORD && val)
         service_pipe_timeout = val;
 
     count = sizeof(buffer);
