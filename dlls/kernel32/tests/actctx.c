@@ -2760,6 +2760,129 @@ static void ntdll_find(ULONG section, const char *string_to_find, BOOL should_fi
     pRtlFreeUnicodeString(&string_to_findW);
 }
 
+static void test_app_config(void)
+{
+    static const char manifest[] =
+        "<assembly xmlns=\"urn:schemas-microsoft-com:asm.v1\" manifestVersion=\"1.0\">"
+        "<dependency><dependentAssembly>"
+        "<assemblyIdentity type=\"win32\" name=\"privdep\" version=\"1.0.0.0\" processorArchitecture=\"" ARCH "\"/>"
+        "</dependentAssembly></dependency>"
+        "</assembly>";
+    static const char depmanifest[] =
+        "<assembly xmlns=\"urn:schemas-microsoft-com:asm.v1\" manifestVersion=\"1.0\">"
+        "<assemblyIdentity type=\"win32\" name=\"privdep\" version=\"1.0.0.0\" processorArchitecture=\"" ARCH "\"/>"
+        "</assembly>";
+    static const char config[] =
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+        "<configuration><windows><assemblyBinding xmlns=\"urn:schemas-microsoft-com:asm.v1\">"
+        "<probing privatePath=\"missing;sub\"/>"
+        "</assemblyBinding></windows></configuration>";
+    static const char dotnet_config[] =
+        "<configuration><runtime><assemblyBinding xmlns=\"urn:schemas-microsoft-com:asm.v1\">"
+        "<probing privatePath=\"sub\"/>"
+        "</assemblyBinding></runtime></configuration>";
+    static const struct
+    {
+        const char *config;
+        const char *depdir;
+        BOOL found;
+    }
+    tests[] =
+    {
+        { config, "sub\\privdep\\", TRUE },
+        { config, "sub\\", TRUE },
+        { NULL, "sub\\", FALSE },
+        { dotnet_config, "sub\\", FALSE },
+        { "garbage", "", FALSE }, /* invalid config is an error even if the dependency is found */
+    };
+    ACTIVATION_CONTEXT_ASSEMBLY_DETAILED_INFORMATION *asm_info;
+    ACTIVATION_CONTEXT_DETAILED_INFORMATION *info;
+    char dir[MAX_PATH], path[MAX_PATH];
+    WCHAR expect[MAX_PATH];
+    ULONG_PTR buffer[512];
+    unsigned int i;
+    HANDLE handle;
+    ULONG index;
+    BOOL ret;
+
+    GetTempPathA(ARRAY_SIZE(dir), dir);
+    strcat(dir, "actctx_config\\");
+    CreateDirectoryA(dir, NULL);
+    sprintf(path, "%ssub", dir);
+    CreateDirectoryA(path, NULL);
+    sprintf(path, "%ssub\\privdep", dir);
+    CreateDirectoryA(path, NULL);
+
+    for (i = 0; i < ARRAY_SIZE(tests); i++)
+    {
+        winetest_push_context("%u", i);
+
+        /* use new names each time, in case Windows caches anything */
+        sprintf(path, "%sapp%u.manifest", dir, i);
+        create_manifest_file(path, manifest, -1, NULL, NULL);
+        if (tests[i].config)
+        {
+            sprintf(path, "%sapp%u.config", dir, i);
+            create_manifest_file(path, tests[i].config, -1, NULL, NULL);
+        }
+        sprintf(path, "%s%sprivdep.manifest", dir, tests[i].depdir);
+        create_manifest_file(path, depmanifest, -1, NULL, NULL);
+
+        sprintf(path, "%sapp%u.manifest", dir, i);
+        handle = test_create(path);
+        if (!tests[i].found)
+        {
+            ok(handle == INVALID_HANDLE_VALUE, "CreateActCtx succeeded\n");
+            ok(GetLastError() == ERROR_SXS_CANT_GEN_ACTCTX, "got error %lu\n", GetLastError());
+        }
+        else ok(handle != INVALID_HANDLE_VALUE, "CreateActCtx failed, error %lu\n", GetLastError());
+
+        if (handle != INVALID_HANDLE_VALUE)
+        {
+            memset(buffer, 0, sizeof(buffer));
+            info = (ACTIVATION_CONTEXT_DETAILED_INFORMATION *)buffer;
+            ret = QueryActCtxW(0, handle, NULL, ActivationContextDetailedInformation,
+                               buffer, sizeof(buffer), NULL);
+            ok(ret, "QueryActCtxW failed, error %lu\n", GetLastError());
+            ok(info->ulAssemblyCount == 2, "got %lu assemblies\n", info->ulAssemblyCount);
+            ok(info->ulRootConfigurationPathType == ACTIVATION_CONTEXT_PATH_TYPE_WIN32_FILE,
+               "got config path type %lu\n", info->ulRootConfigurationPathType);
+            sprintf(path, "%sapp%u.config", dir, i);
+            MultiByteToWideChar(CP_ACP, 0, path, -1, expect, ARRAY_SIZE(expect));
+            ok(info->lpRootConfigurationPath && !lstrcmpiW(info->lpRootConfigurationPath, expect),
+               "got config path %s\n", wine_dbgstr_w(info->lpRootConfigurationPath));
+            ok(info->ulRootConfigurationPathChars == lstrlenW(expect),
+               "got config path length %lu\n", info->ulRootConfigurationPathChars);
+
+            index = 2;
+            memset(buffer, 0, sizeof(buffer));
+            asm_info = (ACTIVATION_CONTEXT_ASSEMBLY_DETAILED_INFORMATION *)buffer;
+            ret = QueryActCtxW(0, handle, &index, AssemblyDetailedInformationInActivationContext,
+                               buffer, sizeof(buffer), NULL);
+            ok(ret, "QueryActCtxW failed, error %lu\n", GetLastError());
+            sprintf(path, "%s%sprivdep.manifest", dir, tests[i].depdir);
+            MultiByteToWideChar(CP_ACP, 0, path, -1, expect, ARRAY_SIZE(expect));
+            ok(asm_info->lpAssemblyManifestPath && !lstrcmpiW(asm_info->lpAssemblyManifestPath, expect),
+               "got manifest path %s\n", wine_dbgstr_w(asm_info->lpAssemblyManifestPath));
+            ReleaseActCtx(handle);
+        }
+
+        sprintf(path, "%s%sprivdep.manifest", dir, tests[i].depdir);
+        DeleteFileA(path);
+        sprintf(path, "%sapp%u.config", dir, i);
+        DeleteFileA(path);
+        sprintf(path, "%sapp%u.manifest", dir, i);
+        DeleteFileA(path);
+        winetest_pop_context();
+    }
+
+    sprintf(path, "%ssub\\privdep", dir);
+    RemoveDirectoryA(path);
+    sprintf(path, "%ssub", dir);
+    RemoveDirectoryA(path);
+    RemoveDirectoryA(dir);
+}
+
 static void test_findsectionstring(void)
 {
     HANDLE handle;
@@ -4802,6 +4925,7 @@ START_TEST(actctx)
     test_CreateActCtx();
     test_CreateActCtx_share_mode();
     test_findsectionstring();
+    test_app_config();
     test_ZombifyActCtx();
     run_child_process();
     test_compatibility();
