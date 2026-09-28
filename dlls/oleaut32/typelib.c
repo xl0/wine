@@ -3535,12 +3535,12 @@ static ITypeLib2* ITypeLib2_Constructor_MSFT(LPVOID pLib, DWORD dwTLBLength)
                 if(td[3] < 0)
                     pTypeLibImpl->pTypeDesc[i].lptdesc = &std_typedesc[td[2]];
                 else
-                    pTypeLibImpl->pTypeDesc[i].lptdesc = &pTypeLibImpl->pTypeDesc[td[2]/8];
+                    pTypeLibImpl->pTypeDesc[i].lptdesc = &pTypeLibImpl->pTypeDesc[MAKELONG(td[2],td[3])/8];
             }
 	    else if(td[0] == VT_CARRAY)
             {
 	        /* array descr table here */
-	        pTypeLibImpl->pTypeDesc[i].lpadesc = (void *)(INT_PTR)td[2];  /* temp store offset in*/
+	        pTypeLibImpl->pTypeDesc[i].lpadesc = (void *)(INT_PTR)MAKELONG(td[2],td[3]);  /* temp store offset in*/
             }
             else if(td[0] == VT_USERDEFINED)
 	    {
@@ -3561,7 +3561,7 @@ static ITypeLib2* ITypeLib2_Constructor_MSFT(LPVOID pLib, DWORD dwTLBLength)
                 if(td[1]<0)
                     pTypeLibImpl->pTypeDesc[i].lpadesc->tdescElem.vt = td[0] & VT_TYPEMASK;
                 else
-                    pTypeLibImpl->pTypeDesc[i].lpadesc->tdescElem = cx.pLibInfo->pTypeDesc[td[0]/(2*sizeof(INT))];
+                    pTypeLibImpl->pTypeDesc[i].lpadesc->tdescElem = cx.pLibInfo->pTypeDesc[MAKELONG(td[0],td[1])/(2*sizeof(INT))];
 
                 pTypeLibImpl->pTypeDesc[i].lpadesc->cDims = td[2];
 

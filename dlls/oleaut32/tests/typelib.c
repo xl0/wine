@@ -8810,6 +8810,113 @@ static void test_DeleteFuncDesc(void)
     DeleteFileW(filenameW);
 }
 
+static void check_ptr_chain(const TYPEDESC *td, unsigned int elements)
+{
+    unsigned int i;
+
+    for (i = 0; td->vt == VT_PTR; i++) td = td->lptdesc;
+    ok(i == 99, "Got %u pointer levels.\n", i);
+    ok(td->vt == VT_CARRAY, "Got vt %d.\n", td->vt);
+    ok(td->lpadesc->tdescElem.vt == VT_I4, "Got vt %d.\n", td->lpadesc->tdescElem.vt);
+    ok(td->lpadesc->cDims == 1, "Got cDims %u.\n", td->lpadesc->cDims);
+    ok(td->lpadesc->rgbounds[0].cElements == elements, "Got cElements %lu.\n", td->lpadesc->rgbounds[0].cElements);
+}
+
+static void test_large_typedesc_table(void)
+{
+    static TYPEDESC chains[50][100];
+    static ARRAYDESC arrays[50];
+    WCHAR filenameW[MAX_PATH], temp_path[MAX_PATH];
+    ICreateTypeInfo *createti;
+    ICreateTypeLib2 *createtl;
+    FUNCDESC funcdesc, *pfd;
+    ARRAYDESC arraydesc;
+    unsigned int i, j;
+    ITypeInfo *ti;
+    ITypeLib *tl;
+    HRESULT hr;
+
+    /* Each pointer level is a distinct typedesc table entry, so the table
+     * grows past 32K and entries refer to offsets above 0x7fff. */
+    for (i = 0; i < ARRAY_SIZE(chains); i++)
+    {
+        for (j = 0; j < ARRAY_SIZE(chains[i]) - 1; j++)
+        {
+            chains[i][j].vt = VT_PTR;
+            chains[i][j].lptdesc = &chains[i][j + 1];
+        }
+        chains[i][j].vt = VT_CARRAY;
+        chains[i][j].lpadesc = &arrays[i];
+        arrays[i].tdescElem.vt = VT_I4;
+        arrays[i].cDims = 1;
+        arrays[i].rgbounds[0].cElements = i + 1;
+        arrays[i].rgbounds[0].lLbound = 0;
+    }
+
+    GetTempPathW(ARRAY_SIZE(temp_path), temp_path);
+    GetTempFileNameW(temp_path, L"tlb", 0, filenameW);
+
+    hr = CreateTypeLib2(SYS_WIN32, filenameW, &createtl);
+    ok(hr == S_OK, "Failed to create instance, hr %#lx.\n", hr);
+    hr = ICreateTypeLib2_CreateTypeInfo(createtl, (OLECHAR *)L"interface1", TKIND_INTERFACE, &createti);
+    ok(hr == S_OK, "Failed to create instance, hr %#lx.\n", hr);
+
+    memset(&funcdesc, 0, sizeof(funcdesc));
+    funcdesc.funckind = FUNC_PUREVIRTUAL;
+    funcdesc.invkind = INVOKE_FUNC;
+    funcdesc.callconv = CC_STDCALL;
+    for (i = 0; i < ARRAY_SIZE(chains); i++)
+    {
+        funcdesc.memid = i;
+        funcdesc.elemdescFunc.tdesc = chains[i][0];
+        hr = ICreateTypeInfo_AddFuncDesc(createti, i, &funcdesc);
+        ok(hr == S_OK, "Failed to add a funcdesc, hr %#lx.\n", hr);
+    }
+
+    /* array element type stored as a typedesc table offset */
+    arraydesc.tdescElem = chains[i - 1][0];
+    arraydesc.cDims = 1;
+    arraydesc.rgbounds[0].cElements = 5;
+    arraydesc.rgbounds[0].lLbound = 1;
+    funcdesc.memid = i;
+    funcdesc.elemdescFunc.tdesc.vt = VT_CARRAY;
+    funcdesc.elemdescFunc.tdesc.lpadesc = &arraydesc;
+    hr = ICreateTypeInfo_AddFuncDesc(createti, i, &funcdesc);
+    ok(hr == S_OK, "Failed to add a funcdesc, hr %#lx.\n", hr);
+
+    hr = ICreateTypeLib2_SaveAllChanges(createtl);
+    ok(hr == S_OK, "Failed to save changes, hr %#lx.\n", hr);
+    ICreateTypeInfo_Release(createti);
+    ICreateTypeLib2_Release(createtl);
+
+    hr = LoadTypeLibEx(filenameW, REGKIND_NONE, &tl);
+    ok(hr == S_OK, "Failed to load typelib, hr %#lx.\n", hr);
+    hr = ITypeLib_GetTypeInfo(tl, 0, &ti);
+    ok(hr == S_OK, "Failed to get typeinfo, hr %#lx.\n", hr);
+
+    for (i = 0; i < ARRAY_SIZE(chains); i++)
+    {
+        winetest_push_context("%u", i);
+        hr = ITypeInfo_GetFuncDesc(ti, i, &pfd);
+        ok(hr == S_OK, "Failed to get funcdesc, hr %#lx.\n", hr);
+        check_ptr_chain(&pfd->elemdescFunc.tdesc, i + 1);
+        ITypeInfo_ReleaseFuncDesc(ti, pfd);
+        winetest_pop_context();
+    }
+
+    hr = ITypeInfo_GetFuncDesc(ti, i, &pfd);
+    ok(hr == S_OK, "Failed to get funcdesc, hr %#lx.\n", hr);
+    ok(pfd->elemdescFunc.tdesc.vt == VT_CARRAY, "Got vt %d.\n", pfd->elemdescFunc.tdesc.vt);
+    ok(pfd->elemdescFunc.tdesc.lpadesc->rgbounds[0].cElements == 5, "Got cElements %lu.\n",
+       pfd->elemdescFunc.tdesc.lpadesc->rgbounds[0].cElements);
+    check_ptr_chain(&pfd->elemdescFunc.tdesc.lpadesc->tdescElem, i);
+    ITypeInfo_ReleaseFuncDesc(ti, pfd);
+
+    ITypeInfo_Release(ti);
+    ITypeLib_Release(tl);
+    DeleteFileW(filenameW);
+}
+
 START_TEST(typelib)
 {
     const WCHAR *filename;
@@ -8853,4 +8960,5 @@ START_TEST(typelib)
     test_stub();
     test_DeleteImplType();
     test_DeleteFuncDesc();
+    test_large_typedesc_table();
 }
