@@ -9654,9 +9654,16 @@ static void test_effect_compiler(void)
         "cbuffer cb1 { float4 m1; }\n"
         "cbuffer cb2 { }\n"
         "technique10 {};";
+    static char static_global[] =
+        "float4 m1;\n"
+        "static float4 s = m1 * 2.0f;\n"
+        "float4 m2;\n"
+        "technique10 {};";
 
     D3D10_EFFECT_VARIABLE_DESC var_desc;
+    D3D10_EFFECT_TYPE_DESC type_desc;
     ID3D10EffectConstantBuffer *cb;
+    ID3D10EffectVariable *v;
     D3D10_EFFECT_DESC desc;
     ID3D10Device *device;
     ID3D10Effect *effect;
@@ -9714,6 +9721,34 @@ static void test_effect_compiler(void)
     hr = cb->lpVtbl->GetDesc(cb, &var_desc);
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
     ok(!strcmp(var_desc.Name, "cb2"), "Unexpected variable name %s.\n", var_desc.Name);
+
+    ID3D10Effect_Release(effect);
+    ID3D10Blob_Release(blob);
+
+    /* Static globals are not effect variables. */
+    hr = D3D10CompileEffectFromMemory(static_global, sizeof(static_global), NULL, NULL, NULL, 0, 0,
+            &blob, NULL);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    hr = create_effect(ID3D10Blob_GetBufferPointer(blob), 0, device, NULL, &effect);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = ID3D10Effect_GetDesc(effect, &desc);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    ok(desc.ConstantBuffers == 1, "Unexpected buffer count %u.\n", desc.ConstantBuffers);
+    ok(desc.GlobalVariables == 2, "Unexpected variable count %u.\n", desc.GlobalVariables);
+
+    cb = effect->lpVtbl->GetConstantBufferByIndex(effect, 0);
+    hr = cb->lpVtbl->GetType(cb)->lpVtbl->GetDesc(cb->lpVtbl->GetType(cb), &type_desc);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    ok(type_desc.Members == 2, "Unexpected member count %u.\n", type_desc.Members);
+    ok(type_desc.UnpackedSize == 32, "Unexpected size %u.\n", type_desc.UnpackedSize);
+
+    v = effect->lpVtbl->GetVariableByName(effect, "s");
+    ok(!v->lpVtbl->IsValid(v), "Expected invalid variable.\n");
+    v = effect->lpVtbl->GetVariableByName(effect, "m2");
+    hr = v->lpVtbl->GetDesc(v, &var_desc);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    ok(var_desc.BufferOffset == 16, "Unexpected offset %u.\n", var_desc.BufferOffset);
 
     ID3D10Effect_Release(effect);
     ID3D10Blob_Release(blob);

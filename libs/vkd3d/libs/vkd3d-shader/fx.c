@@ -3799,7 +3799,7 @@ static void write_fx_4_buffer(struct hlsl_buffer *b, struct fx_write_context *fx
         if (!is_numeric_fx_4_type(var->data_type))
             continue;
 
-        if (var->buffer != b)
+        if (var->buffer != b || !var->is_uniform)
             continue;
 
         write_fx_4_numeric_variable(var, shared, fx);
