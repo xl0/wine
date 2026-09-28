@@ -1650,7 +1650,7 @@ static void test_wintrust_digest(void)
         /* 32-bit tests */
         {
             {{ SelfSignedFile32, sizeof(SelfSignedFile32) }},
-            { CERT_E_CHAINING, TRUE }, { S_OK, FALSE }
+            { CERT_E_CHAINING, FALSE }, { S_OK, FALSE }
         },
         {
             {{ SelfSignedFile32, sizeof(SelfSignedFile32) },
@@ -1680,7 +1680,7 @@ static void test_wintrust_digest(void)
         /* 64-bit tests */
         {
             {{ SelfSignedFile64, sizeof(SelfSignedFile64) }},
-            { CERT_E_CHAINING, TRUE }, { S_OK, FALSE }
+            { CERT_E_CHAINING, FALSE }, { S_OK, FALSE }
         },
         {
             {{ SelfSignedFile64, sizeof(SelfSignedFile64) },
@@ -1844,7 +1844,7 @@ static void test_multiple_signatures(void)
     settings.cSecondarySigs = 0xcccccccc;
     settings.dwVerifiedSigIndex = 0xcccccccc;
     status = WinVerifyTrust(NULL, &WVTPolicyGUID, &data);
-    todo_wine ok(status == CERT_E_UNTRUSTEDROOT || status == CERT_E_CHAINING, "Failed, ret %#lx\n", status);
+    ok(status == CERT_E_UNTRUSTEDROOT || status == CERT_E_CHAINING, "Failed, ret %#lx\n", status);
     ok(settings.cSecondarySigs == 0xcccccccc, "Got %lu.\n", settings.cSecondarySigs);
     todo_wine ok(settings.dwVerifiedSigIndex == 2, "Got %lu.\n", settings.dwVerifiedSigIndex);
 
@@ -1887,7 +1887,7 @@ static void test_multiple_signatures(void)
     settings.cSecondarySigs = 0xcccccccc;
     settings.dwVerifiedSigIndex = 0xcccccccc;
     status = WinVerifyTrust(NULL, &WVTPolicyGUID, &data);
-    todo_wine ok(status == CERT_E_UNTRUSTEDROOT || status == CERT_E_CHAINING, "Failed, ret %#lx\n", status);
+    ok(status == CERT_E_UNTRUSTEDROOT || status == CERT_E_CHAINING, "Failed, ret %#lx\n", status);
     ok(settings.cSecondarySigs == 2, "Got %lu.\n", settings.cSecondarySigs);
     todo_wine ok(settings.dwVerifiedSigIndex == 2, "Got %lu.\n", settings.dwVerifiedSigIndex);
 
@@ -1901,7 +1901,7 @@ static void test_multiple_signatures(void)
     settings.dwVerifiedSigIndex = 0xcccccccc;
     settings.dwIndex = 1;
     status = WinVerifyTrust(NULL, &WVTPolicyGUID, &data);
-    todo_wine ok(status == CERT_E_UNTRUSTEDROOT || status == CERT_E_CHAINING, "Failed, ret %#lx\n", status);
+    ok(status == CERT_E_UNTRUSTEDROOT || status == CERT_E_CHAINING, "Failed, ret %#lx\n", status);
     ok(settings.cSecondarySigs == 2, "Got %lu.\n", settings.cSecondarySigs);
     todo_wine ok(settings.dwVerifiedSigIndex == 1, "Got %lu.\n", settings.dwVerifiedSigIndex);
     settings.dwIndex = 0;

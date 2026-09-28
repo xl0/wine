@@ -1460,6 +1460,8 @@ HRESULT WINAPI SoftpubAuthenticode(CRYPT_PROVIDER_DATA *data)
         ret = FALSE;
         policyStatus.dwError = TRUST_E_NOSIGNATURE;
     }
+    else if (data->pWintrustData->dwProvFlags & WTD_HASH_ONLY_FLAG)
+        ret = TRUE;
     else
     {
         DWORD i, j;
