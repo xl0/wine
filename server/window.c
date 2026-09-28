@@ -1349,7 +1349,9 @@ static struct region *clip_pixel_format_children( struct window *parent, struct 
     LIST_FOR_EACH_ENTRY_REV( ptr, &parent->children, struct window, entry )
     {
         if (!(ptr->style & WS_VISIBLE)) continue;
-        if (ptr->ex_style & WS_EX_TRANSPARENT) continue;
+        /* transparent windows are drawn by the parent, unless they have a custom pixel format */
+        if ((ptr->ex_style & WS_EX_TRANSPARENT) &&
+            !(ptr->paint_flags & (PAINT_HAS_PIXEL_FORMAT | PAINT_PIXEL_FORMAT_CHILD))) continue;
 
         /* add the visible rect */
         set_region_rect( clip, &ptr->visible_rect );
