@@ -2208,7 +2208,7 @@ static void test_wintrust_blob(void)
     wtd.pBlob = &blob;
     wtd.dwStateAction = WTD_STATEACTION_VERIFY;
     r = WinVerifyTrust(INVALID_HANDLE_VALUE, &generic_action_v2, &wtd);
-    todo_wine ok(r == CERT_E_UNTRUSTEDROOT, "got %08lx\n", r);
+    ok(r == CERT_E_UNTRUSTEDROOT, "got %08lx\n", r);
     data = WTHelperProvDataFromStateData(wtd.hWVTStateData);
     ok(data && data->csSigners == 1, "got %p\n", data);
     if (data && data->csSigners == 1)
