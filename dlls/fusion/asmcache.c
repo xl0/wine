@@ -553,7 +553,7 @@ HRESULT WINAPI CreateAssemblyCache(IAssemblyCache **ppAsmCache, DWORD dwReserved
 
     cache->IAssemblyCache_iface.lpVtbl = &AssemblyCacheVtbl;
     cache->ref = 1;
-    cache->lock = CreateMutexW( NULL, FALSE, L"__WINE_FUSION_CACHE_MUTEX__" );
+    cache->lock = CreateMutexW( NULL, FALSE, L"Global\\__WINE_FUSION_CACHE_MUTEX__" );
     if (!cache->lock)
     {
         free( cache );
