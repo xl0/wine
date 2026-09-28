@@ -388,12 +388,19 @@ static void test_WTSQuerySessionInformation(void)
 
 static void test_WTSQueryUserToken(void)
 {
+    HANDLE token;
     BOOL ret;
 
     SetLastError(0xdeadbeef);
     ret = WTSQueryUserToken(WTS_CURRENT_SESSION, NULL);
     ok(!ret, "expected WTSQueryUserToken to fail\n");
     ok(GetLastError()==ERROR_INVALID_PARAMETER, "expected ERROR_INVALID_PARAMETER got: %ld\n", GetLastError());
+
+    /* requires SeTcbPrivilege, which only services have */
+    SetLastError(0xdeadbeef);
+    ret = WTSQueryUserToken(WTSGetActiveConsoleSessionId(), &token);
+    ok(!ret, "expected WTSQueryUserToken to fail\n");
+    ok(GetLastError()==ERROR_PRIVILEGE_NOT_HELD, "expected ERROR_PRIVILEGE_NOT_HELD got: %ld\n", GetLastError());
 }
 
 static void test_WTSEnumerateSessions(void)

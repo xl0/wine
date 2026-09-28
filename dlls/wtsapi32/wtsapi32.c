@@ -644,6 +644,9 @@ BOOL WINAPI WTSQuerySessionInformationW(HANDLE server, DWORD session_id, WTS_INF
  */
 BOOL WINAPI WTSQueryUserToken(ULONG session_id, PHANDLE token)
 {
+    HANDLE process_token;
+    BOOL ret;
+
     FIXME("%lu %p semi-stub!\n", session_id, token);
 
     if (!token)
@@ -652,9 +655,12 @@ BOOL WINAPI WTSQueryUserToken(ULONG session_id, PHANDLE token)
         return FALSE;
     }
 
-    return DuplicateHandle(GetCurrentProcess(), GetCurrentProcessToken(),
-                           GetCurrentProcess(), token,
-                           0, FALSE, DUPLICATE_SAME_ACCESS);
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE, &process_token)) return FALSE;
+    ret = DuplicateTokenEx(process_token, TOKEN_ALL_ACCESS, NULL, SecurityImpersonation, TokenPrimary, token);
+    CloseHandle(process_token);
+    if (ret && !(ret = SetTokenInformation(*token, TokenSessionId, &session_id, sizeof(session_id))))
+        CloseHandle(*token);
+    return ret;
 }
 
 /************************************************************
