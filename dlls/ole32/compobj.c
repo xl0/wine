@@ -203,129 +203,44 @@ BOOL actctx_get_miscstatus(const CLSID *clsid, DWORD aspect, DWORD *status)
         return FALSE;
 }
 
-/* wrapper for NtCreateKey that creates the key recursively if necessary */
-static NTSTATUS create_key( HKEY *retkey, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr )
-{
-    NTSTATUS status = NtCreateKey( (HANDLE *)retkey, access, attr, 0, NULL, 0, NULL );
-
-    if (status == STATUS_OBJECT_NAME_NOT_FOUND)
-    {
-        HANDLE subkey;
-        WCHAR *buffer = attr->ObjectName->Buffer;
-        DWORD pos = 0, i = 0, len = attr->ObjectName->Length / sizeof(WCHAR);
-        UNICODE_STRING str;
-        OBJECT_ATTRIBUTES attr2 = *attr;
-
-        while (i < len && buffer[i] != '\\') i++;
-        if (i == len) return status;
-
-        attr2.ObjectName = &str;
-
-        while (i < len)
-        {
-            str.Buffer = buffer + pos;
-            str.Length = (i - pos) * sizeof(WCHAR);
-            status = NtCreateKey( &subkey, access, &attr2, 0, NULL, 0, NULL );
-            if (attr2.RootDirectory != attr->RootDirectory) NtClose( attr2.RootDirectory );
-            if (status) return status;
-            attr2.RootDirectory = subkey;
-            while (i < len && buffer[i] == '\\') i++;
-            pos = i;
-            while (i < len && buffer[i] != '\\') i++;
-        }
-        str.Buffer = buffer + pos;
-        str.Length = (i - pos) * sizeof(WCHAR);
-        status = NtCreateKey( (PHANDLE)retkey, access, &attr2, 0, NULL, 0, NULL );
-        if (attr2.RootDirectory != attr->RootDirectory) NtClose( attr2.RootDirectory );
-    }
-    return status;
-}
-
 static HKEY classes_root_hkey;
 
-/* create the special HKEY_CLASSES_ROOT key */
-static HKEY create_classes_root_hkey(DWORD access)
+/* COM sees per-user classes like HKEY_CLASSES_ROOT, but ignores RegOverridePredefKey().
+ * Elevated processes use HKLM only, like on Windows. */
+static HKEY get_classes_root_hkey(void)
 {
-    HKEY hkey, ret = 0;
+    UNICODE_STRING name = RTL_CONSTANT_STRING( L"\\Registry\\Machine\\Software\\Classes" );
+    TOKEN_ELEVATION elevation;
     OBJECT_ATTRIBUTES attr;
-    UNICODE_STRING name = RTL_CONSTANT_STRING(L"\\Registry\\Machine\\Software\\Classes");
+    DWORD size;
+    HKEY hkey;
 
-    attr.Length = sizeof(attr);
-    attr.RootDirectory = 0;
-    attr.ObjectName = &name;
-    attr.Attributes = 0;
-    attr.SecurityDescriptor = NULL;
-    attr.SecurityQualityOfService = NULL;
-    if (create_key( &hkey, access, &attr )) return 0;
-    TRACE( "%s -> %p\n", debugstr_w(attr.ObjectName->Buffer), hkey );
+    if (classes_root_hkey) return classes_root_hkey;
 
-    if (!(access & KEY_WOW64_64KEY))
+    if (!GetTokenInformation( GetCurrentProcessToken(), TokenElevation, &elevation, sizeof(elevation), &size ))
+        return 0;
+    if (elevation.TokenIsElevated)
     {
-        if (!(ret = InterlockedCompareExchangePointer( (void **)&classes_root_hkey, hkey, 0 )))
-            ret = hkey;
-        else
-            NtClose( hkey );  /* somebody beat us to it */
+        InitializeObjectAttributes( &attr, &name, 0, 0, NULL );
+        if (NtOpenKey( (HANDLE *)&hkey, MAXIMUM_ALLOWED | KEY_WOW64_64KEY, &attr )) return 0;
     }
-    else
-        ret = hkey;
-    return ret;
-}
+    else if (RegOpenUserClassesRoot( GetCurrentProcessToken(), 0, MAXIMUM_ALLOWED, &hkey )) return 0;
 
-/* map the hkey from special root to normal key if necessary */
-static inline HKEY get_classes_root_hkey( HKEY hkey, REGSAM access )
-{
-    HKEY ret = hkey;
-    const BOOL is_win64 = sizeof(void*) > sizeof(int);
-    const BOOL force_wow32 = is_win64 && (access & KEY_WOW64_32KEY);
-
-    if (hkey == HKEY_CLASSES_ROOT &&
-        ((access & KEY_WOW64_64KEY) || !(ret = classes_root_hkey)))
-        ret = create_classes_root_hkey(MAXIMUM_ALLOWED | (access & KEY_WOW64_64KEY));
-    if (force_wow32 && ret && ret == classes_root_hkey)
-    {
-        access &= ~KEY_WOW64_32KEY;
-        if (create_classes_key(classes_root_hkey, L"Wow6432Node", access, &hkey))
-            return 0;
-        ret = hkey;
-    }
-
-    return ret;
+    if (InterlockedCompareExchangePointer( (void **)&classes_root_hkey, hkey, NULL ))
+        RegCloseKey( hkey );  /* somebody beat us to it */
+    return classes_root_hkey;
 }
 
 LSTATUS create_classes_key( HKEY hkey, const WCHAR *name, REGSAM access, HKEY *retkey )
 {
-    OBJECT_ATTRIBUTES attr;
-    UNICODE_STRING nameW;
-
-    if (!(hkey = get_classes_root_hkey( hkey, access ))) return ERROR_INVALID_HANDLE;
-
-    attr.Length = sizeof(attr);
-    attr.RootDirectory = hkey;
-    attr.ObjectName = &nameW;
-    attr.Attributes = 0;
-    attr.SecurityDescriptor = NULL;
-    attr.SecurityQualityOfService = NULL;
-    RtlInitUnicodeString( &nameW, name );
-
-    return RtlNtStatusToDosError( create_key( retkey, access, &attr ) );
+    if (hkey == HKEY_CLASSES_ROOT && !(hkey = get_classes_root_hkey())) return ERROR_INVALID_HANDLE;
+    return RegCreateKeyExW( hkey, name, 0, NULL, 0, access, NULL, retkey, NULL );
 }
 
 LSTATUS open_classes_key( HKEY hkey, const WCHAR *name, REGSAM access, HKEY *retkey )
 {
-    OBJECT_ATTRIBUTES attr;
-    UNICODE_STRING nameW;
-
-    if (!(hkey = get_classes_root_hkey( hkey, access ))) return ERROR_INVALID_HANDLE;
-
-    attr.Length = sizeof(attr);
-    attr.RootDirectory = hkey;
-    attr.ObjectName = &nameW;
-    attr.Attributes = 0;
-    attr.SecurityDescriptor = NULL;
-    attr.SecurityQualityOfService = NULL;
-    RtlInitUnicodeString( &nameW, name );
-
-    return RtlNtStatusToDosError( NtOpenKey( (HANDLE *)retkey, access, &attr ) );
+    if (hkey == HKEY_CLASSES_ROOT && !(hkey = get_classes_root_hkey())) return ERROR_INVALID_HANDLE;
+    return RegOpenKeyExW( hkey, name, 0, access, retkey );
 }
 
 /******************************************************************************

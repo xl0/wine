@@ -1418,6 +1418,7 @@ static void test_per_user_class(void)
     static const CLSID clsid = { 0x0badc0de, 0, 0, { 0, 0, 0, 0, 0, 0, 0, 0x30 } };
     TOKEN_ELEVATION elevation;
     char path[MAX_PATH];
+    WCHAR *name;
     IUnknown *unk;
     HANDLE token;
     HRESULT hr;
@@ -1446,6 +1447,15 @@ static void test_per_user_class(void)
     hr = CoCreateInstance(&clsid, NULL, CLSCTX_INPROC_SERVER, &IID_IUnknown, (void **)&unk);
     if (elevation.TokenIsElevated) ok(hr == REGDB_E_CLASSNOTREG, "got %#lx\n", hr);
     else ok(hr == CLASS_E_CLASSNOTAVAILABLE, "got %#lx\n", hr);
+
+    hr = OleRegGetUserType(&clsid, USERCLASSTYPE_FULL, &name);
+    if (elevation.TokenIsElevated) ok(hr == REGDB_E_CLASSNOTREG, "got %#lx\n", hr);
+    else
+    {
+        ok(hr == S_OK, "got %#lx\n", hr);
+        ok(!wcscmp(name, L"wine test"), "got %s\n", wine_dbgstr_w(name));
+        CoTaskMemFree(name);
+    }
 
     CoUninitialize();
 
