@@ -1137,7 +1137,7 @@ static void test_visual_SetBackFaceVisibility(void)
     ok(!refcount, "Device has %lu references left.\n", refcount);
 }
 
-static void test_visual_SetOffsetX(void)
+static void test_visual_SetOffset(void)
 {
     IDCompositionDevice *dcomp_device;
     IDCompositionVisual *visual;
@@ -1161,6 +1161,13 @@ static void test_visual_SetOffsetX(void)
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
     hr = IDCompositionVisual_SetOffsetX(visual, 0);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    hr = IDCompositionVisual_SetOffsetY(visual, 0);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    /* Removing a clip or transform that was never set */
+    hr = IDCompositionVisual_SetClipObject(visual, NULL);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    hr = IDCompositionVisual_SetTransformObject(visual, NULL);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
     IDCompositionVisual_Release(visual);
@@ -1853,7 +1860,7 @@ START_TEST(dcomp)
     test_visual_SetBitmapInterpolationMode();
     test_visual_SetBorderMode();
     test_visual_SetBackFaceVisibility();
-    test_visual_SetOffsetX();
+    test_visual_SetOffset();
     test_visual_SetOffsetXAnimation();
     test_visual_AddVisual();
 

@@ -118,15 +118,20 @@ static HRESULT STDMETHODCALLTYPE visual_SetOffsetYAnimation(IDCompositionVisualU
 
 static HRESULT STDMETHODCALLTYPE visual_SetOffsetY(IDCompositionVisualUnknown *iface, float offset_y)
 {
-    FIXME("iface %p, offset_y %f stub!\n", iface, offset_y);
-    return E_NOTIMPL;
+    struct composition_visual *visual = impl_from_IDCompositionVisualUnknown(iface);
+
+    TRACE("iface %p, offset_y %f.\n", iface, offset_y);
+
+    visual->offset_y = offset_y;
+    return S_OK;
 }
 
 static HRESULT STDMETHODCALLTYPE visual_SetTransformObject(IDCompositionVisualUnknown *iface,
         IDCompositionTransform *transform)
 {
     FIXME("iface %p, transform %p stub!\n", iface, transform);
-    return E_NOTIMPL;
+    /* Transforms aren't supported, so there's nothing to remove. */
+    return transform ? E_NOTIMPL : S_OK;
 }
 
 static HRESULT STDMETHODCALLTYPE visual_SetTransform(IDCompositionVisualUnknown *iface,
@@ -186,7 +191,8 @@ static HRESULT STDMETHODCALLTYPE visual_SetClipObject(IDCompositionVisualUnknown
         IDCompositionClip *clip)
 {
     FIXME("iface %p, clip %p stub!\n", iface, clip);
-    return E_NOTIMPL;
+    /* Clips aren't supported, so there's nothing to remove. */
+    return clip ? E_NOTIMPL : S_OK;
 }
 
 /* C++ method: SetClip(THIS_ const D2D_RECT_F &rect).  Use pointer instead of reference */
