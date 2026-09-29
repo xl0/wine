@@ -1485,20 +1485,20 @@ static void parse_assembly_identity_elem(xmlbuf_t *xmlbuf, ACTIVATION_CONTEXT *a
     if (!end) parse_expect_end_elem(xmlbuf, parent);
 }
 
-static enum comclass_threadingmodel parse_com_class_threadingmodel(xmlstr_t *value)
+static enum comclass_threadingmodel parse_com_class_threadingmodel(xmlbuf_t *xmlbuf, xmlstr_t *value)
 {
-    if (value->len == 0) return ThreadingModel_No;
-    if (xmlstr_cmp(value, L"Apartment"))
+    if (xmlstr_cmpi(value, L"Apartment"))
         return ThreadingModel_Apartment;
-    else if (xmlstr_cmp(value, L"Free"))
+    else if (xmlstr_cmpi(value, L"Free"))
         return ThreadingModel_Free;
-    else if (xmlstr_cmp(value, L"Both"))
+    else if (xmlstr_cmpi(value, L"Both"))
         return ThreadingModel_Both;
-    else if (xmlstr_cmp(value, L"Neutral"))
+    else if (xmlstr_cmpi(value, L"Neutral"))
         return ThreadingModel_Neutral;
-    else
-        return ThreadingModel_No;
-};
+    else if (!xmlstr_cmpi(value, L"Single"))
+        set_error( xmlbuf );
+    return ThreadingModel_No;
+}
 
 static OLEMISC get_olemisc_value(const WCHAR *str, int len)
 {
@@ -1617,7 +1617,7 @@ static void parse_com_class_elem( xmlbuf_t *xmlbuf, struct dll_redirect *dll, st
         }
         else if (xml_attr_cmp(&attr, L"threadingModel"))
         {
-            entity->u.comclass.model = parse_com_class_threadingmodel(&attr.value);
+            entity->u.comclass.model = parse_com_class_threadingmodel(xmlbuf, &attr.value);
         }
         else if (xml_attr_cmp(&attr, L"miscStatus"))
         {
@@ -2080,7 +2080,7 @@ static void parse_clr_class_elem( xmlbuf_t* xmlbuf, struct assembly* assembly,
         }
         else if (xml_attr_cmp(&attr, L"threadingModel"))
         {
-            entity->u.comclass.model = parse_com_class_threadingmodel(&attr.value);
+            entity->u.comclass.model = parse_com_class_threadingmodel(xmlbuf, &attr.value);
         }
         else if (xml_attr_cmp(&attr, L"runtimeVersion"))
         {

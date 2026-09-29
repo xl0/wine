@@ -1825,6 +1825,78 @@ static void test_find_com_redirection(HANDLE handle, const GUID *clsid, const GU
     ok_(__FILE__, line)(!memcmp(comclass, comclass2, comclass->size), "got wrong data\n");
 }
 
+static void test_com_class_threadingmodel(void)
+{
+    static const GUID clsid = {0x12345678, 0x1234, 0x5678, {0x12, 0x34, 0x11, 0x11, 0x22, 0x22, 0x33, 0x33}};
+    static const struct
+    {
+        const char *value;
+        DWORD model;
+    }
+    tests[] =
+    {
+        { "Apartment", ThreadingModel_Apartment },
+        { "apartment", ThreadingModel_Apartment },
+        { "free",      ThreadingModel_Free },
+        { "fReE",      ThreadingModel_Free },
+        { "BOTH",      ThreadingModel_Both },
+        { "neutral",   ThreadingModel_Neutral },
+        { "Single",    ThreadingModel_No },
+        { "single",    ThreadingModel_No },
+        { "" },
+        { " Free" },
+        { "bogus" },
+    };
+    static const char *elems[] =
+    {
+        "<file name=\"testlib.dll\"><comClass clsid=\"{12345678-1234-5678-1234-111122223333}\" threadingModel=\"%s\"/></file>",
+        "<clrClass clsid=\"{12345678-1234-5678-1234-111122223333}\" name=\"clrclass\" threadingModel=\"%s\"/>",
+    };
+    ACTCTX_SECTION_KEYED_DATA data;
+    char manifest[512], elem[256];
+    unsigned int i, j;
+    ULONG_PTR cookie;
+    HANDLE handle;
+    BOOL ret;
+
+    for (j = 0; j < ARRAY_SIZE(elems); j++)
+    for (i = 0; i < ARRAY_SIZE(tests); i++)
+    {
+        winetest_push_context("%u %s", j, debugstr_a(tests[i].value));
+        sprintf(elem, elems[j], tests[i].value);
+        sprintf(manifest, "<assembly xmlns=\"urn:schemas-microsoft-com:asm.v1\" manifestVersion=\"1.0\">"
+                "<assemblyIdentity version=\"1.0.0.0\" name=\"Wine.Test\" type=\"win32\"/>%s</assembly>", elem);
+        if (!tests[i].model)
+        {
+            test_create_and_fail(manifest, NULL, 0, FALSE);
+            winetest_pop_context();
+            continue;
+        }
+
+        create_manifest_file("test.manifest", manifest, -1, NULL, NULL);
+        handle = test_create("test.manifest");
+        ok(handle != INVALID_HANDLE_VALUE, "CreateActCtx failed: %lu\n", GetLastError());
+        DeleteFileA("test.manifest");
+        if (handle == INVALID_HANDLE_VALUE)
+        {
+            winetest_pop_context();
+            continue;
+        }
+        ret = ActivateActCtx(handle, &cookie);
+        ok(ret, "ActivateActCtx failed: %lu\n", GetLastError());
+        memset(&data, 0, sizeof(data));
+        data.cbSize = sizeof(data);
+        ret = FindActCtxSectionGuid(0, NULL, ACTIVATION_CONTEXT_SECTION_COM_SERVER_REDIRECTION, &clsid, &data);
+        ok(ret, "FindActCtxSectionGuid failed: %lu\n", GetLastError());
+        if (ret)
+            ok(((struct comclassredirect_data *)data.lpData)->model == tests[i].model, "got model %lu\n",
+               ((struct comclassredirect_data *)data.lpData)->model);
+        DeactivateActCtx(0, cookie);
+        ReleaseActCtx(handle);
+        winetest_pop_context();
+    }
+}
+
 enum ifaceps_mask
 {
     NumMethods = 1,
@@ -4943,6 +5015,7 @@ START_TEST(actctx)
     test_valid_manifest_resources_locale();
     test_actctx();
     test_create_fail();
+    test_com_class_threadingmodel();
     test_CreateActCtx();
     test_CreateActCtx_share_mode();
     test_findsectionstring();
