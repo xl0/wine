@@ -2448,6 +2448,7 @@ static void test_immediate_context(void)
     check_interface(immediate_context, &IID_ID3D11DeviceContext4, TRUE, TRUE); /* Not available on all Windows versions. */
     check_interface(immediate_context, &IID_ID3D11Multithread, TRUE, FALSE);
     check_interface(immediate_context, &IID_ID3D11VideoContext, TRUE, FALSE);
+    check_interface(immediate_context, &IID_ID3D11VideoContext1, TRUE, TRUE); /* Not available on all Windows versions. */
     check_interface(immediate_context, &IID_ID3DUserDefinedAnnotation, TRUE, FALSE);
 
     ID3D11Device_GetImmediateContext(device, &immediate_context);
