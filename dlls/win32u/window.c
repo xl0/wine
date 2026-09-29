@@ -35,7 +35,7 @@
 WINE_DEFAULT_DEBUG_CHANNEL(win);
 
 #define USER_HANDLE_TO_INDEX(hwnd) ((LOWORD(hwnd) - FIRST_USER_HANDLE) >> 1)
-#define USER_HANDLE_FROM_INDEX(index, generation) UlongToHandle( (index << 1) + FIRST_USER_HANDLE + (generation << 16) )
+#define USER_HANDLE_FROM_INDEX(index, generation) LongToHandle( (index << 1) + FIRST_USER_HANDLE + (generation << 16) )
 
 static const struct ratio no_dpi;
 
