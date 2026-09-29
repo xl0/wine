@@ -608,10 +608,10 @@ static HRESULT WINAPI ISF_Desktop_fnGetDisplayNameOf (IShellFolder2 * iface,
                  * We can only get a filesystem path from a shellfolder if the
                  *  value WantsFORPARSING in CLSID\\{...}\\shellfolder exists.
                  *
-                 * Exception: The MyComputer folder doesn't have this key,
-                 *   but any other filesystem backed folder it needs it.
+                 * Exception: The MyComputer and MyDocuments folders don't have
+                 *   this key, but any other filesystem backed folder needs it.
                  */
-                if (IsEqualIID (clsid, &CLSID_MyComputer))
+                if (IsEqualIID (clsid, &CLSID_MyComputer) || IsEqualIID (clsid, &CLSID_MyDocuments))
                 {
                     bWantsForParsing = TRUE;
                 }

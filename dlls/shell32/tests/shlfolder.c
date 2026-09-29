@@ -1504,10 +1504,19 @@ static void test_SHGetPathFromIDList(void)
 static void test_SHGetPathFromIDList_personal(void)
 {
     WCHAR personal[MAX_PATH], path[MAX_PATH];
+    IShellFolder *desktop;
     LPITEMIDLIST pidl;
+    SFGAOF attrs;
+    STRRET strret;
     HRESULT hr;
+    LSTATUS res;
     BOOL ret;
     int len;
+
+    /* My Documents resolves to its path without WantsFORPARSING */
+    res = RegGetValueW(HKEY_CLASSES_ROOT, L"CLSID\\{450D8FBA-AD25-11D0-98A8-0800361B1103}\\ShellFolder",
+                       L"WantsFORPARSING", RRF_RT_ANY, NULL, NULL, NULL);
+    ok(res == ERROR_FILE_NOT_FOUND, "got %ld.\n", res);
 
     ret = SHGetSpecialFolderPathW(NULL, personal, CSIDL_PERSONAL, FALSE);
     ok(ret, "SHGetSpecialFolderPathW(CSIDL_PERSONAL) failed, error %lu.\n", GetLastError());
@@ -1516,6 +1525,19 @@ static void test_SHGetPathFromIDList_personal(void)
     hr = SHGetSpecialFolderLocation(NULL, CSIDL_PERSONAL, &pidl);
     ok(hr == S_OK, "SHGetSpecialFolderLocation(CSIDL_PERSONAL) failed, hr %#lx.\n", hr);
     if (hr != S_OK) return;
+
+    SHGetDesktopFolder(&desktop);
+    attrs = SFGAO_FILESYSTEM | SFGAO_FOLDER;
+    hr = IShellFolder_GetAttributesOf(desktop, 1, (LPCITEMIDLIST *)&pidl, &attrs);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+    ok((attrs & (SFGAO_FILESYSTEM | SFGAO_FOLDER)) == (SFGAO_FILESYSTEM | SFGAO_FOLDER),
+       "got attributes %#lx.\n", attrs);
+    hr = IShellFolder_GetDisplayNameOf(desktop, pidl, SHGDN_FORPARSING, &strret);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+    StrRetToBufW(&strret, pidl, path, ARRAY_SIZE(path));
+    ok(!lstrcmpiW(path, personal), "got %s, expected %s.\n", wine_dbgstr_w(path),
+       wine_dbgstr_w(personal));
+    IShellFolder_Release(desktop);
 
     ret = SHGetPathFromIDListW(pidl, path);
     ILFree(pidl);
