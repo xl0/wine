@@ -860,6 +860,27 @@ HWND get_window_relative( HWND hwnd, UINT rel )
         /* else fall through to server call */
     }
 
+    if (rel == GW_HWNDNEXT || rel == GW_HWNDPREV || rel == GW_CHILD)
+    {
+        struct object_lock lock = OBJECT_LOCK_INIT;
+        const window_shm_t *window_shm = NULL;
+        user_handle_t handle = 0;
+        NTSTATUS status;
+
+        while ((status = get_shared_window( hwnd, &lock, &window_shm )) == STATUS_PENDING)
+        {
+            if (rel == GW_HWNDNEXT) handle = window_shm->next;
+            else if (rel == GW_HWNDPREV) handle = window_shm->prev;
+            else handle = window_shm->first_child;
+        }
+        if (status)
+        {
+            RtlSetLastWin32Error( ERROR_INVALID_WINDOW_HANDLE );
+            return 0;
+        }
+        return wine_server_ptr_handle( handle );
+    }
+
     SERVER_START_REQ( get_window_tree )
     {
         req->handle = wine_server_user_handle( hwnd );
