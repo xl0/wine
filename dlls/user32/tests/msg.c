@@ -12946,6 +12946,116 @@ static LRESULT CALLBACK mouse_recursive_cbt_hook_proc(int code, WPARAM wp, LPARA
     return CallNextHookEx(0, code, wp, lp);
 }
 
+static HHOOK chain_hooks[5];
+static char chain_order[8];
+static int chain_mode;
+static HANDLE chain_event, chain_done_event;
+
+static LRESULT CALLBACK chain_hook_e( int code, WPARAM wp, LPARAM lp );
+
+static LRESULT chain_hook_proc( int idx, int code, WPARAM wp, LPARAM lp )
+{
+    size_t len = strlen( chain_order );
+
+    chain_order[len] = 'A' + idx;
+    chain_order[len + 1] = 0;
+    switch (chain_mode * 8 + idx)
+    {
+    case 1 * 8 + 0: UnhookWindowsHookEx( chain_hooks[0] ); break;
+    case 2 * 8 + 0: UnhookWindowsHookEx( chain_hooks[1] ); break;
+    case 3 * 8 + 0: UnhookWindowsHookEx( chain_hooks[0] ); UnhookWindowsHookEx( chain_hooks[1] ); break;
+    case 4 * 8 + 0:
+        SetEvent( chain_event );
+        WaitForSingleObject( chain_done_event, INFINITE );
+        break;
+    case 5 * 8 + 0:
+        chain_hooks[4] = SetWindowsHookExA( WH_MSGFILTER, chain_hook_e, NULL, GetCurrentThreadId() );
+        break;
+    case 5 * 8 + 1: UnhookWindowsHookEx( chain_hooks[1] ); break;
+    case 6 * 8 + 0: UnhookWindowsHookEx( chain_hooks[1] ); break;
+    case 6 * 8 + 2: UnhookWindowsHookEx( chain_hooks[2] ); break;
+    }
+    return CallNextHookEx( 0, code, wp, lp );
+}
+
+static LRESULT CALLBACK chain_hook_a( int code, WPARAM wp, LPARAM lp ) { return chain_hook_proc( 0, code, wp, lp ); }
+static LRESULT CALLBACK chain_hook_b( int code, WPARAM wp, LPARAM lp ) { return chain_hook_proc( 1, code, wp, lp ); }
+static LRESULT CALLBACK chain_hook_c( int code, WPARAM wp, LPARAM lp ) { return chain_hook_proc( 2, code, wp, lp ); }
+static LRESULT CALLBACK chain_hook_d( int code, WPARAM wp, LPARAM lp ) { return chain_hook_proc( 3, code, wp, lp ); }
+static LRESULT CALLBACK chain_hook_e( int code, WPARAM wp, LPARAM lp ) { return chain_hook_proc( 4, code, wp, lp ); }
+
+static DWORD WINAPI chain_unhook_thread( void *arg )
+{
+    WaitForSingleObject( chain_event, INFINITE );
+    ok( UnhookWindowsHookEx( chain_hooks[1] ), "UnhookWindowsHookEx failed, error %lu\n", GetLastError() );
+    SetEvent( chain_done_event );
+    return 0;
+}
+
+/* hooks added or removed while their chain runs, in the same or another thread */
+static void test_hook_chain_changes(void)
+{
+    static const struct
+    {
+        const char *first, *second;
+    }
+    tests[] =
+    {
+        { "ABCD", "ABCD" },  /* hooks unchanged */
+        { "ABCD", "BCD" },   /* A unhooks itself */
+        { "ACD", "ACD" },    /* A unhooks B */
+        { "ACD", "CD" },     /* A unhooks itself and B */
+        { "ACD", "ACD" },    /* another thread unhooks B while A runs */
+        { "ABCD", "EACD" },  /* A adds E (not in the running chain), then B unhooks itself */
+        { "ACD", "AD" },     /* A unhooks B, then C unhooks itself */
+    };
+    HANDLE thread = NULL;
+    MSG msg = {0};
+    int i, j;
+
+    chain_event = CreateEventW( NULL, FALSE, FALSE, NULL );
+    chain_done_event = CreateEventW( NULL, FALSE, FALSE, NULL );
+
+    for (i = 0; i < ARRAY_SIZE(tests); i++)
+    {
+        winetest_push_context( "%d", i );
+        chain_hooks[3] = SetWindowsHookExA( WH_MSGFILTER, chain_hook_d, NULL, GetCurrentThreadId() );
+        chain_hooks[2] = SetWindowsHookExA( WH_MSGFILTER, chain_hook_c, NULL, GetCurrentThreadId() );
+        chain_hooks[1] = SetWindowsHookExA( WH_MSGFILTER, chain_hook_b, NULL, GetCurrentThreadId() );
+        chain_hooks[0] = SetWindowsHookExA( WH_MSGFILTER, chain_hook_a, NULL, GetCurrentThreadId() );
+        chain_hooks[4] = NULL;
+        ok( chain_hooks[0] && chain_hooks[1] && chain_hooks[2] && chain_hooks[3], "SetWindowsHookEx failed\n" );
+        if (i == 4) thread = CreateThread( NULL, 0, chain_unhook_thread, NULL, 0, NULL );
+
+        /* the first call takes the chain as it is */
+        chain_order[0] = 0;
+        chain_mode = 0;
+        CallMsgFilterA( &msg, 0x1234 );
+        ok( !strcmp( chain_order, "ABCD" ), "got %s\n", chain_order );
+
+        chain_order[0] = 0;
+        chain_mode = i;
+        CallMsgFilterA( &msg, 0x1234 );
+        ok( !strcmp( chain_order, tests[i].first ), "got %s\n", chain_order );
+        chain_order[0] = 0;
+        chain_mode = 0;
+        CallMsgFilterA( &msg, 0x1234 );
+        ok( !strcmp( chain_order, tests[i].second ), "got %s\n", chain_order );
+
+        if (thread)
+        {
+            WaitForSingleObject( thread, INFINITE );
+            CloseHandle( thread );
+            thread = NULL;
+        }
+        for (j = 0; j < ARRAY_SIZE(chain_hooks); j++) if (chain_hooks[j]) UnhookWindowsHookEx( chain_hooks[j] );
+        winetest_pop_context();
+    }
+
+    CloseHandle( chain_event );
+    CloseHandle( chain_done_event );
+}
+
 static void test_recursive_hook(void)
 {
     HHOOK hook, cbt_hook;
@@ -21937,6 +22047,7 @@ START_TEST(msg)
     {
         test_set_hook();
         test_recursive_hook();
+        test_hook_chain_changes();
     }
     test_recursive_messages();
     test_DestroyWindow();

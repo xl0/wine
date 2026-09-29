@@ -211,6 +211,7 @@ DECL_HANDLER(remove_hook);
 DECL_HANDLER(start_hook_chain);
 DECL_HANDLER(finish_hook_chain);
 DECL_HANDLER(get_hook_info);
+DECL_HANDLER(get_hook_chain);
 DECL_HANDLER(create_class);
 DECL_HANDLER(destroy_class);
 DECL_HANDLER(set_class_info);
@@ -527,6 +528,7 @@ static const req_handler req_handlers[REQ_NB_REQUESTS] =
     (req_handler)req_start_hook_chain,
     (req_handler)req_finish_hook_chain,
     (req_handler)req_get_hook_info,
+    (req_handler)req_get_hook_chain,
     (req_handler)req_create_class,
     (req_handler)req_destroy_class,
     (req_handler)req_set_class_info,
@@ -662,6 +664,7 @@ C_ASSERT( sizeof(struct cursor_pos) == 24 );
 C_ASSERT( sizeof(struct filesystem_event) == 12 );
 C_ASSERT( sizeof(struct generic_map) == 16 );
 C_ASSERT( sizeof(struct handle_info) == 20 );
+C_ASSERT( sizeof(struct hook_chain_entry) == 24 );
 C_ASSERT( sizeof(struct luid) == 8 );
 C_ASSERT( sizeof(struct luid_attr) == 12 );
 C_ASSERT( sizeof(struct obj_locator) == 16 );
@@ -1859,6 +1862,10 @@ C_ASSERT( offsetof(struct get_hook_info_reply, tid) == 20 );
 C_ASSERT( offsetof(struct get_hook_info_reply, proc) == 24 );
 C_ASSERT( offsetof(struct get_hook_info_reply, unicode) == 32 );
 C_ASSERT( sizeof(struct get_hook_info_reply) == 40 );
+C_ASSERT( offsetof(struct get_hook_chain_request, id) == 12 );
+C_ASSERT( sizeof(struct get_hook_chain_request) == 16 );
+C_ASSERT( offsetof(struct get_hook_chain_reply, total) == 8 );
+C_ASSERT( sizeof(struct get_hook_chain_reply) == 16 );
 C_ASSERT( offsetof(struct create_class_request, atom) == 12 );
 C_ASSERT( offsetof(struct create_class_request, fnid) == 16 );
 C_ASSERT( offsetof(struct create_class_request, ansi) == 20 );

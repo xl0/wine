@@ -29,6 +29,7 @@ static void dump_varargs_debug_event( const char *prefix, data_size_t size );
 static void dump_varargs_directory_entries( const char *prefix, data_size_t size );
 static void dump_varargs_filesystem_event( const char *prefix, data_size_t size );
 static void dump_varargs_handle_infos( const char *prefix, data_size_t size );
+static void dump_varargs_hook_chain( const char *prefix, data_size_t size );
 static void dump_varargs_ints( const char *prefix, data_size_t size );
 static void dump_varargs_luid_attr( const char *prefix, data_size_t size );
 static void dump_varargs_message_data( const char *prefix, data_size_t size );
@@ -2403,6 +2404,17 @@ static void dump_get_hook_info_reply( const struct get_hook_info_reply *req )
     dump_varargs_unicode_str( ", module=", cur_size );
 }
 
+static void dump_get_hook_chain_request( const struct get_hook_chain_request *req )
+{
+    fprintf( stderr, " id=%d", req->id );
+}
+
+static void dump_get_hook_chain_reply( const struct get_hook_chain_reply *req )
+{
+    fprintf( stderr, " total=%u", req->total );
+    dump_varargs_hook_chain( ", hooks=", cur_size );
+}
+
 static void dump_create_class_request( const struct create_class_request *req )
 {
     fprintf( stderr, " atom=%04x", req->atom );
@@ -3778,6 +3790,7 @@ static const dump_func req_dumpers[REQ_NB_REQUESTS] =
     (dump_func)dump_start_hook_chain_request,
     (dump_func)dump_finish_hook_chain_request,
     (dump_func)dump_get_hook_info_request,
+    (dump_func)dump_get_hook_chain_request,
     (dump_func)dump_create_class_request,
     (dump_func)dump_destroy_class_request,
     (dump_func)dump_set_class_info_request,
@@ -4094,6 +4107,7 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] =
     (dump_func)dump_start_hook_chain_reply,
     NULL,
     (dump_func)dump_get_hook_info_reply,
+    (dump_func)dump_get_hook_chain_reply,
     (dump_func)dump_create_class_reply,
     (dump_func)dump_destroy_class_reply,
     (dump_func)dump_set_class_info_reply,
@@ -4410,6 +4424,7 @@ static const char * const req_names[REQ_NB_REQUESTS] =
     "start_hook_chain",
     "finish_hook_chain",
     "get_hook_info",
+    "get_hook_chain",
     "create_class",
     "destroy_class",
     "set_class_info",

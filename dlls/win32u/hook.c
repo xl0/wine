@@ -24,6 +24,7 @@
 #endif
 
 #include <assert.h>
+#include "ntstatus.h"
 #include "win32u_private.h"
 #include "ntuser_private.h"
 #include "wine/server.h"
@@ -70,6 +71,114 @@ BOOL is_hooked( INT id )
 
     if (status) return TRUE;
     return ret;
+}
+
+/* snapshot of the hooks of one chain that run in the current thread, valid as long as the
+ * hooks_serial of the thread's queue doesn't change */
+struct hook_chain
+{
+    UINT64 serial;        /* hooks_serial the snapshot was taken at */
+    UINT   refs;          /* the thread's cache and each running chain hold a reference */
+    INT    id;            /* hook id */
+    UINT   count;
+    struct
+    {
+        HHOOK  handle;
+        void  *proc;
+        BOOL   unicode;
+        WCHAR *module;
+    } hooks[];
+};
+
+static BOOL get_hooks_serial( UINT64 *serial )
+{
+    struct object_lock lock = OBJECT_LOCK_INIT;
+    const queue_shm_t *queue_shm;
+    UINT status;
+
+    *serial = 0;
+    while ((status = get_shared_queue( &lock, &queue_shm )) == STATUS_PENDING)
+        *serial = queue_shm->hooks_serial;
+
+    return !status;
+}
+
+static void release_hook_chain( struct hook_chain *chain )
+{
+    if (!--chain->refs) free( chain );
+}
+
+/* get the hooks of a chain, from the thread's cache if the hooks didn't change since */
+static struct hook_chain *get_hook_chain( INT id )
+{
+    struct user_thread_info *thread_info = get_user_thread_info();
+    struct hook_chain *chain, **cache = &thread_info->hook_chains[id - WH_MINHOOK];
+    const struct hook_chain_entry *entry;
+    UINT64 stack_buffer[512], *buffer = stack_buffer, serial;
+    UINT count = 0, size, total = sizeof(stack_buffer), pos, len;
+    WCHAR *module;
+    NTSTATUS status;
+
+    if (id == WH_KEYBOARD_LL || id == WH_MOUSE_LL) return NULL;
+    if (!get_hooks_serial( &serial )) return NULL;
+
+    if (!(chain = *cache) || chain->serial != serial)
+    {
+        for (;;)
+        {
+            SERVER_START_REQ( get_hook_chain )
+            {
+                req->id = id;
+                wine_server_set_reply( req, buffer, total );
+                status = wine_server_call( req );
+                size = wine_server_reply_size( reply );
+                total = reply->total;
+            }
+            SERVER_END_REQ;
+            if (status != STATUS_BUFFER_TOO_SMALL) break;
+            if (buffer != stack_buffer) free( buffer );
+            if (!(buffer = malloc( total ))) return NULL;
+        }
+        if (status)
+        {
+            if (buffer != stack_buffer) free( buffer );
+            return NULL;
+        }
+
+        for (pos = len = 0; pos < size; pos += sizeof(*entry) + ((entry->module_size + 7) & ~7))
+        {
+            entry = (const struct hook_chain_entry *)((char *)buffer + pos);
+            len += entry->module_size + sizeof(WCHAR);
+            count++;
+        }
+        if (!(chain = malloc( offsetof( struct hook_chain, hooks[count] ) + len )))
+        {
+            if (buffer != stack_buffer) free( buffer );
+            return NULL;
+        }
+        chain->serial = serial;
+        chain->refs = 1;
+        chain->id = id;
+        chain->count = count;
+        module = (WCHAR *)&chain->hooks[count];
+        for (pos = count = 0; pos < size; pos += sizeof(*entry) + ((entry->module_size + 7) & ~7), count++)
+        {
+            entry = (const struct hook_chain_entry *)((char *)buffer + pos);
+            chain->hooks[count].handle  = wine_server_ptr_handle( entry->handle );
+            chain->hooks[count].proc    = wine_server_get_ptr( entry->proc );
+            chain->hooks[count].unicode = entry->unicode;
+            chain->hooks[count].module  = module;
+            memcpy( module, entry + 1, entry->module_size );
+            module += entry->module_size / sizeof(WCHAR);
+            *module++ = 0;
+        }
+        if (buffer != stack_buffer) free( buffer );
+        if (*cache) release_hook_chain( *cache );
+        *cache = chain;
+    }
+
+    chain->refs++;
+    return chain;
 }
 
 /***********************************************************************
@@ -204,7 +313,7 @@ static UINT get_ll_hook_timeout(void)
  * thread.
  */
 static LRESULT call_hook( struct win_hook_params *info, const WCHAR *module, size_t lparam_size,
-                          size_t message_size, BOOL ansi )
+                          size_t message_size, BOOL ansi, struct hook_chain *chain, UINT index )
 {
     DWORD_PTR ret = 0;
 
@@ -243,6 +352,8 @@ static LRESULT call_hook( struct win_hook_params *info, const WCHAR *module, siz
         size_t lparam_ret_size = lparam_size;
         HHOOK prev = thread_info->hook;
         BOOL prev_unicode = thread_info->hook_unicode;
+        struct hook_chain *prev_chain = thread_info->hook_chain;
+        UINT prev_index = thread_info->hook_index;
         struct win_hook_params *params = info;
         void *ret_ptr, *extra_buffer = NULL;
         SIZE_T extra_buffer_size = 0;
@@ -335,6 +446,8 @@ static LRESULT call_hook( struct win_hook_params *info, const WCHAR *module, siz
 
         thread_info->hook = params->handle;
         thread_info->hook_unicode = params->next_unicode;
+        thread_info->hook_chain = chain;
+        thread_info->hook_index = index;
         thread_info->hook_call_depth++;
         if (!KeUserModeCallback( NtUserCallWindowsHook, params, size, &ret_ptr, &ret_len ) &&
             ret_len >= sizeof(ret))
@@ -346,6 +459,8 @@ static LRESULT call_hook( struct win_hook_params *info, const WCHAR *module, siz
         }
         thread_info->hook = prev;
         thread_info->hook_unicode = prev_unicode;
+        thread_info->hook_chain = prev_chain;
+        thread_info->hook_index = prev_index;
         thread_info->hook_call_depth--;
 
         if (params != info) free( params );
@@ -356,41 +471,89 @@ static LRESULT call_hook( struct win_hook_params *info, const WCHAR *module, siz
     return ret;
 }
 
+static NTSTATUS query_hook( HHOOK handle, BOOL next, struct win_hook_params *info, WCHAR *module )
+{
+    NTSTATUS status;
+
+    SERVER_START_REQ( get_hook_info )
+    {
+        req->handle = wine_server_user_handle( handle );
+        req->get_next = next;
+        req->event = EVENT_MIN;
+        wine_server_set_reply( req, module, (MAX_PATH - 1) * sizeof(WCHAR) );
+        if (!(status = wine_server_call( req )))
+        {
+            module[wine_server_reply_size(req) / sizeof(WCHAR)] = 0;
+            info->handle       = wine_server_ptr_handle( reply->handle );
+            info->id           = reply->id;
+            info->pid          = reply->pid;
+            info->tid          = reply->tid;
+            info->proc         = wine_server_get_ptr( reply->proc );
+            info->next_unicode = reply->unicode;
+        }
+    }
+    SERVER_END_REQ;
+    return status;
+}
+
+static LRESULT call_chain_hook( struct hook_chain *chain, UINT index, INT code, WPARAM wparam, LPARAM lparam,
+                                BOOL prev_unicode, size_t lparam_size, size_t message_size, BOOL ansi )
+{
+    struct win_hook_params info;
+
+    memset( &info, 0, sizeof(info) );
+    info.handle       = chain->hooks[index].handle;
+    info.id           = chain->id;
+    info.proc         = chain->hooks[index].proc;
+    info.next_unicode = chain->hooks[index].unicode;
+    info.prev_unicode = prev_unicode;
+    info.code         = code;
+    info.wparam       = wparam;
+    info.lparam       = lparam;
+    return call_hook( &info, chain->hooks[index].module, lparam_size, message_size, ansi, chain, index );
+}
+
 /***********************************************************************
  *	     NtUserCallNextHookEx (win32u.@)
  */
 LRESULT WINAPI NtUserCallNextHookEx( HHOOK hhook, INT code, WPARAM wparam, LPARAM lparam )
 {
     struct user_thread_info *thread_info = get_user_thread_info();
+    struct hook_chain *chain = thread_info->hook_chain;
+    UINT index = thread_info->hook_index + 1;
     struct win_hook_params info;
     WCHAR module[MAX_PATH];
+    NTSTATUS status;
+    UINT64 serial;
+
+    if (chain && get_hooks_serial( &serial ) && serial == chain->serial)
+    {
+        if (index >= chain->count) return 0;
+        return call_chain_hook( chain, index, code, wparam, lparam, thread_info->hook_unicode, 0, 0, FALSE );
+    }
 
     memset( &info, 0, sizeof(info) );
 
-    SERVER_START_REQ( get_hook_info )
+    /* The hooks changed since the snapshot: go on with the snapshot hooks that still exist.
+     * Hooks added meanwhile aren't part of the running chain, like on Windows. */
+    if (chain)
     {
-        req->handle = wine_server_user_handle( thread_info->hook );
-        req->get_next = 1;
-        req->event = EVENT_MIN;
-        wine_server_set_reply( req, module, sizeof(module) - sizeof(WCHAR) );
-        if (!wine_server_call_err( req ))
+        for (; index < chain->count; index++)
         {
-            module[wine_server_reply_size(req) / sizeof(WCHAR)] = 0;
-            info.handle       = wine_server_ptr_handle( reply->handle );
-            info.id           = reply->id;
-            info.pid          = reply->pid;
-            info.tid          = reply->tid;
-            info.proc         = wine_server_get_ptr( reply->proc );
-            info.next_unicode = reply->unicode;
+            if (query_hook( chain->hooks[index].handle, FALSE, &info, module ) || !info.proc) continue;
+            return call_chain_hook( chain, index, code, wparam, lparam, thread_info->hook_unicode, 0, 0, FALSE );
         }
+        return 0;
     }
-    SERVER_END_REQ;
+
+    if ((status = query_hook( thread_info->hook, TRUE, &info, module )))
+        RtlSetLastWin32Error( RtlNtStatusToDosError( status ));
 
     info.code   = code;
     info.wparam = wparam;
     info.lparam = lparam;
     info.prev_unicode = thread_info->hook_unicode;
-    return call_hook( &info, module, 0, 0, FALSE );
+    return call_hook( &info, module, 0, 0, FALSE, NULL, 0 );
 }
 
 LRESULT call_current_hook( HHOOK hhook, INT code, WPARAM wparam, LPARAM lparam )
@@ -423,13 +586,14 @@ LRESULT call_current_hook( HHOOK hhook, INT code, WPARAM wparam, LPARAM lparam )
     info.wparam = wparam;
     info.lparam = lparam;
     info.prev_unicode = TRUE;  /* assume Unicode for this function */
-    return call_hook( &info, module, 0, 0, FALSE );
+    return call_hook( &info, module, 0, 0, FALSE, NULL, 0 );
 }
 
 LRESULT call_message_hooks( INT id, INT code, WPARAM wparam, LPARAM lparam, size_t lparam_size,
                             size_t message_size, BOOL ansi )
 {
     struct win_hook_params info;
+    struct hook_chain *chain;
     WCHAR module[MAX_PATH];
     DWORD_PTR ret;
 
@@ -439,6 +603,14 @@ LRESULT call_message_hooks( INT id, INT code, WPARAM wparam, LPARAM lparam, size
     {
         TRACE( "skipping hook %s\n", hook_names[id - WH_MINHOOK] );
         return 0;
+    }
+
+    /* no server round trips while the hooks don't change */
+    if ((chain = get_hook_chain( id )))
+    {
+        ret = chain->count ? call_chain_hook( chain, 0, code, wparam, lparam, TRUE, lparam_size, message_size, ansi ) : 0;
+        release_hook_chain( chain );
+        return ret;
     }
 
     memset( &info, 0, sizeof(info) );
@@ -466,7 +638,7 @@ LRESULT call_message_hooks( INT id, INT code, WPARAM wparam, LPARAM lparam, size
     info.code   = code;
     info.wparam = wparam;
     info.lparam = lparam;
-    ret = call_hook( &info, module, lparam_size, message_size, ansi );
+    ret = call_hook( &info, module, lparam_size, message_size, ansi, NULL, 0 );
 
     SERVER_START_REQ( finish_hook_chain )
     {

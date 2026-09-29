@@ -540,6 +540,58 @@ DECL_HANDLER(finish_hook_chain)
 }
 
 
+/* get the hooks of a chain that run in the current thread */
+DECL_HANDLER(get_hook_chain)
+{
+    struct hook_table *tables[2] = { get_queue_hooks( current ), get_global_hooks( current ) };
+    struct hook_chain_entry *entry;
+    int i, index = req->id - WH_MINHOOK;
+    data_size_t size = 0;
+    struct hook *hook;
+    char *ptr;
+
+    if (req->id < WH_MINHOOK || req->id >= WH_WINEVENT || req->id == WH_KEYBOARD_LL || req->id == WH_MOUSE_LL)
+    {
+        set_error( STATUS_INVALID_PARAMETER );
+        return;
+    }
+
+    for (i = 0; i < 2; i++)
+    {
+        if (!tables[i] || (i && tables[i] == tables[0])) continue;
+        LIST_FOR_EACH_ENTRY( hook, &tables[i]->hooks[index], struct hook, chain )
+            if (hook->proc && run_hook_in_current_thread( hook ))
+                size += sizeof(*entry) + ((hook->module_size + 7) & ~7);
+    }
+    reply->total = size;
+    if (size > get_reply_max_size())
+    {
+        set_error( STATUS_BUFFER_TOO_SMALL );
+        return;
+    }
+    if (!size || !(ptr = set_reply_data_size( size ))) return;
+
+    for (i = 0; i < 2; i++)
+    {
+        if (!tables[i] || (i && tables[i] == tables[0])) continue;
+        LIST_FOR_EACH_ENTRY( hook, &tables[i]->hooks[index], struct hook, chain )
+        {
+            if (!hook->proc || !run_hook_in_current_thread( hook )) continue;
+            entry = (struct hook_chain_entry *)ptr;
+            memset( entry, 0, sizeof(*entry) );
+            entry->handle      = hook->handle;
+            entry->unicode     = hook->unicode;
+            entry->proc        = hook->proc;
+            entry->module_size = hook->module_size;
+            ptr += sizeof(*entry);
+            memset( ptr, 0, (hook->module_size + 7) & ~7 );
+            if (hook->module) memcpy( ptr, hook->module, hook->module_size );
+            ptr += (hook->module_size + 7) & ~7;
+        }
+    }
+}
+
+
 /* get the hook information */
 DECL_HANDLER(get_hook_info)
 {

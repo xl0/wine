@@ -256,6 +256,15 @@ struct property_data
     lparam_t       data;
 };
 
+struct hook_chain_entry
+{
+    user_handle_t  handle;
+    int            unicode;
+    client_ptr_t   proc;
+    data_size_t    module_size;
+    int            __pad;
+};
+
 struct ratio
 {
     unsigned short num;
@@ -1016,6 +1025,7 @@ typedef volatile struct
     unsigned int         changed_bits;
     unsigned int         internal_bits;
     int                  hooks_count[NB_HOOKS];
+    unsigned __int64     hooks_serial;
 } queue_shm_t;
 
 typedef volatile struct
@@ -4565,6 +4575,21 @@ struct get_hook_info_reply
 
 
 
+struct get_hook_chain_request
+{
+    struct request_header __header;
+    int            id;
+};
+struct get_hook_chain_reply
+{
+    struct reply_header __header;
+    data_size_t    total;
+    /* VARARG(hooks,hook_chain); */
+    char __pad_12[4];
+};
+
+
+
 struct create_class_request
 {
     struct request_header __header;
@@ -6508,6 +6533,7 @@ enum request
     REQ_start_hook_chain,
     REQ_finish_hook_chain,
     REQ_get_hook_info,
+    REQ_get_hook_chain,
     REQ_create_class,
     REQ_destroy_class,
     REQ_set_class_info,
@@ -6827,6 +6853,7 @@ union generic_request
     struct start_hook_chain_request start_hook_chain_request;
     struct finish_hook_chain_request finish_hook_chain_request;
     struct get_hook_info_request get_hook_info_request;
+    struct get_hook_chain_request get_hook_chain_request;
     struct create_class_request create_class_request;
     struct destroy_class_request destroy_class_request;
     struct set_class_info_request set_class_info_request;
@@ -7144,6 +7171,7 @@ union generic_reply
     struct start_hook_chain_reply start_hook_chain_reply;
     struct finish_hook_chain_reply finish_hook_chain_reply;
     struct get_hook_info_reply get_hook_info_reply;
+    struct get_hook_chain_reply get_hook_chain_reply;
     struct create_class_reply create_class_reply;
     struct destroy_class_reply destroy_class_reply;
     struct set_class_info_reply set_class_info_reply;
@@ -7254,6 +7282,6 @@ union generic_reply
     struct dcomp_get_shared_visual_info_reply dcomp_get_shared_visual_info_reply;
 };
 
-#define SERVER_PROTOCOL_VERSION 965
+#define SERVER_PROTOCOL_VERSION 966
 
 #endif /* __WINE_WINE_SERVER_PROTOCOL_H */

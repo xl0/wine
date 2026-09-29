@@ -1037,6 +1037,29 @@ static void dump_varargs_startup_info( const char *prefix, data_size_t size )
     remove_data( size );
 }
 
+static void dump_varargs_hook_chain( const char *prefix, data_size_t size )
+{
+    const struct hook_chain_entry *entry;
+    data_size_t len;
+
+    fprintf( stderr, "%s{", prefix );
+    while (size >= sizeof(*entry))
+    {
+        entry = cur_data;
+        len = sizeof(*entry) + ((entry->module_size + 7) & ~7);
+        if (len > size) break;
+        fprintf( stderr, "{handle=%08x,unicode=%d", entry->handle, entry->unicode );
+        dump_uint64( ",proc=", &entry->proc );
+        dump_unicode_str( ",module=", (const WCHAR *)(entry + 1), entry->module_size );
+        fputc( '}', stderr );
+        remove_data( len );
+        size -= len;
+        if (size) fputc( ',', stderr );
+    }
+    fputc( '}', stderr );
+    remove_data( size );
+}
+
 static void dump_varargs_rectangles( const char *prefix, data_size_t size )
 {
     const struct rectangle *rect = cur_data;

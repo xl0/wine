@@ -7556,6 +7556,7 @@ BOOL is_exiting_thread( DWORD tid )
 static void thread_detach(void)
 {
     struct user_thread_info *thread_info = get_user_thread_info();
+    UINT i;
 
     destroy_thread_windows();
     destroy_thread_pointers();
@@ -7569,6 +7570,7 @@ static void thread_detach(void)
     if (thread_info->idle_event) NtClose( thread_info->idle_event );
     free( thread_info->session_data );
     free( thread_info->mouse_tracking_info );
+    for (i = 0; i < NB_HOOKS; i++) free( thread_info->hook_chains[i] );
     free( thread_info );
 
     exiting_thread_id = 0;

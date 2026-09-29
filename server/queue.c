@@ -694,6 +694,7 @@ void add_queue_hook_count( struct thread *thread, unsigned int index, int count 
     SHARED_WRITE_BEGIN( thread->queue->shared, queue_shm_t )
     {
         shared->hooks_count[index] += count;
+        shared->hooks_serial++;
     }
     SHARED_WRITE_END;
 

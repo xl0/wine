@@ -272,6 +272,15 @@ struct property_data
     lparam_t       data;     /* data stored in property */
 };
 
+struct hook_chain_entry
+{
+    user_handle_t  handle;       /* hook handle */
+    int            unicode;      /* is it a unicode hook? */
+    client_ptr_t   proc;         /* hook procedure */
+    data_size_t    module_size;  /* size of the module name that follows (padded to 8 bytes) */
+    int            __pad;
+};
+
 struct ratio
 {
     unsigned short num;
@@ -1032,6 +1041,7 @@ typedef volatile struct
     unsigned int         changed_bits;     /* changed wakeup bits */
     unsigned int         internal_bits;    /* internal queue bits */
     int                  hooks_count[NB_HOOKS];  /* active hooks count */
+    unsigned __int64     hooks_serial;     /* hook chains update counter */
 } queue_shm_t;
 
 typedef volatile struct
@@ -3318,6 +3328,15 @@ enum caret_state
     client_ptr_t   proc;           /* hook procedure */
     int            unicode;        /* is it a unicode hook? */
     VARARG(module,unicode_str);    /* module name */
+@END
+
+
+/* Get the hooks of a chain that run in the current thread, in calling order */
+@REQ(get_hook_chain)
+    int            id;             /* id of the hook, except low-level and winevent hooks */
+@REPLY
+    data_size_t    total;          /* size of the whole chain data */
+    VARARG(hooks,hook_chain);      /* hook_chain_entry array, each followed by its module name */
 @END
 
 
