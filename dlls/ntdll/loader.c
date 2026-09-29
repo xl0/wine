@@ -4153,8 +4153,8 @@ NTSTATUS WINAPI LdrUnloadDll( HMODULE hModule )
         /* Recursively decrement reference counts */
         MODULE_DecRefCount( wm->ldr.DdagNode, NULL );
 
-        /* Call process detach notifications */
-        if ( free_lib_count <= 1 )
+        /* Call process detach notifications, unless nothing got unloaded */
+        if ( free_lib_count <= 1 && !wm->ldr.LoadCount )
         {
             process_detach();
             MODULE_FlushModrefs();
