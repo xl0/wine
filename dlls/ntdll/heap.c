@@ -101,7 +101,6 @@ C_ASSERT( sizeof(struct block) == 8 );
 
 #define BLOCK_FLAG_FREE        0x01
 #define BLOCK_FLAG_PREV_FREE   0x02
-#define BLOCK_FLAG_FREE_LINK   0x03
 #define BLOCK_FLAG_LARGE       0x04
 #define BLOCK_FLAG_LFH         0x80 /* block is handled by the LFH frontend */
 #define BLOCK_FLAG_USER_INFO   0x08 /* user flags bits 3-6 */
@@ -168,11 +167,11 @@ C_ASSERT( HEAP_MAX_FREE_BLOCK_SIZE >= HEAP_MAX_BLOCK_REGION_SIZE );
 /* minimum size to start allocating large blocks */
 #define HEAP_MIN_LARGE_BLOCK_SIZE  (HEAP_MAX_USED_BLOCK_SIZE - 0x1000)
 
-#define FREE_LIST_LINEAR_BITS 2
+#define FREE_LIST_LINEAR_BITS 3
 #define FREE_LIST_LINEAR_MASK ((1 << FREE_LIST_LINEAR_BITS) - 1)
 #define FREE_LIST_COUNT ((FIELD_BITS( struct block, block_size ) - FREE_LIST_LINEAR_BITS + 1) * (1 << FREE_LIST_LINEAR_BITS) + 1)
 /* for reference, update this when changing parameters */
-C_ASSERT( FREE_LIST_COUNT == 0x3d );
+C_ASSERT( FREE_LIST_COUNT == 0x71 );
 
 typedef struct DECLSPEC_ALIGN(BLOCK_ALIGN) tagSUBHEAP
 {
@@ -298,7 +297,7 @@ struct heap
     DWORD            pending_pos;   /* Position in pending free requests ring */
     struct block   **pending_free;  /* Ring buffer for pending free requests */
     RTL_CRITICAL_SECTION cs;
-    struct entry     free_lists[FREE_LIST_COUNT];
+    struct list      free_lists[FREE_LIST_COUNT];
     struct bin      *bins;
     SUBHEAP          subheap;
 };
@@ -648,14 +647,6 @@ static unsigned int get_free_list_index( SIZE_T block_size )
     return (log << FREE_LIST_LINEAR_BITS) + linear;
 }
 
-/* locate a free list entry of the appropriate size */
-static inline struct entry *find_free_list( struct heap *heap, SIZE_T block_size, BOOL last )
-{
-    unsigned int index = get_free_list_index( block_size );
-    if (last && ++index == FREE_LIST_COUNT) index = 0;
-    return &heap->free_lists[index];
-}
-
 static void heap_dump( const struct heap *heap )
 {
     const struct block *block;
@@ -679,8 +670,7 @@ static void heap_dump( const struct heap *heap )
     TRACE( "  free_lists: %p\n", heap->free_lists );
     for (i = 0; i < FREE_LIST_COUNT; i++)
         TRACE( "    %p: size %#8Ix, prev %p, next %p\n", heap->free_lists + i, get_free_list_block_size( i ),
-               LIST_ENTRY( heap->free_lists[i].entry.prev, struct entry, entry ),
-               LIST_ENTRY( heap->free_lists[i].entry.next, struct entry, entry ) );
+               heap->free_lists[i].prev, heap->free_lists[i].next );
 
     TRACE( "  subheaps: %p\n", &heap->subheap_list );
     LIST_FOR_EACH_ENTRY( subheap, &heap->subheap_list, SUBHEAP, entry )
@@ -868,7 +858,8 @@ static void block_init_free( struct block *block, ULONG flags, SUBHEAP *subheap,
 
 static void insert_free_block( struct heap *heap, ULONG flags, SUBHEAP *subheap, struct block *block )
 {
-    struct entry *entry = (struct entry *)block, *list;
+    struct entry *entry = (struct entry *)block;
+    struct list *list = &heap->free_lists[get_free_list_index( block_get_size( block ) )];
     struct block *next;
 
     if ((next = next_block( subheap, block )))
@@ -879,9 +870,8 @@ static void insert_free_block( struct heap *heap, ULONG flags, SUBHEAP *subheap,
         *((struct block **)next - 1) = block;
     }
 
-    list = find_free_list( heap, block_get_size( block ), !next );
-    if (!next) list_add_before( &list->entry, &entry->entry );
-    else list_add_after( &list->entry, &entry->entry );
+    if (!next) list_add_tail( list, &entry->entry );
+    else list_add_head( list, &entry->entry );
 }
 
 
@@ -1106,27 +1096,36 @@ static SUBHEAP *create_subheap( struct heap *heap, DWORD flags, SIZE_T total_siz
 }
 
 
+/* find the first block large enough in a free list */
+static struct entry *find_free_entry( struct list *list, SIZE_T block_size )
+{
+    struct entry *entry;
+
+    LIST_FOR_EACH_ENTRY( entry, list, struct entry, entry )
+        if (block_get_size( &entry->block ) >= block_size) return entry;
+
+    return NULL;
+}
+
 static struct block *find_free_block( struct heap *heap, ULONG flags, SIZE_T block_size )
 {
-    struct list *ptr = &find_free_list( heap, block_size, FALSE )->entry;
-    struct entry *entry;
+    struct entry *entry = NULL;
     struct block *block;
     SIZE_T total_size;
     SUBHEAP *subheap;
+    unsigned int i;
 
     /* Find a suitable free list, and in it find a block large enough */
 
-    while ((ptr = list_next( &heap->free_lists[0].entry, ptr )))
+    for (i = get_free_list_index( block_size ); i < FREE_LIST_COUNT && !entry; i++)
+        entry = find_free_entry( &heap->free_lists[i], block_size );
+
+    if (entry)
     {
-        entry = LIST_ENTRY( ptr, struct entry, entry );
         block = &entry->block;
-        if (block_get_flags( block ) == BLOCK_FLAG_FREE_LINK) continue;
-        if (block_get_size( block ) >= block_size)
-        {
-            if (!subheap_commit( heap, block_get_subheap( heap, block ), block, block_size )) return NULL;
-            list_remove( &entry->entry );
-            return block;
-        }
+        if (!subheap_commit( heap, block_get_subheap( heap, block ), block, block_size )) return NULL;
+        list_remove( &entry->entry );
+        return block;
     }
 
     /* make sure we can fit the block and a free entry at the end */
@@ -1150,20 +1149,20 @@ static struct block *find_free_block( struct heap *heap, ULONG flags, SIZE_T blo
 }
 
 
-static BOOL is_valid_free_block( const struct heap *heap, const struct block *block )
+static BOOL is_valid_free_entry( const struct heap *heap, const struct list *ptr )
 {
-    unsigned int i;
+    const struct block *block = &LIST_ENTRY( ptr, struct entry, entry )->block;
 
-    if (find_subheap( heap, block, FALSE )) return TRUE;
-    for (i = 0; i < FREE_LIST_COUNT; i++) if (block == &heap->free_lists[i].block) return TRUE;
-    return FALSE;
+    if (ptr >= heap->free_lists && ptr < heap->free_lists + FREE_LIST_COUNT) return TRUE;
+    if (!find_subheap( heap, block, FALSE )) return FALSE;
+    return (block_get_flags( block ) & BLOCK_FLAG_FREE) && block_get_type( block ) == BLOCK_TYPE_FREE;
 }
 
 static BOOL validate_free_block( const struct heap *heap, const SUBHEAP *subheap, const struct block *block )
 {
     const char *err = NULL, *base = subheap_base( subheap ), *commit_end = subheap_commit_end( subheap );
     const struct entry *entry = (struct entry *)block;
-    const struct block *prev, *next;
+    const struct block *next;
     DWORD flags = heap->flags;
 
     if ((ULONG_PTR)(block + 1) % BLOCK_ALIGN)
@@ -1174,14 +1173,10 @@ static BOOL validate_free_block( const struct heap *heap, const SUBHEAP *subheap
         err = "invalid block flags";
     else if (!contains( base, subheap_size( subheap ), block, block_get_size( block ) ))
         err = "invalid block size";
-    else if (!is_valid_free_block( heap, (next = &LIST_ENTRY( entry->entry.next, struct entry, entry )->block) ))
-        err = "invalid next free block pointer";
-    else if (!(block_get_flags( next ) & BLOCK_FLAG_FREE) || block_get_type( next ) != BLOCK_TYPE_FREE)
-        err = "invalid next free block header";
-    else if (!is_valid_free_block( heap, (prev = &LIST_ENTRY( entry->entry.prev, struct entry, entry )->block) ))
-        err = "invalid previous free block pointer";
-    else if (!(block_get_flags( prev ) & BLOCK_FLAG_FREE) || block_get_type( prev ) != BLOCK_TYPE_FREE)
-        err = "invalid previous free block header";
+    else if (!is_valid_free_entry( heap, entry->entry.next ))
+        err = "invalid next free block";
+    else if (!is_valid_free_entry( heap, entry->entry.prev ))
+        err = "invalid previous free block";
     else if ((next = next_block( subheap, block )))
     {
         if (!(block_get_flags( next ) & BLOCK_FLAG_PREV_FREE))
@@ -1262,7 +1257,7 @@ static BOOL validate_used_block( const struct heap *heap, const SUBHEAP *subheap
     else if (block_get_flags( block ) & BLOCK_FLAG_PREV_FREE)
     {
         const struct block *prev = *((struct block **)block - 1);
-        if (!is_valid_free_block( heap, prev ))
+        if (!find_subheap( heap, prev, FALSE ))
             err = "invalid previous block pointer";
         else if (!(block_get_flags( prev ) & BLOCK_FLAG_FREE) || block_get_type( prev ) != BLOCK_TYPE_FREE)
             err = "invalid previous block flags";
@@ -1499,7 +1494,6 @@ static void heap_set_debug_flags( HANDLE handle )
 HANDLE WINAPI RtlCreateHeap( ULONG flags, void *addr, SIZE_T total_size, SIZE_T commit_size,
                              void *lock, RTL_HEAP_PARAMETERS *params )
 {
-    struct entry *entry;
     struct heap *heap;
     SIZE_T block_size;
     SUBHEAP *subheap;
@@ -1532,15 +1526,7 @@ HANDLE WINAPI RtlCreateHeap( ULONG flags, void *addr, SIZE_T total_size, SIZE_T 
     list_init( &heap->subheap_list );
     list_init( &heap->large_list );
 
-    list_init( &heap->free_lists[0].entry );
-    for (i = 0, entry = heap->free_lists; i < FREE_LIST_COUNT; i++, entry++)
-    {
-        block_set_flags( &entry->block, ~0, BLOCK_FLAG_FREE_LINK );
-        block_set_size( &entry->block, 0 );
-        block_set_type( &entry->block, BLOCK_TYPE_FREE );
-        block_set_base( &entry->block, heap );
-        if (i) list_add_after( &entry[-1].entry, &entry->entry );
-    }
+    for (i = 0; i < FREE_LIST_COUNT; i++) list_init( heap->free_lists + i );
 
     if (!process_heap)  /* do it by hand to avoid memory allocations */
     {
