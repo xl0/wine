@@ -3593,6 +3593,64 @@ static void check_z_order_debug(HWND hwnd, HWND next, HWND prev, HWND owner,
                     hwnd, topmost ? "" : "NOT ");
 }
 
+static void check_children(HWND parent, const HWND *expect, int count, int line)
+{
+    HWND hwnd = GetWindow(parent, GW_CHILD), prev = 0;
+    int i;
+
+    for (i = 0; i < count; i++)
+    {
+        ok_(__FILE__, line)(hwnd == expect[i], "child %d: got %p, expected %p\n", i, hwnd, expect[i]);
+        if (!hwnd) return;
+        ok_(__FILE__, line)(GetWindow(hwnd, GW_HWNDPREV) == prev, "child %d: wrong GW_HWNDPREV\n", i);
+        prev = hwnd;
+        hwnd = GetWindow(hwnd, GW_HWNDNEXT);
+    }
+    ok_(__FILE__, line)(!hwnd, "got extra child %p\n", hwnd);
+}
+#define check_children(a,b,c) check_children(a, b, c, __LINE__)
+
+/* GW_CHILD / GW_HWNDNEXT / GW_HWNDPREV stay consistent across Z-order changes */
+static void test_GetWindow_zorder_changes(HWND parent)
+{
+    HWND child[4], other, hwnd, list[4];
+    int i;
+
+    other = CreateWindowExA(0, "static", "", WS_CHILD, 0, 0, 10, 10, parent, 0, 0, NULL);
+    for (i = 0; i < 4; i++)
+        child[i] = CreateWindowExA(0, "static", "", WS_CHILD, 0, 0, 10, 10, other, 0, 0, NULL);
+    check_children(other, child, 4);
+
+    SetWindowPos(child[2], HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    list[0] = child[2]; list[1] = child[0]; list[2] = child[1]; list[3] = child[3];
+    check_children(other, list, 4);
+
+    SetWindowPos(child[2], HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    list[0] = child[0]; list[1] = child[1]; list[2] = child[3]; list[3] = child[2];
+    check_children(other, list, 4);
+
+    DestroyWindow(child[1]);
+    list[0] = child[0]; list[1] = child[3]; list[2] = child[2];
+    check_children(other, list, 3);
+    SetLastError(0xdeadbeef);
+    hwnd = GetWindow(child[1], GW_HWNDNEXT);
+    ok(!hwnd, "got %p\n", hwnd);
+    ok(GetLastError() == ERROR_INVALID_WINDOW_HANDLE, "got error %lu\n", GetLastError());
+
+    SetParent(child[3], child[0]);
+    list[0] = child[0]; list[1] = child[2];
+    check_children(other, list, 2);
+    check_children(child[0], &child[3], 1);
+
+    SetParent(child[3], other);
+    list[0] = child[3]; list[1] = child[0]; list[2] = child[2];
+    check_children(other, list, 3);
+    check_children(child[0], NULL, 0);
+
+    DestroyWindow(other);
+    ok(!IsWindow(child[0]), "child still exists\n");
+}
+
 static void test_popup_zorder(HWND hwnd_D, HWND hwnd_E, DWORD style)
 {
     HWND hwnd_A, hwnd_B, hwnd_C, hwnd_F;
@@ -14917,6 +14975,7 @@ START_TEST(win)
     test_NCRedraw();
 
     test_children_zorder(hwndMain);
+    test_GetWindow_zorder_changes(hwndMain);
     test_popup_zorder(hwndMain2, hwndMain, WS_POPUP);
     test_popup_zorder(hwndMain2, hwndMain, 0);
     test_GetLastActivePopup();
