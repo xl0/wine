@@ -1414,12 +1414,16 @@ void X11DRV_DestroyCursorIcon( HCURSOR handle )
 void X11DRV_SetCursor( HWND hwnd, HCURSOR handle )
 {
     struct x11drv_win_data *data;
+    Window window;
 
     if ((data = get_win_data( hwnd )))
     {
         set_window_cursor( data->whole_window, handle );
         release_win_data( data );
     }
+    /* another process' window, with a cursor only we can create */
+    else if (hwnd != NtUserGetDesktopWindow() && (window = X11DRV_get_whole_window( hwnd )))
+        set_window_cursor( window, handle );
 
     if (clipping_cursor) set_window_cursor( x11drv_thread_data()->clip_window, handle );
 }
