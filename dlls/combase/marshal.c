@@ -71,7 +71,7 @@ struct proxy_manager
     CRITICAL_SECTION cs;      /* thread safety for this object and children */
     ULONG sorflags;           /* STDOBJREF flags (RO) */
     IRemUnknown *remunk;      /* proxy to IRemUnknown used for lifecycle management (CS cs) */
-    HANDLE remoting_mutex;    /* mutex used for synchronizing access to IRemUnknown */
+    CRITICAL_SECTION remoting_cs; /* synchronizes access to IRemUnknown */
     MSHCTX dest_context;      /* context used for activating optimisations (LOCK) */
     void *dest_context_data;  /* reserved context value (LOCK) */
 };
@@ -1419,11 +1419,7 @@ static HRESULT ifproxy_get_public_ref(struct ifproxy * This)
 {
     HRESULT hr = S_OK;
 
-    if (WAIT_OBJECT_0 != WaitForSingleObject(This->parent->remoting_mutex, INFINITE))
-    {
-        ERR("Wait failed for ifproxy %p\n", This);
-        return E_UNEXPECTED;
-    }
+    EnterCriticalSection(&This->parent->remoting_cs);
 
     if (This->refs == 0)
     {
@@ -1447,7 +1443,7 @@ static HRESULT ifproxy_get_public_ref(struct ifproxy * This)
                 ERR("IRemUnknown_RemAddRef returned with %#lx, hrref = %#lx\n", hr, hrref);
         }
     }
-    ReleaseMutex(This->parent->remoting_mutex);
+    LeaveCriticalSection(&This->parent->remoting_cs);
 
     return hr;
 }
@@ -1457,11 +1453,7 @@ static HRESULT ifproxy_release_public_refs(struct ifproxy * This)
     HRESULT hr = S_OK;
     LONG public_refs;
 
-    if (WAIT_OBJECT_0 != WaitForSingleObject(This->parent->remoting_mutex, INFINITE))
-    {
-        ERR("Wait failed for ifproxy %p\n", This);
-        return E_UNEXPECTED;
-    }
+    EnterCriticalSection(&This->parent->remoting_cs);
 
     public_refs = This->refs;
     if (public_refs > 0)
@@ -1490,7 +1482,7 @@ static HRESULT ifproxy_release_public_refs(struct ifproxy * This)
                 ERR("IRemUnknown_RemRelease failed with error %#lx\n", hr);
         }
     }
-    ReleaseMutex(This->parent->remoting_mutex);
+    LeaveCriticalSection(&This->parent->remoting_cs);
 
     return hr;
 }
@@ -1534,13 +1526,6 @@ static HRESULT proxy_manager_construct(
     struct proxy_manager * This = malloc(sizeof(*This));
     if (!This) return E_OUTOFMEMORY;
 
-    This->remoting_mutex = CreateMutexW(NULL, FALSE, NULL);
-    if (!This->remoting_mutex)
-    {
-        free(This);
-        return HRESULT_FROM_WIN32(GetLastError());
-    }
-
     if (oxid_info)
     {
         This->oxid_info.dwPid = oxid_info->dwPid;
@@ -1554,7 +1539,6 @@ static HRESULT proxy_manager_construct(
         HRESULT hr = rpc_resolve_oxid(oxid, &This->oxid_info);
         if (FAILED(hr))
         {
-            CloseHandle(This->remoting_mutex);
             free(This);
             return hr;
         }
@@ -1569,6 +1553,8 @@ static HRESULT proxy_manager_construct(
 
     InitializeCriticalSectionEx(&This->cs, 0, RTL_CRITICAL_SECTION_FLAG_FORCE_DEBUG_INFO);
     This->cs.DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": proxy_manager");
+    InitializeCriticalSectionEx(&This->remoting_cs, 0, RTL_CRITICAL_SECTION_FLAG_FORCE_DEBUG_INFO);
+    This->remoting_cs.DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": proxy_manager remoting");
 
     /* the apartment the object was unmarshaled into */
     This->parent = apt;
@@ -1948,7 +1934,8 @@ static void proxy_manager_destroy(struct proxy_manager * This)
     This->cs.DebugInfo->Spare[0] = 0;
     DeleteCriticalSection(&This->cs);
 
-    CloseHandle(This->remoting_mutex);
+    This->remoting_cs.DebugInfo->Spare[0] = 0;
+    DeleteCriticalSection(&This->remoting_cs);
 
     free(This);
 }
