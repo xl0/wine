@@ -198,8 +198,12 @@ static HRESULT STDMETHODCALLTYPE visual_SetClipObject(IDCompositionVisualUnknown
 /* C++ method: SetClip(THIS_ const D2D_RECT_F &rect).  Use pointer instead of reference */
 static HRESULT STDMETHODCALLTYPE visual_SetClip(IDCompositionVisualUnknown *iface, const D2D_RECT_F *rect)
 {
-    FIXME("iface %p, rect %p stub!\n", iface, rect);
-    return E_NOTIMPL;
+    struct composition_visual *visual = impl_from_IDCompositionVisualUnknown(iface);
+
+    TRACE("iface %p, rect (%.8e, %.8e)-(%.8e, %.8e).\n", iface, rect->left, rect->top, rect->right, rect->bottom);
+
+    visual->clip = *rect;
+    return S_OK;
 }
 
 static HRESULT STDMETHODCALLTYPE visual_SetContent(IDCompositionVisualUnknown *iface, IUnknown *content)
