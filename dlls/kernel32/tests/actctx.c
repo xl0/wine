@@ -1831,29 +1831,30 @@ static void test_com_class_threadingmodel(void)
     static const struct
     {
         const char *value;
-        DWORD model;
+        DWORD model[2]; /* comClass, clrClass; 0 if CreateActCtx fails */
     }
     tests[] =
     {
-        { "Apartment", ThreadingModel_Apartment },
-        { "apartment", ThreadingModel_Apartment },
-        { "free",      ThreadingModel_Free },
-        { "fReE",      ThreadingModel_Free },
-        { "BOTH",      ThreadingModel_Both },
-        { "neutral",   ThreadingModel_Neutral },
-        { "Single",    ThreadingModel_No },
-        { "single",    ThreadingModel_No },
+        { "Apartment", { ThreadingModel_Apartment, ThreadingModel_Apartment } },
+        { "apartment", { ThreadingModel_Apartment, ThreadingModel_Apartment } },
+        { "free",      { ThreadingModel_Free,      ThreadingModel_Free } },
+        { "fReE",      { ThreadingModel_Free,      ThreadingModel_Free } },
+        { "BOTH",      { ThreadingModel_Both,      ThreadingModel_Both } },
+        { "neutral",   { ThreadingModel_Neutral,   ThreadingModel_Neutral } },
+        { "Single",    { ThreadingModel_No,        ThreadingModel_No } },
+        { "single",    { ThreadingModel_No,        ThreadingModel_No } },
+        { NULL,        { ThreadingModel_No,        ThreadingModel_Both } },
         { "" },
         { " Free" },
         { "bogus" },
     };
     static const char *elems[] =
     {
-        "<file name=\"testlib.dll\"><comClass clsid=\"{12345678-1234-5678-1234-111122223333}\" threadingModel=\"%s\"/></file>",
-        "<clrClass clsid=\"{12345678-1234-5678-1234-111122223333}\" name=\"clrclass\" threadingModel=\"%s\"/>",
+        "<file name=\"testlib.dll\"><comClass clsid=\"{12345678-1234-5678-1234-111122223333}\"%s/></file>",
+        "<clrClass clsid=\"{12345678-1234-5678-1234-111122223333}\" name=\"clrclass\"%s/>",
     };
+    char manifest[512], elem[256], attr[64];
     ACTCTX_SECTION_KEYED_DATA data;
-    char manifest[512], elem[256];
     unsigned int i, j;
     ULONG_PTR cookie;
     HANDLE handle;
@@ -1863,10 +1864,12 @@ static void test_com_class_threadingmodel(void)
     for (i = 0; i < ARRAY_SIZE(tests); i++)
     {
         winetest_push_context("%u %s", j, debugstr_a(tests[i].value));
-        sprintf(elem, elems[j], tests[i].value);
+        attr[0] = 0;
+        if (tests[i].value) sprintf(attr, " threadingModel=\"%s\"", tests[i].value);
+        sprintf(elem, elems[j], attr);
         sprintf(manifest, "<assembly xmlns=\"urn:schemas-microsoft-com:asm.v1\" manifestVersion=\"1.0\">"
                 "<assemblyIdentity version=\"1.0.0.0\" name=\"Wine.Test\" type=\"win32\"/>%s</assembly>", elem);
-        if (!tests[i].model)
+        if (!tests[i].model[j])
         {
             test_create_and_fail(manifest, NULL, 0, FALSE);
             winetest_pop_context();
@@ -1889,7 +1892,7 @@ static void test_com_class_threadingmodel(void)
         ret = FindActCtxSectionGuid(0, NULL, ACTIVATION_CONTEXT_SECTION_COM_SERVER_REDIRECTION, &clsid, &data);
         ok(ret, "FindActCtxSectionGuid failed: %lu\n", GetLastError());
         if (ret)
-            ok(((struct comclassredirect_data *)data.lpData)->model == tests[i].model, "got model %lu\n",
+            ok(((struct comclassredirect_data *)data.lpData)->model == tests[i].model[j], "got model %lu\n",
                ((struct comclassredirect_data *)data.lpData)->model);
         DeactivateActCtx(0, cookie);
         ReleaseActCtx(handle);

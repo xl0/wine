@@ -1600,6 +1600,7 @@ static void parse_com_class_elem( xmlbuf_t *xmlbuf, struct dll_redirect *dll, st
         set_error( xmlbuf );
         return;
     }
+    entity->u.comclass.model = ThreadingModel_No;
 
     while (next_xml_attr(xmlbuf, &attr, &end))
     {
@@ -2059,6 +2060,7 @@ static void parse_clr_class_elem( xmlbuf_t* xmlbuf, struct assembly* assembly,
         set_error( xmlbuf );
         return;
     }
+    entity->u.comclass.model = ThreadingModel_Both;
 
     while (next_xml_attr(xmlbuf, &attr, &end))
     {
