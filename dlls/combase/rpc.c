@@ -1226,23 +1226,11 @@ static HRESULT WINAPI ClientRpcChannelBuffer_GetBuffer(LPRPCCHANNELBUFFER iface,
                                   &message_state->params.iface);
     if (hr == S_OK)
     {
-        /* stub, chan, iface and iid are unneeded in multi-threaded case as we go
-         * via the RPC runtime */
-        if (apt->multi_threaded)
+        message_state->params.bypass_rpcrt = TRUE;
+        if (!apt->multi_threaded)
         {
-            IRpcStubBuffer_Release(message_state->params.stub);
-            message_state->params.stub = NULL;
-            IRpcChannelBuffer_Release(message_state->params.chan);
-            message_state->params.chan = NULL;
-            message_state->params.iface = NULL;
-        }
-        else
-        {
-            message_state->params.bypass_rpcrt = TRUE;
             message_state->target_hwnd = apartment_getwindow(apt);
             message_state->target_tid = apt->tid;
-            /* we assume later on that this being non-NULL is the indicator that
-             * means call directly instead of going through RPC runtime */
             if (!message_state->target_hwnd)
                 ERR("window for apartment %s is NULL\n", wine_dbgstr_longlong(apt->oxid));
         }
@@ -1253,7 +1241,7 @@ static HRESULT WINAPI ClientRpcChannelBuffer_GetBuffer(LPRPCCHANNELBUFFER iface,
      * ClientRpcChannelBuffer_SendReceive */
 
     /* shortcut the RPC runtime */
-    if (message_state->target_hwnd)
+    if (message_state->params.bypass_rpcrt)
     {
         msg->Buffer = malloc(msg->BufferLength);
         if (msg->Buffer)
@@ -1344,6 +1332,32 @@ static DWORD WINAPI rpc_sendreceive_thread(LPVOID param)
     return 0;
 }
 
+static void rpc_execute_mta_call(struct dispatch_params *params)
+{
+    BOOL joined = FALSE;
+    struct tlsdata *tlsdata;
+
+    com_get_tlsdata(&tlsdata);
+
+    if (!tlsdata->apt)
+    {
+        enter_apartment(tlsdata, COINIT_MULTITHREADED);
+        joined = TRUE;
+    }
+    rpc_execute_call(params);
+    if (joined)
+    {
+        leave_apartment(tlsdata);
+    }
+}
+
+/* this thread runs an in-process call into the multithreaded apartment */
+static DWORD WINAPI rpc_execute_mta_call_thread(void *param)
+{
+    rpc_execute_mta_call(param);
+    return 0;
+}
+
 static inline HRESULT ClientRpcChannelBuffer_IsCorrectApartment(ClientRpcChannelBuffer *This, const struct apartment *apt)
 {
     if (!apt)
@@ -1412,19 +1426,32 @@ static HRESULT WINAPI ClientRpcChannelBuffer_SendReceive(LPRPCCHANNELBUFFER ifac
     message_state->params.msg = olemsg;
     if (message_state->params.bypass_rpcrt)
     {
-        TRACE("Calling apartment thread %#lx...\n", message_state->target_tid);
-
         msg->ProcNum &= ~RPC_FLAGS_VALID_BIT;
 
-        if (!PostMessageW(message_state->target_hwnd, DM_EXECUTERPC, 0,
-                          (LPARAM)&message_state->params))
+        if (!message_state->target_tid)
         {
-            ERR("PostMessage failed with error %lu\n", GetLastError());
+            TRACE("Calling multithreaded apartment...\n");
 
-            /* Note: message_state->params.iface doesn't have a reference and
-             * so doesn't need to be released */
+            if (!QueueUserWorkItem(rpc_execute_mta_call_thread, &message_state->params, WT_EXECUTEDEFAULT))
+            {
+                ERR("QueueUserWorkItem failed with error %lu\n", GetLastError());
+                hr = E_UNEXPECTED;
+            }
+        }
+        else
+        {
+            TRACE("Calling apartment thread %#lx...\n", message_state->target_tid);
 
-            hr = HRESULT_FROM_WIN32(GetLastError());
+            if (!PostMessageW(message_state->target_hwnd, DM_EXECUTERPC, 0,
+                              (LPARAM)&message_state->params))
+            {
+                ERR("PostMessage failed with error %lu\n", GetLastError());
+
+                /* Note: message_state->params.iface doesn't have a reference and
+                 * so doesn't need to be released */
+
+                hr = HRESULT_FROM_WIN32(GetLastError());
+            }
         }
     }
     else
@@ -2050,23 +2077,7 @@ static void __RPC_STUB dispatch_rpc(RPC_MESSAGE *msg)
         CloseHandle(params->handle);
     }
     else
-    {
-        BOOL joined = FALSE;
-        struct tlsdata *tlsdata;
-
-        com_get_tlsdata(&tlsdata);
-
-        if (!tlsdata->apt)
-        {
-            enter_apartment(tlsdata, COINIT_MULTITHREADED);
-            joined = TRUE;
-        }
-        rpc_execute_call(params);
-        if (joined)
-        {
-            leave_apartment(tlsdata);
-        }
-    }
+        rpc_execute_mta_call(params);
 
     hr = params->hr;
     if (params->chan)
