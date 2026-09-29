@@ -1479,6 +1479,17 @@ LONG WINAPI NdrStubCall2(
 }
 
 /***********************************************************************
+ *            NdrStubCall3 [RPCRT4.@]
+ */
+LONG WINAPI NdrStubCall3( struct IRpcStubBuffer *This, struct IRpcChannelBuffer *channel,
+                          PRPC_MESSAGE msg, DWORD *phase )
+{
+    /* The server info carries the NDR format strings along with the NDR64 ones,
+     * and we never negotiate the NDR64 transfer syntax. */
+    return NdrStubCall2( This, channel, msg, phase );
+}
+
+/***********************************************************************
  *            NdrServerCall2 [RPCRT4.@]
  */
 void WINAPI NdrServerCall2(PRPC_MESSAGE pRpcMsg)

@@ -295,6 +295,7 @@
 @ stdcall NdrSimpleTypeMarshall(ptr ptr long)
 @ stdcall NdrSimpleTypeUnmarshall(ptr ptr long)
 @ stdcall NdrStubCall2(ptr ptr ptr ptr)
+@ stdcall -arch=win64 NdrStubCall3(ptr ptr ptr ptr)
 @ stdcall NdrStubCall(ptr ptr ptr ptr)
 @ stdcall NdrStubForwardingFunction(ptr ptr ptr ptr)
 @ stdcall NdrStubGetBuffer(ptr ptr ptr)

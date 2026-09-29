@@ -1146,6 +1146,164 @@ static void test_delegating_Invoke(IPSFactoryBuffer *ppsf)
     free(msg.Buffer);
     IRpcStubBuffer_Release(pstub);
 }
+#ifdef _WIN64
+static GUID IID_if5 = {0x1234567d, 1234, 5678, {12,34,56,78,90,0xab,0xcd,0xef}};
+
+static const struct
+{
+    short pad;
+    unsigned char format[38];
+} if5_proc_format =
+{
+    0,
+    {
+        /* int square(int x), proc 3 */
+        0x33,       /* FC_AUTO_HANDLE */
+        0x6c,       /* Oi_OBJECT_PROC | Oi_OBJ_USE_V2_INTERPRETER | Oi_HAS_RPCFLAGS | 0x04 */
+        NdrFcLong(0),
+        NdrFcShort(3),
+        NdrFcShort(0x18),   /* stack size */
+        NdrFcShort(8),      /* client buffer size */
+        NdrFcShort(8),      /* server buffer size */
+        0x44,       /* has return, has extensions */
+        2,          /* number of params */
+        10, 0,      /* extensions: size, flags */
+        NdrFcShort(0), NdrFcShort(0), NdrFcShort(0), NdrFcShort(0),
+        NdrFcShort(0x48), NdrFcShort(0x8), 0x08, 0,     /* [in] x: FC_LONG */
+        NdrFcShort(0x70), NdrFcShort(0x10), 0x08, 0,    /* return value: FC_LONG */
+    }
+};
+
+static const unsigned short if5_fmt_offsets[] = {0};
+
+/* MIDL /protocol all output; NdrStubCall3 uses the NDR strings from the server info itself */
+static const MIDL_SYNTAX_INFO if5_syntax_info[] =
+{
+    {{{0x8a885d04, 0x1ceb, 0x11c9, {0x9f, 0xe8, 0x08, 0x00, 0x2b, 0x10, 0x48, 0x60}}, {2, 0}}},
+    {{{0x71710533, 0xbeba, 0x4937, {0x83, 0x19, 0xb5, 0xdb, 0xef, 0x9c, 0xcc, 0x36}}, {1, 0}}},
+};
+
+static const MIDL_SERVER_INFO if5_server_info =
+{
+    &Object_StubDesc, NULL, if5_proc_format.format, &if5_fmt_offsets[-3], NULL,
+    (RPC_SYNTAX_IDENTIFIER *)&if5_syntax_info[1].TransferSyntax, 2, (MIDL_SYNTAX_INFO *)if5_syntax_info,
+};
+
+static const PRPC_STUB_FUNCTION if5_table[] = { (PRPC_STUB_FUNCTION)NdrStubCall3 };
+
+static CStdPSFactoryBuffer if5_factory;
+
+static ULONG WINAPI if5_stub_Release(IRpcStubBuffer *iface)
+{
+    return NdrCStdStubBuffer_Release(iface, (IPSFactoryBuffer *)&if5_factory);
+}
+
+static const CInterfaceStubVtbl if5_stub_vtbl =
+{
+    {&IID_if5, &if5_server_info, 4, &if5_table[-3]},
+    {
+        CStdStubBuffer_QueryInterface,
+        CStdStubBuffer_AddRef,
+        if5_stub_Release,
+        CStdStubBuffer_Connect,
+        CStdStubBuffer_Disconnect,
+        CStdStubBuffer_Invoke,
+        CStdStubBuffer_IsIIDSupported,
+        CStdStubBuffer_CountRefs,
+        CStdStubBuffer_DebugServerQueryInterface,
+        CStdStubBuffer_DebugServerRelease
+    }
+};
+
+static CINTERFACE_PROXY_VTABLE(4) if5_proxy_vtbl =
+{
+    { &IID_if5 },
+    { IUnknown_QueryInterface_Proxy, IUnknown_AddRef_Proxy, IUnknown_Release_Proxy, 0 }
+};
+
+static const CInterfaceProxyVtbl *if5_proxy_list[] = { (const CInterfaceProxyVtbl *)&if5_proxy_vtbl, NULL };
+static const CInterfaceStubVtbl *if5_stub_list[] = { &if5_stub_vtbl, NULL };
+static PCInterfaceName const if5_name_list[] = { "if5", NULL };
+static const IID *if5_base_iid_list[] = { NULL, NULL };
+
+static int __stdcall if5_iid_lookup(const IID *iid, int *index)
+{
+    *index = 0;
+    return IsEqualGUID(iid, &IID_if5);
+}
+
+static const ExtendedProxyFileInfo if5_proxy_file_info =
+{
+    (const PCInterfaceProxyVtblList *)if5_proxy_list,
+    (const PCInterfaceStubVtblList *)if5_stub_list,
+    if5_name_list,
+    if5_base_iid_list,
+    if5_iid_lookup,
+    1,
+    2,
+    NULL,
+    0,
+    0,
+    0
+};
+
+static const ProxyFileInfo *if5_proxy_file_list[] = { &if5_proxy_file_info, NULL };
+
+static HRESULT WINAPI if5_obj_QueryInterface(void *iface, REFIID iid, void **out)
+{
+    *out = iface;
+    return S_OK;
+}
+
+static ULONG WINAPI if5_obj_AddRef(void *iface)
+{
+    return 2;
+}
+
+static ULONG WINAPI if5_obj_Release(void *iface)
+{
+    return 1;
+}
+
+static int WINAPI if5_obj_square(void *iface, int x)
+{
+    return x * x;
+}
+
+static void *if5_obj_vtbl[] = {if5_obj_QueryInterface, if5_obj_AddRef, if5_obj_Release, if5_obj_square};
+
+static void test_NdrStubCall3(void)
+{
+    IRpcChannelBufferVtbl *chan_vtbl = &delegating_invoke_test_rpc_chan_vtbl;
+    IRpcChannelBuffer *chan = (IRpcChannelBuffer *)&chan_vtbl;
+    void **obj = if5_obj_vtbl;
+    IPSFactoryBuffer *ppsf;
+    IRpcStubBuffer *stub;
+    RPCOLEMESSAGE msg = {0};
+    int x = 7;
+    HRESULT hr;
+
+    hr = NdrDllGetClassObject(&CLSID_psfact, &IID_IPSFactoryBuffer, (void **)&ppsf,
+                              if5_proxy_file_list, &CLSID_psfact, &if5_factory);
+    ok(hr == S_OK, "got %#lx\n", hr);
+    stub = create_stub(ppsf, &IID_if5, (IUnknown *)&obj, S_OK);
+
+    msg.dataRepresentation = NDR_LOCAL_DATA_REPRESENTATION;
+    msg.iMethod = 3;
+    msg.Buffer = &x;
+    msg.cbBuffer = sizeof(x);
+    msg.reserved2[0] = (void *)&if5_syntax_info[0].TransferSyntax; /* RPC_MESSAGE TransferSyntax */
+    hr = IRpcStubBuffer_Invoke(stub, &msg, chan);
+    ok(hr == S_OK, "got %#lx\n", hr);
+    ok(msg.cbBuffer == sizeof(int), "got size %lu\n", msg.cbBuffer);
+    ok(*(int *)msg.Buffer == 49, "got %d\n", *(int *)msg.Buffer);
+    free(msg.Buffer);
+
+    IRpcStubBuffer_Release(stub);
+    IPSFactoryBuffer_Release(ppsf);
+}
+#endif
+
 static const CInterfaceProxyVtbl *cstub_ProxyVtblList2[] =
 {
     NULL
@@ -1566,6 +1724,9 @@ START_TEST( cstub )
     test_Disconnect(ppsf);
     test_Release(ppsf);
     test_delegating_Invoke(ppsf);
+#ifdef _WIN64
+    test_NdrStubCall3();
+#endif
     test_NdrDllRegisterProxy();
     test_delegated_methods();
     test_ChannelBufferRefCount(ppsf);

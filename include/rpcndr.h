@@ -712,6 +712,8 @@ RPCRTAPI void RPC_ENTRY
 RPCRTAPI LONG RPC_ENTRY
   NdrStubCall2( struct IRpcStubBuffer* pThis, struct IRpcChannelBuffer* pChannel, PRPC_MESSAGE pRpcMsg, DWORD * pdwStubPhase );
 RPCRTAPI LONG RPC_ENTRY
+  NdrStubCall3( struct IRpcStubBuffer* pThis, struct IRpcChannelBuffer* pChannel, PRPC_MESSAGE pRpcMsg, DWORD * pdwStubPhase );
+RPCRTAPI LONG RPC_ENTRY
   NdrStubCall( struct IRpcStubBuffer* pThis, struct IRpcChannelBuffer* pChannel, PRPC_MESSAGE pRpcMsg, DWORD * pdwStubPhase );
 RPCRTAPI LONG RPC_ENTRY
   NdrAsyncStubCall( struct IRpcStubBuffer* pThis, struct IRpcChannelBuffer* pChannel, PRPC_MESSAGE pRpcMsg, DWORD * pdwStubPhase );
