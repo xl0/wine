@@ -443,6 +443,23 @@ void client_surface_present( struct client_surface *surface )
     pthread_mutex_unlock( &surfaces_lock );
 }
 
+/* present the offscreen client surfaces of a toplevel again, their host windows keep the last image */
+static void present_offscreen_client_surfaces( HWND toplevel )
+{
+    struct client_surface *surface;
+    HDC hdc;
+
+    pthread_mutex_lock( &surfaces_lock );
+    LIST_FOR_EACH_ENTRY( surface, &client_surfaces, struct client_surface, entry )
+    {
+        if (!surface->hwnd || surface->toplevel != toplevel || !surface->offscreen) continue;
+        if (!(hdc = NtUserGetDCEx( surface->hwnd, 0, DCX_CACHE | DCX_USESTYLE ))) continue;
+        surface->funcs->present( surface, hdc );
+        NtUserReleaseDC( surface->hwnd, hdc );
+    }
+    pthread_mutex_unlock( &surfaces_lock );
+}
+
 void client_surface_update( struct client_surface *surface )
 {
     pthread_mutex_lock( &surfaces_lock );
@@ -2547,6 +2564,7 @@ static BOOL expose_window_surface( HWND hwnd, UINT flags, const RECT *rect )
 
     if (region)
     {
+        present_offscreen_client_surfaces( hwnd );
         NtUserRedrawWindow( hwnd, NULL, region, flags );
         NtGdiDeleteObjectApp( region );
     }
