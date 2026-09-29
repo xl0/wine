@@ -5960,6 +5960,38 @@ static void test_maximum_frame_latency(void)
     ok(!refcount, "Device has %lu references left.\n", refcount);
 }
 
+static void test_enqueue_set_event(void)
+{
+    IDXGIDevice2 *device2;
+    IDXGIDevice *device;
+    ULONG refcount;
+    HANDLE event;
+    HRESULT hr;
+
+    if (!(device = create_device(0)))
+    {
+        skip("Failed to create device.\n");
+        return;
+    }
+
+    if (FAILED(IDXGIDevice_QueryInterface(device, &IID_IDXGIDevice2, (void **)&device2)))
+    {
+        win_skip("IDXGIDevice2 is not implemented.\n");
+        IDXGIDevice_Release(device);
+        return;
+    }
+
+    event = CreateEventW(NULL, FALSE, FALSE, NULL);
+    hr = IDXGIDevice2_EnqueueSetEvent(device2, event);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    ok(!WaitForSingleObject(event, 1000), "Event not signalled.\n");
+    CloseHandle(event);
+
+    IDXGIDevice2_Release(device2);
+    refcount = IDXGIDevice_Release(device);
+    ok(!refcount, "Device has %lu references left.\n", refcount);
+}
+
 static void test_output_desc(void)
 {
     IDXGIAdapter *adapter, *adapter2;
@@ -9172,6 +9204,7 @@ START_TEST(dxgi)
     queue_test(test_create_factory);
     queue_test(test_private_data);
     queue_test(test_maximum_frame_latency);
+    queue_test(test_enqueue_set_event);
     queue_test(test_output_desc);
     queue_test(test_object_wrapping);
     queue_test(test_factory_check_feature_support);

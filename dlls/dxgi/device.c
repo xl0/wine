@@ -318,9 +318,34 @@ static HRESULT STDMETHODCALLTYPE dxgi_device_ReclaimResources(IWineDXGIDevice *i
 
 static HRESULT STDMETHODCALLTYPE dxgi_device_EnqueueSetEvent(IWineDXGIDevice *iface, HANDLE event)
 {
-    FIXME("iface %p, event %p stub!\n", iface, event);
+    struct dxgi_device *device = impl_from_IWineDXGIDevice(iface);
+    struct wined3d_query *query;
+    HRESULT hr;
 
-    return E_NOTIMPL;
+    TRACE("iface %p, event %p.\n", iface, event);
+
+    wined3d_mutex_lock();
+    if (FAILED(hr = wined3d_query_create(device->wined3d_device, WINED3D_QUERY_TYPE_EVENT,
+            NULL, &dxgi_null_wined3d_parent_ops, &query)))
+    {
+        wined3d_mutex_unlock();
+        return hr;
+    }
+    wined3d_query_issue(query, WINED3DISSUE_END);
+    /* Wait for the GPU here instead of setting the event asynchronously. Callers typically
+     * wait for the event right away; this blocks those that don't. */
+    while ((hr = wined3d_query_get_data(query, NULL, 0, WINED3DGETDATA_FLUSH)) == S_FALSE)
+    {
+        wined3d_mutex_unlock();
+        Sleep(0);
+        wined3d_mutex_lock();
+    }
+    wined3d_query_decref(query);
+    wined3d_mutex_unlock();
+
+    if (FAILED(hr))
+        return hr;
+    return SetEvent(event) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
 }
 
 static void STDMETHODCALLTYPE dxgi_device_Trim(IWineDXGIDevice *iface)
