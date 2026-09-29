@@ -350,6 +350,9 @@ static inline struct wined3d_bo_vk *wined3d_bo_vk(struct wined3d_bo *bo)
     return CONTAINING_RECORD(bo, struct wined3d_bo_vk, b);
 }
 
+#define WINED3D_CACHED_BO_COUNT 8
+#define WINED3D_CACHED_BO_SIZE  (256 * 1024 * 1024)
+
 struct wined3d_bo_slab_vk_key
 {
     VkMemoryPropertyFlags memory_type;
@@ -752,6 +755,13 @@ struct wined3d_context_vk
     struct wine_rb_tree pipeline_layouts;
     struct wine_rb_tree graphics_pipelines;
     struct wine_rb_tree bo_slab_available;
+
+    /* Destroyed BOs with dedicated memory, kept for reuse, oldest first.
+     * Protected by the device allocator lock. A command_buffer_id of 0 means
+     * the GPU is done with the BO. */
+    struct wined3d_bo_vk cached_bos[WINED3D_CACHED_BO_COUNT];
+    unsigned int cached_bo_count;
+    VkDeviceSize cached_bo_size;
 };
 
 static inline struct wined3d_context_vk *wined3d_context_vk(struct wined3d_context *context)

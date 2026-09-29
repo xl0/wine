@@ -541,6 +541,41 @@ static bool wined3d_context_vk_create_slab_bo(struct wined3d_context_vk *context
     return true;
 }
 
+static bool wined3d_context_vk_get_cached_bo(struct wined3d_context_vk *context_vk, VkDeviceSize size,
+        VkBufferUsageFlags usage, VkMemoryPropertyFlags memory_type, struct wined3d_bo_vk *bo)
+{
+    struct wined3d_device_vk *device_vk = wined3d_device_vk(context_vk->c.device);
+    struct wined3d_bo_vk *cached;
+    unsigned int i;
+
+    wined3d_device_vk_allocator_lock(device_vk);
+
+    for (i = context_vk->cached_bo_count; i--;)
+    {
+        cached = &context_vk->cached_bos[i];
+        if (cached->command_buffer_id || cached->size != size || cached->usage != usage
+                || (cached->memory_type & memory_type) != memory_type)
+            continue;
+
+        *bo = *cached;
+        context_vk->cached_bo_size -= size;
+        memmove(cached, cached + 1, (--context_vk->cached_bo_count - i) * sizeof(*cached));
+        wined3d_device_vk_allocator_unlock(device_vk);
+
+        bo->b.refcount = 1;
+        bo->b.client_map_count = 0;
+        list_init(&bo->b.users);
+        bo->host_synced = false;
+
+        TRACE("Reusing buffer 0x%s, memory 0x%s for bo %p.\n",
+                wine_dbgstr_longlong(bo->vk_buffer), wine_dbgstr_longlong(bo->vk_memory), bo);
+        return true;
+    }
+
+    wined3d_device_vk_allocator_unlock(device_vk);
+    return false;
+}
+
 BOOL wined3d_context_vk_create_bo(struct wined3d_context_vk *context_vk, VkDeviceSize size,
         VkBufferUsageFlags usage, VkMemoryPropertyFlags memory_type, struct wined3d_bo_vk *bo)
 {
@@ -553,6 +588,9 @@ BOOL wined3d_context_vk_create_bo(struct wined3d_context_vk *context_vk, VkDevic
     VkResult vr;
 
     if (wined3d_context_vk_create_slab_bo(context_vk, size, usage, memory_type, bo))
+        return TRUE;
+
+    if (wined3d_context_vk_get_cached_bo(context_vk, size, usage, memory_type, bo))
         return TRUE;
 
     adapter_vk = wined3d_adapter_vk(device_vk->d.adapter);
@@ -1176,11 +1214,27 @@ void wined3d_context_vk_destroy_image(struct wined3d_context_vk *context_vk, str
     image->memory = NULL;
 }
 
+static void wined3d_context_vk_free_dedicated_bo(struct wined3d_context_vk *context_vk,
+        const struct wined3d_bo_vk *bo)
+{
+    struct wined3d_device_vk *device_vk = wined3d_device_vk(context_vk->c.device);
+    const struct wined3d_vk_info *vk_info = context_vk->vk_info;
+
+    wined3d_context_vk_destroy_vk_buffer(context_vk, bo->vk_buffer, bo->command_buffer_id);
+    if (bo->b.map_ptr)
+    {
+        VK_CALL(vkUnmapMemory(device_vk->vk_device, bo->vk_memory));
+        adapter_adjust_mapped_memory(device_vk->d.adapter, -bo->size);
+    }
+    wined3d_context_vk_destroy_vk_memory(context_vk, bo->vk_memory, bo->command_buffer_id);
+}
+
 void wined3d_context_vk_destroy_bo(struct wined3d_context_vk *context_vk, const struct wined3d_bo_vk *bo)
 {
     struct wined3d_device_vk *device_vk = wined3d_device_vk(context_vk->c.device);
     const struct wined3d_vk_info *vk_info = context_vk->vk_info;
     struct wined3d_bo_slab_vk *slab_vk;
+    struct wined3d_bo_vk *cached;
     size_t object_size, idx;
 
     TRACE("context_vk %p, bo %p.\n", context_vk, bo);
@@ -1200,21 +1254,48 @@ void wined3d_context_vk_destroy_bo(struct wined3d_context_vk *context_vk, const 
         return;
     }
 
-    wined3d_context_vk_destroy_vk_buffer(context_vk, bo->vk_buffer, bo->command_buffer_id);
     if (bo->memory)
     {
+        wined3d_context_vk_destroy_vk_buffer(context_vk, bo->vk_buffer, bo->command_buffer_id);
         if (bo->b.map_ptr)
             wined3d_allocator_chunk_vk_unmap(wined3d_allocator_chunk_vk(bo->memory->chunk), context_vk);
         wined3d_context_vk_destroy_allocator_block(context_vk, bo->memory, bo->command_buffer_id);
         return;
     }
 
-    if (bo->b.map_ptr)
+    /* Allocating (and mapping) dedicated memory is expensive, and some
+     * applications discard large dynamic buffers every frame. Keep a few of
+     * these BOs around for reuse, evicting the oldest ones. */
+    if (bo->size > WINED3D_CACHED_BO_SIZE)
     {
-        VK_CALL(vkUnmapMemory(device_vk->vk_device, bo->vk_memory));
-        adapter_adjust_mapped_memory(device_vk->d.adapter, -bo->size);
+        wined3d_context_vk_free_dedicated_bo(context_vk, bo);
+        return;
     }
-    wined3d_context_vk_destroy_vk_memory(context_vk, bo->vk_memory, bo->command_buffer_id);
+
+    wined3d_device_vk_allocator_lock(device_vk);
+
+    while (context_vk->cached_bo_count == ARRAY_SIZE(context_vk->cached_bos)
+            || context_vk->cached_bo_size + bo->size > WINED3D_CACHED_BO_SIZE)
+    {
+        cached = context_vk->cached_bos;
+        context_vk->cached_bo_size -= cached->size;
+        wined3d_context_vk_free_dedicated_bo(context_vk, cached);
+        memmove(cached, cached + 1, --context_vk->cached_bo_count * sizeof(*cached));
+    }
+
+    cached = &context_vk->cached_bos[context_vk->cached_bo_count++];
+    context_vk->cached_bo_size += bo->size;
+    *cached = *bo;
+    if (cached->command_buffer_id <= context_vk->completed_command_buffer_id)
+        cached->command_buffer_id = 0;
+    if (cached->b.map_ptr && !wined3d_map_persistent())
+    {
+        VK_CALL(vkUnmapMemory(device_vk->vk_device, cached->vk_memory));
+        adapter_adjust_mapped_memory(device_vk->d.adapter, -cached->size);
+        cached->b.map_ptr = NULL;
+    }
+
+    wined3d_device_vk_allocator_unlock(device_vk);
 }
 
 static void free_command_buffer(struct wined3d_context_vk *context_vk, struct wined3d_command_buffer_vk *buffer)
@@ -1381,6 +1462,14 @@ static void wined3d_context_vk_cleanup_resources(struct wined3d_context_vk *cont
     }
 
     command_buffer_id = context_vk->completed_command_buffer_id;
+
+    wined3d_device_vk_allocator_lock(device_vk);
+    for (i = 0; i < context_vk->cached_bo_count; ++i)
+    {
+        if (context_vk->cached_bos[i].command_buffer_id <= command_buffer_id)
+            context_vk->cached_bos[i].command_buffer_id = 0;
+    }
+    wined3d_device_vk_allocator_unlock(device_vk);
 
     retired->free = NULL;
     for (i = retired->count; i; --i)
@@ -1951,6 +2040,8 @@ void wined3d_context_vk_cleanup(struct wined3d_context_vk *context_vk)
         VK_CALL(vkDestroyFramebuffer(device_vk->vk_device, context_vk->vk_framebuffer, NULL));
     if (context_vk->vk_so_counter_bo.vk_buffer)
         wined3d_context_vk_destroy_bo(context_vk, &context_vk->vk_so_counter_bo);
+    while (context_vk->cached_bo_count)
+        wined3d_context_vk_free_dedicated_bo(context_vk, &context_vk->cached_bos[--context_vk->cached_bo_count]);
     wined3d_context_vk_cleanup_resources(context_vk, VK_NULL_HANDLE);
     /* Destroy the command pool after cleaning up resources. In particular,
      * this needs to happen after all command buffers are freed, because
