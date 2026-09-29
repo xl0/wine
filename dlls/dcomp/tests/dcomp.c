@@ -220,6 +220,7 @@ static void test_DCompositionCreateDevice(void)
     /* Device created from DCompositionCreateDevice() doesn't support IDCompositionDevice2 */
     check_interface(dcomp_device, &IID_IDCompositionDevice2, FALSE);
     check_interface(dcomp_device, &IID_IDCompositionDesktopDevice, FALSE);
+    check_interface(dcomp_device, &IID_IDCompositionDevice3Unknown, FALSE);
     check_interface(dcomp_device, &IID_IDCompositionDesktopDevicePartner, TRUE);
     check_interface(dcomp_device, &IID_IDCompositionDeviceUnknown, TRUE);
     check_inherited_interface(dcomp_device, &IID_IDCompositionDesktopDevicePartner, &IID_IDCompositionDeviceUnknown);
@@ -290,6 +291,7 @@ static void test_DCompositionCreateDevice2(void)
     check_interface(dcomp_device, &IID_IDCompositionDevice, TRUE);
     check_interface(dcomp_device, &IID_IDCompositionDevice2, TRUE);
     check_interface(dcomp_device, &IID_IDCompositionDesktopDevice, TRUE);
+    check_interface(dcomp_device, &IID_IDCompositionDevice3Unknown, FALSE);
     check_interface(dcomp_device, &IID_IDCompositionDesktopDevicePartner, TRUE);
     check_inherited_interface(dcomp_device, &IID_IDCompositionDesktopDevice, &IID_IDCompositionDesktopDevicePartner);
     check_interface(dcomp_device, &IID_IDCompositionDeviceUnknown, TRUE);
@@ -955,6 +957,8 @@ static void test_DCompositionCreateDevice3(void)
     check_interface(dcomp_device, &IID_IDCompositionDevice, TRUE);
     check_interface(dcomp_device, &IID_IDCompositionDevice2, TRUE);
     check_interface(dcomp_device, &IID_IDCompositionDesktopDevice, TRUE);
+    check_interface(dcomp_device, &IID_IDCompositionDevice3Unknown, TRUE);
+    check_inherited_interface(dcomp_device, &IID_IDCompositionDevice3, &IID_IDCompositionDevice3Unknown);
     check_interface(dcomp_device, &IID_IDCompositionDesktopDevicePartner, TRUE);
     check_inherited_interface(dcomp_device, &IID_IDCompositionDesktopDevice, &IID_IDCompositionDesktopDevicePartner);
     check_interface(dcomp_device, &IID_IDCompositionDeviceUnknown, TRUE);

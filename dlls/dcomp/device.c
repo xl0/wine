@@ -77,6 +77,7 @@ static HRESULT STDMETHODCALLTYPE device_QueryInterface(IDCompositionDevice *ifac
               && (IsEqualGUID(iid, &IID_IDCompositionDevice2)
                   || IsEqualGUID(iid, &IID_IDCompositionDevice3)
                   || IsEqualGUID(iid, &IID_IDCompositionDesktopDevice)))
+              || (device->version >= 3 && IsEqualGUID(iid, &IID_IDCompositionDevice3Unknown))
               || IsEqualGUID(iid, &IID_IDCompositionDesktopDevicePartner)
               || IsEqualGUID(iid, &IID_IDCompositionDeviceUnknown))
     {
@@ -84,7 +85,8 @@ static HRESULT STDMETHODCALLTYPE device_QueryInterface(IDCompositionDevice *ifac
         *out = &device->IDCompositionDeviceUnknown_iface;
 
         if (IsEqualGUID(iid, &IID_IDCompositionDesktopDevicePartner)
-            || IsEqualGUID(iid, &IID_IDCompositionDeviceUnknown))
+            || IsEqualGUID(iid, &IID_IDCompositionDeviceUnknown)
+            || IsEqualGUID(iid, &IID_IDCompositionDevice3Unknown))
             FIXME("Returning undocumented interface %s %p.\n", wine_dbgstr_guid(iid), *out);
         return S_OK;
     }

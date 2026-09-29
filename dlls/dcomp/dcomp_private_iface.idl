@@ -33,6 +33,18 @@ interface IDCompositionDesktopDevicePartner : IDCompositionDesktopDevice
     HRESULT CreateFromSharedVisualHandle([in] HANDLE handle, [in] REFIID iid, [out] void **out);
 }
 
+/* Queried by Microsoft Edge / WebView2 GPU processes. On Windows it is the
+ * IDCompositionDevice3 pointer of devices from DCompositionCreateDevice3(). */
+[
+    object,
+    uuid(4ca97a18-cbfd-4b0d-89e1-f7fa86d8d63e),
+    local,
+    pointer_default(unique)
+]
+interface IDCompositionDevice3Unknown : IUnknown
+{
+}
+
 [
     object,
     uuid(28d6ad3d-ee2a-4bcd-9419-7d54800435b1),
