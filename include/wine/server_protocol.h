@@ -1079,6 +1079,10 @@ typedef volatile struct
     struct ratio         raw_dpi;
     data_size_t          private_size;
     data_size_t          extra_size;
+    user_handle_t        next;
+    user_handle_t        prev;
+    user_handle_t        first_child;
+    user_handle_t        last_child;
     struct window_info   info;
     char                 extra[];
 } window_shm_t;
@@ -7250,6 +7254,6 @@ union generic_reply
     struct dcomp_get_shared_visual_info_reply dcomp_get_shared_visual_info_reply;
 };
 
-#define SERVER_PROTOCOL_VERSION 964
+#define SERVER_PROTOCOL_VERSION 965
 
 #endif /* __WINE_WINE_SERVER_PROTOCOL_H */

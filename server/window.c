@@ -216,6 +216,42 @@ static inline struct window *get_last_child( struct window *win )
     return ptr ? LIST_ENTRY( ptr, struct window, entry ) : NULL;
 }
 
+/* set the Z-order siblings of a window in its shared memory */
+static void set_shared_siblings( struct window *win, user_handle_t prev, user_handle_t next )
+{
+    if (win->shared->prev == prev && win->shared->next == next) return;
+    SHARED_WRITE_BEGIN( win->shared, window_shm_t )
+    {
+        shared->prev = prev;
+        shared->next = next;
+    }
+    SHARED_WRITE_END;
+}
+
+/* update the shared memory Z-order links of the children of a window */
+/* note: walks all the children, fine as long as windows have at most a few thousand siblings */
+static void update_shared_children( struct window *parent )
+{
+    struct window *child, *first = get_first_child( parent ), *last = get_last_child( parent );
+    user_handle_t first_child = first ? first->handle : 0, last_child = last ? last->handle : 0;
+
+    if (parent->shared->first_child != first_child || parent->shared->last_child != last_child)
+    {
+        SHARED_WRITE_BEGIN( parent->shared, window_shm_t )
+        {
+            shared->first_child = first_child;
+            shared->last_child  = last_child;
+        }
+        SHARED_WRITE_END;
+    }
+
+    LIST_FOR_EACH_ENTRY( child, &parent->children, struct window, entry )
+    {
+        struct window *prev = get_prev_window( child ), *next = get_next_window( child );
+        set_shared_siblings( child, prev ? prev->handle : 0, next ? next->handle : 0 );
+    }
+}
+
 /* set the PAINT_PIXEL_FORMAT_CHILD flag on all the parents */
 /* note: we never reset the flag, it's just a heuristic */
 static inline void update_pixel_format_flags( struct window *win )
@@ -379,6 +415,7 @@ static int link_window( struct window *win, struct window *previous )
     }
 
     win->is_linked = 1;
+    update_shared_children( win->parent );
     return old_prev != win->entry.prev;
 }
 
@@ -425,11 +462,17 @@ static int set_parent_window( struct window *win, struct window *parent )
 
     if (parent)
     {
+        struct window *old_parent = win->parent;
+
         attach_parent_thread( win, false );
-        if (win->parent) release_object( win->parent );
         win->parent = (struct window *)grab_object( parent );
         attach_parent_thread( win, true );
         link_window( win, WINPTR_TOP );
+        if (old_parent)
+        {
+            update_shared_children( old_parent );
+            release_object( old_parent );
+        }
 
         if (is_desktop_window( parent )) set_window_monitor_dpi( win );
         else SHARED_WRITE_BEGIN( win->shared, window_shm_t )
@@ -448,6 +491,8 @@ static int set_parent_window( struct window *win, struct window *parent )
         list_add_head( &win->parent->unlinked, &win->entry );
         win->is_linked = 0;
         win->is_orphan = 1;
+        set_shared_siblings( win, 0, 0 );
+        update_shared_children( win->parent );
     }
     return 1;
 }
@@ -694,6 +739,10 @@ static struct window *create_window( struct window *parent, struct window *owner
         shared->dpi             = dpi;
         shared->raw_dpi         = raw_dpi;
         shared->extra_size      = extra_size;
+        shared->next            = 0;
+        shared->prev            = 0;
+        shared->first_child     = 0;
+        shared->last_child      = 0;
         memset( (void *)&shared->info, 0, sizeof(shared->info) );
         memset( (void *)shared->extra, 0, extra_size );
         shared->info.wndproc    = get_class_wndproc( win->class, &ansi );
@@ -3107,6 +3156,7 @@ void set_window_rect_visible( user_handle_t window, struct rectangle rect )
         {
             list_remove( &win->entry );
             list_add_before( &ptr->entry, &win->entry );
+            update_shared_children( win->parent );
         }
         break;
     }

@@ -1095,6 +1095,10 @@ typedef volatile struct
     struct ratio         raw_dpi;          /* raw DPI of the window monitor */
     data_size_t          private_size;     /* length of private extra bytes range */
     data_size_t          extra_size;       /* size of the extra info */
+    user_handle_t        next;             /* next sibling in Z-order, 0 if last or unlinked */
+    user_handle_t        prev;             /* previous sibling in Z-order, 0 if first or unlinked */
+    user_handle_t        first_child;      /* first child in Z-order */
+    user_handle_t        last_child;       /* last child in Z-order */
     struct window_info   info;             /* window info (GWLP_*) */
     char                 extra[];          /* extra bytes storage */
 } window_shm_t;
