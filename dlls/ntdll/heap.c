@@ -172,6 +172,8 @@ C_ASSERT( HEAP_MAX_FREE_BLOCK_SIZE >= HEAP_MAX_BLOCK_REGION_SIZE );
 #define FREE_LIST_COUNT ((FIELD_BITS( struct block, block_size ) - FREE_LIST_LINEAR_BITS + 1) * (1 << FREE_LIST_LINEAR_BITS) + 1)
 /* for reference, update this when changing parameters */
 C_ASSERT( FREE_LIST_COUNT == 0x71 );
+/* maximum number of blocks to look at in a free list before using a larger one */
+#define FREE_LIST_WALK_MAX 32
 
 typedef struct DECLSPEC_ALIGN(BLOCK_ALIGN) tagSUBHEAP
 {
@@ -1096,13 +1098,16 @@ static SUBHEAP *create_subheap( struct heap *heap, DWORD flags, SIZE_T total_siz
 }
 
 
-/* find the first block large enough in a free list */
-static struct entry *find_free_entry( struct list *list, SIZE_T block_size )
+/* find the first block large enough in a free list, looking at most at limit blocks */
+static struct entry *find_free_entry( struct list *list, SIZE_T block_size, UINT limit )
 {
     struct entry *entry;
 
     LIST_FOR_EACH_ENTRY( entry, list, struct entry, entry )
+    {
         if (block_get_size( &entry->block ) >= block_size) return entry;
+        if (!--limit) break;
+    }
 
     return NULL;
 }
@@ -1113,12 +1118,15 @@ static struct block *find_free_block( struct heap *heap, ULONG flags, SIZE_T blo
     struct block *block;
     SIZE_T total_size;
     SUBHEAP *subheap;
-    unsigned int i;
+    unsigned int i, index = get_free_list_index( block_size );
 
-    /* Find a suitable free list, and in it find a block large enough */
+    /* Find a suitable free list, and in it find a block large enough. The first block of any
+     * larger free list is large enough, prefer it over walking a long list of smaller blocks,
+     * which a fragmented heap may have, unless there is nothing else. */
 
-    for (i = get_free_list_index( block_size ); i < FREE_LIST_COUNT && !entry; i++)
-        entry = find_free_entry( &heap->free_lists[i], block_size );
+    for (i = index; i < FREE_LIST_COUNT && !entry; i++)
+        entry = find_free_entry( &heap->free_lists[i], block_size, FREE_LIST_WALK_MAX );
+    if (!entry) entry = find_free_entry( &heap->free_lists[index], block_size, ~0u );
 
     if (entry)
     {
