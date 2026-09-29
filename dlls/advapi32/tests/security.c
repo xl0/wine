@@ -6938,6 +6938,13 @@ static void test_GetWindowsAccountDomainSid(void)
     ok(GetLastError() == ERROR_INVALID_PARAMETER, "expected ERROR_INVALID_PARAMETER, got %ld\n", GetLastError());
     ok(sid_size == GetSidLengthRequired(4), "expected size %ld, got %ld\n", GetSidLengthRequired(4), sid_size);
 
+    sid_size = 1;
+    SetLastError(0xdeadbeef);
+    bret = GetWindowsAccountDomainSid(user_sid, 0, &sid_size);
+    ok(!bret, "GetWindowsAccountDomainSid succeeded\n");
+    ok(GetLastError() == ERROR_INSUFFICIENT_BUFFER, "expected ERROR_INSUFFICIENT_BUFFER, got %ld\n", GetLastError());
+    ok(sid_size == GetSidLengthRequired(4), "expected size %ld, got %ld\n", GetSidLengthRequired(4), sid_size);
+
     SetLastError(0xdeadbeef);
     bret = GetWindowsAccountDomainSid(user_sid, domain_sid, 0);
     ok(!bret, "GetWindowsAccountDomainSid succeeded\n");

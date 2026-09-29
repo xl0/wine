@@ -389,8 +389,8 @@ BOOL WINAPI GetWindowsAccountDomainSid( PSID sid, PSID domain_sid, DWORD *size )
     required_size = GetSidLengthRequired( 4 );
     if (*size < required_size || !domain_sid)
     {
+        SetLastError( *size < required_size ? ERROR_INSUFFICIENT_BUFFER : ERROR_INVALID_PARAMETER );
         *size = required_size;
-        SetLastError( domain_sid ? ERROR_INSUFFICIENT_BUFFER : ERROR_INVALID_PARAMETER );
         return FALSE;
     }
 
