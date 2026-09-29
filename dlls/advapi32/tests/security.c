@@ -6866,6 +6866,31 @@ static void test_system_security_access(void)
 
 static void test_GetWindowsAccountDomainSid(void)
 {
+    static const struct
+    {
+        const char *sid, *domain;
+    }
+    tests[] =
+    {
+        { "S-1-1-0" },
+        { "S-1-2-0" },
+        { "S-1-5-4" },
+        { "S-1-5-11" },
+        { "S-1-5-18" },
+        { "S-1-5-19" },
+        { "S-1-5-20" },
+        { "S-1-5-32-544" },
+        { "S-1-5-32-21-1-2-3" },
+        { "S-1-5-80-1-2-3-4-5" },
+        { "S-1-5-22-1-2-3-4" },
+        { "S-1-16-12288" },
+        { "S-1-3-21-1-2-3-4" },
+        { "S-1-5-21" },
+        { "S-1-5-21-1-2" },
+        { "S-1-5-21-1-2-3", "S-1-5-21-1-2-3" },
+        { "S-1-5-21-1-2-3-500", "S-1-5-21-1-2-3" },
+        { "S-1-5-21-1-2-3-4-5", "S-1-5-21-1-2-3" },
+    };
     char *user, buffer1[SECURITY_MAX_SID_SIZE], buffer2[SECURITY_MAX_SID_SIZE];
     SID_IDENTIFIER_AUTHORITY domain_ident = { SECURITY_NT_AUTHORITY };
     PSID domain_sid = (PSID *)&buffer1;
@@ -6936,6 +6961,34 @@ static void test_GetWindowsAccountDomainSid(void)
        debugstr_sid(domain_sid), debugstr_sid(domain_sid2));
 
     free(user);
+
+    for (i = 0; i < ARRAY_SIZE(tests); i++)
+    {
+        PSID sid;
+        char *str;
+
+        winetest_push_context("%s", tests[i].sid);
+        ConvertStringSidToSidA(tests[i].sid, &sid);
+        sid_size = SECURITY_MAX_SID_SIZE;
+        SetLastError(0xdeadbeef);
+        bret = GetWindowsAccountDomainSid(sid, domain_sid, &sid_size);
+        if (tests[i].domain)
+        {
+            ok(bret, "GetWindowsAccountDomainSid failed with error %ld\n", GetLastError());
+            ok(sid_size == GetSidLengthRequired(4), "got size %ld\n", sid_size);
+            ConvertSidToStringSidA(domain_sid, &str);
+            ok(!strcmp(str, tests[i].domain), "got %s\n", str);
+            LocalFree(str);
+        }
+        else
+        {
+            ok(!bret, "GetWindowsAccountDomainSid succeeded\n");
+            ok(GetLastError() == ERROR_NON_ACCOUNT_SID, "got error %ld\n", GetLastError());
+            ok(sid_size == SECURITY_MAX_SID_SIZE, "got size %ld\n", sid_size);
+        }
+        LocalFree(sid);
+        winetest_pop_context();
+    }
 }
 
 static void test_GetSidIdentifierAuthority(void)

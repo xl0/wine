@@ -365,7 +365,7 @@ BOOL WINAPI GetWindowsAccountDomainSid( PSID sid, PSID domain_sid, DWORD *size )
     DWORD required_size;
     int i;
 
-    FIXME( "(%p %p %p): semi-stub\n", sid, domain_sid, size );
+    TRACE( "(%p %p %p)\n", sid, domain_sid, size );
 
     if (!sid || !IsValidSid( sid ))
     {
@@ -379,9 +379,10 @@ BOOL WINAPI GetWindowsAccountDomainSid( PSID sid, PSID domain_sid, DWORD *size )
         return FALSE;
     }
 
-    if (*GetSidSubAuthorityCount( sid ) < 4)
+    if (memcmp( GetSidIdentifierAuthority( sid ), &domain_ident, sizeof(domain_ident) ) ||
+        *GetSidSubAuthorityCount( sid ) < 4 || *GetSidSubAuthority( sid, 0 ) != SECURITY_NT_NON_UNIQUE)
     {
-        SetLastError( ERROR_INVALID_SID );
+        SetLastError( ERROR_NON_ACCOUNT_SID );
         return FALSE;
     }
 
