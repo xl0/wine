@@ -14833,6 +14833,73 @@ static void test_toolwindow_width_clamping_size(void)
     DestroyWindow( normal );
 }
 
+struct prop_thread_params
+{
+    HWND hwnd;
+    const char *name;
+    HANDLE data;  /* 0: remove the property */
+};
+
+static DWORD WINAPI set_prop_thread( void *arg )
+{
+    struct prop_thread_params *params = arg;
+
+    if (params->data) ok( SetPropA( params->hwnd, params->name, params->data ), "SetPropA failed\n" );
+    else RemovePropA( params->hwnd, params->name );
+    return 0;
+}
+
+static void set_prop_other_thread( HWND hwnd, const char *name, HANDLE data )
+{
+    struct prop_thread_params params = { hwnd, name, data };
+    HANDLE thread = CreateThread( NULL, 0, set_prop_thread, &params, 0, NULL );
+
+    WaitForSingleObject( thread, INFINITE );
+    CloseHandle( thread );
+}
+
+/* GetProp must see property changes made elsewhere and changes of the atom names */
+static void test_GetProp_changes(void)
+{
+    HWND hwnd = CreateWindowA( "static", NULL, WS_POPUP, 0, 0, 10, 10, 0, 0, 0, NULL );
+    ATOM atom, atom2;
+    HANDLE ret;
+
+    ok( SetPropA( hwnd, "wine_test_prop", (HANDLE)1 ), "SetPropA failed\n" );
+    ret = GetPropA( hwnd, "wine_test_prop" );
+    ok( ret == (HANDLE)1, "got %p\n", ret );
+    set_prop_other_thread( hwnd, "wine_test_prop", (HANDLE)2 );
+    ret = GetPropA( hwnd, "wine_test_prop" );
+    ok( ret == (HANDLE)2, "got %p\n", ret );
+    set_prop_other_thread( hwnd, "wine_test_prop", 0 );
+    ret = GetPropA( hwnd, "wine_test_prop" );
+    ok( !ret, "got %p\n", ret );
+
+    atom = GlobalAddAtomA( "wine_test_atom_prop" );
+    ok( atom, "GlobalAddAtomA failed\n" );
+    ret = GetPropA( hwnd, (const char *)(ULONG_PTR)atom );
+    ok( !ret, "got %p\n", ret );
+    set_prop_other_thread( hwnd, (const char *)(ULONG_PTR)atom, (HANDLE)3 );
+    ret = GetPropA( hwnd, (const char *)(ULONG_PTR)atom );
+    ok( ret == (HANDLE)3, "got %p\n", ret );
+    ret = GetPropA( hwnd, "wine_test_atom_prop" );
+    ok( ret == (HANDLE)3, "got %p\n", ret );
+
+    /* a property set by atom doesn't keep the atom's name */
+    GlobalDeleteAtom( atom );
+    ret = GetPropA( hwnd, "wine_test_atom_prop" );
+    ok( !ret, "got %p\n", ret );
+    ret = GetPropA( hwnd, (const char *)(ULONG_PTR)atom );
+    ok( ret == (HANDLE)3, "got %p\n", ret );
+    atom2 = GlobalAddAtomA( "wine_test_atom_prop" );
+    ret = GetPropA( hwnd, "wine_test_atom_prop" );
+    if (atom2 == atom) ok( ret == (HANDLE)3, "got %p\n", ret );
+    else ok( !ret, "got %p\n", ret );
+    GlobalDeleteAtom( atom2 );
+
+    DestroyWindow( hwnd );
+}
+
 START_TEST(win)
 {
     char **argv;
@@ -14928,6 +14995,7 @@ START_TEST(win)
     test_FindWindowEx();
     test_FindWindow();
     test_SetParent();
+    test_GetProp_changes();
 
     hwndMain2 = CreateWindowExA(/*WS_EX_TOOLWINDOW*/ 0, "MainWindowClass", "Main window 2",
                                 WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX |

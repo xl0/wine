@@ -2022,6 +2022,7 @@ static void dump_get_window_property_request( const struct get_window_property_r
 static void dump_get_window_property_reply( const struct get_window_property_reply *req )
 {
     dump_uint64( " data=", &req->data );
+    fprintf( stderr, ", cacheable=%d", req->cacheable );
 }
 
 static void dump_get_window_properties_request( const struct get_window_properties_request *req )

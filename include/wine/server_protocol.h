@@ -1084,7 +1084,7 @@ typedef volatile struct
     unsigned int         dpi_context;
     unsigned int         fnid;
     unsigned int         ansi;
-    int                  __pad;
+    unsigned int         props_serial;
     struct ratio         dpi;
     struct ratio         raw_dpi;
     data_size_t          private_size;
@@ -4018,6 +4018,8 @@ struct get_window_property_reply
 {
     struct reply_header __header;
     lparam_t       data;
+    int            cacheable;
+    char __pad_20[4];
 };
 
 
@@ -7282,6 +7284,6 @@ union generic_reply
     struct dcomp_get_shared_visual_info_reply dcomp_get_shared_visual_info_reply;
 };
 
-#define SERVER_PROTOCOL_VERSION 966
+#define SERVER_PROTOCOL_VERSION 967
 
 #endif /* __WINE_WINE_SERVER_PROTOCOL_H */

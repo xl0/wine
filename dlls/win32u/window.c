@@ -1793,6 +1793,18 @@ int get_window_pixel_format( HWND hwnd )
     return ret;
 }
 
+/* per-thread cache of GetProp results, valid while the window's properties don't change */
+struct prop_cache_entry
+{
+    UINT64    id;        /* window shared object id */
+    UINT      serial;    /* window properties serial */
+    ATOM      atom;      /* property atom, or 0 for a name */
+    WCHAR     name[32];  /* property name */
+    ULONG_PTR data;
+};
+
+#define PROP_CACHE_BITS 8
+
 /***********************************************************************
  *           NtUserGetProp   (win32u.@)
  *
@@ -1801,16 +1813,57 @@ int get_window_pixel_format( HWND hwnd )
  */
 HANDLE WINAPI NtUserGetProp( HWND hwnd, const WCHAR *str )
 {
+    struct user_thread_info *thread_info = get_user_thread_info();
+    struct object_lock lock = OBJECT_LOCK_INIT;
+    const window_shm_t *window_shm;
+    struct prop_cache_entry *entry = NULL;
+    UINT serial = 0, len = 0, hash, i;
+    ATOM atom = 0;
     ULONG_PTR ret = 0;
+    BOOL cacheable = FALSE;
+    NTSTATUS status;
+
+    if (IS_INTRESOURCE(str)) atom = LOWORD(str);
+    else len = wcslen( str );
+    while ((status = get_shared_window( hwnd, &lock, &window_shm )) == STATUS_PENDING)
+        serial = window_shm->props_serial;
+
+    if (!status && (atom || (len && len < ARRAY_SIZE(entry->name))) &&
+        (thread_info->prop_cache || (thread_info->prop_cache = calloc( 1 << PROP_CACHE_BITS, sizeof(*entry) ))))
+    {
+        hash = (ULONG_PTR)hwnd ^ (atom << 7);
+        for (i = 0; i < len; i++) hash = hash * 31 + str[i];
+        /* 2-way set associative, the most recent entry first */
+        entry = &thread_info->prop_cache[((hash * 0x9e3779b1) >> (32 - PROP_CACHE_BITS)) & ~1];
+        for (i = 0; i < 2; i++)
+            if (entry[i].id == lock.id && entry[i].serial == serial && entry[i].atom == atom &&
+                (atom || !wcscmp( entry[i].name, str )))
+                return (HANDLE)entry[i].data;
+    }
 
     SERVER_START_REQ( get_window_property )
     {
         req->window = wine_server_user_handle( hwnd );
-        if (IS_INTRESOURCE(str)) req->atom = LOWORD(str);
-        else wine_server_add_data( req, str, lstrlenW(str) * sizeof(WCHAR) );
-        if (!wine_server_call_err( req )) ret = reply->data;
+        if (IS_INTRESOURCE(str)) req->atom = atom;
+        else wine_server_add_data( req, str, len * sizeof(WCHAR) );
+        if (!wine_server_call_err( req ))
+        {
+            ret = reply->data;
+            cacheable = reply->cacheable;
+        }
+        else entry = NULL;
     }
     SERVER_END_REQ;
+
+    if (entry && cacheable)
+    {
+        entry[1] = entry[0];
+        entry->id = lock.id;
+        entry->serial = serial;
+        entry->atom = atom;
+        if (!atom) memcpy( entry->name, str, (len + 1) * sizeof(WCHAR) );
+        entry->data = ret;
+    }
     return (HANDLE)ret;
 }
 

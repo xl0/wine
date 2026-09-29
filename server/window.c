@@ -517,6 +517,15 @@ static int add_handle_to_array( struct user_handle_array *array, user_handle_t h
     return 1;
 }
 
+static void update_props_serial( struct window *win )
+{
+    SHARED_WRITE_BEGIN( win->shared, window_shm_t )
+    {
+        shared->props_serial++;
+    }
+    SHARED_WRITE_END;
+}
+
 /* set a window property */
 static void set_property( struct window *win, atom_t atom, lparam_t data, enum property_type type )
 {
@@ -536,6 +545,7 @@ static void set_property( struct window *win, atom_t atom, lparam_t data, enum p
         {
             win->properties[i].type = type;
             win->properties[i].data = data;
+            update_props_serial( win );
             return;
         }
     }
@@ -563,6 +573,7 @@ static void set_property( struct window *win, atom_t atom, lparam_t data, enum p
     win->properties[free].atom = atom;
     win->properties[free].type = type;
     win->properties[free].data = data;
+    update_props_serial( win );
 }
 
 /* remove a window property */
@@ -579,6 +590,7 @@ static lparam_t remove_property( struct window *win, atom_t atom )
         {
             if (prop->type == PROP_TYPE_STRING) release_atom( table, atom );
             prop->type = PROP_TYPE_FREE;
+            update_props_serial( win );
             return prop->data;
         }
     }
@@ -587,17 +599,17 @@ static lparam_t remove_property( struct window *win, atom_t atom )
 }
 
 /* find a window property */
-static lparam_t get_property( struct window *win, atom_t atom )
+static struct property *get_property( struct window *win, atom_t atom )
 {
     int i;
 
     for (i = 0; i < win->prop_inuse; i++)
     {
         if (win->properties[i].type == PROP_TYPE_FREE) continue;
-        if (win->properties[i].atom == atom) return win->properties[i].data;
+        if (win->properties[i].atom == atom) return &win->properties[i];
     }
     /* FIXME: last error? */
-    return 0;
+    return NULL;
 }
 
 /* destroy all properties of a window */
@@ -3248,7 +3260,19 @@ DECL_HANDLER(get_window_property)
     if (win)
     {
         atom_t atom = name.len ? find_atom( table, name ) : req->atom;
-        if (atom) reply->data = get_property( win, atom );
+        struct property *prop = atom ? get_property( win, atom ) : NULL;
+        int i;
+
+        if (prop) reply->data = prop->data;
+
+        /* A name keeps mapping to the same result as long as the properties don't change
+         * if it's the name of a property atom (properties set by name hold a reference
+         * to it), or if no property was set by atom (the name can't get their atom). */
+        reply->cacheable = 1;
+        if (name.len && prop) reply->cacheable = prop->type == PROP_TYPE_STRING;
+        else if (name.len)
+            for (i = 0; i < win->prop_inuse; i++)
+                if (win->properties[i].type == PROP_TYPE_ATOM) reply->cacheable = 0;
     }
 }
 

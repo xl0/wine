@@ -7571,6 +7571,7 @@ static void thread_detach(void)
     free( thread_info->session_data );
     free( thread_info->mouse_tracking_info );
     for (i = 0; i < NB_HOOKS; i++) free( thread_info->hook_chains[i] );
+    free( thread_info->prop_cache );
     free( thread_info );
 
     exiting_thread_id = 0;

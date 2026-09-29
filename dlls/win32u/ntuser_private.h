@@ -116,6 +116,7 @@ struct user_thread_info
     struct hook_chain            *hook_chain;             /* Snapshot the current hook was called from */
     UINT                          hook_index;             /* Index of the current hook in hook_chain */
     struct hook_chain            *hook_chains[NB_HOOKS];  /* Cached hook chain snapshots */
+    struct prop_cache_entry      *prop_cache;             /* Cached GetProp results */
     struct received_message_info *receive_info;           /* Message being currently received */
     UINT                          message_time;           /* value for GetMessageTime */
     UINT                          message_pos;            /* value for GetMessagePos */
