@@ -657,20 +657,23 @@ BOOL is_window( HWND hwnd )
     return TRUE;
 }
 
+/* thread and process that own a user object */
+DWORD get_user_object_thread( HANDLE handle, unsigned short type, DWORD *process )
+{
+    struct user_entry entry;
+
+    if (!get_user_entry( handle, type, &entry, &handle )) return 0;
+    if (process) *process = entry.pid;
+    return entry.tid;
+}
+
 /* see GetWindowThreadProcessId */
 DWORD get_window_thread( HWND hwnd, DWORD *process )
 {
-    struct user_entry entry;
-    HANDLE handle;
+    DWORD tid = get_user_object_thread( hwnd, NTUSER_OBJ_WINDOW, process );
 
-    if (!get_user_entry( hwnd, NTUSER_OBJ_WINDOW, &entry, &handle ))
-    {
-        RtlSetLastWin32Error( ERROR_INVALID_WINDOW_HANDLE );
-        return 0;
-    }
-
-    if (process) *process = entry.pid;
-    return entry.tid;
+    if (!tid) RtlSetLastWin32Error( ERROR_INVALID_WINDOW_HANDLE );
+    return tid;
 }
 
 /* see GetParent */

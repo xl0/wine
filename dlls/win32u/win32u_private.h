@@ -291,6 +291,7 @@ extern HWND get_hwnd_message_parent(void);
 extern UINT get_window_dpi_awareness_context( HWND hwnd );
 extern MINMAXINFO get_min_max_info( HWND hwnd );
 extern HWND get_window_relative( HWND hwnd, UINT rel );
+extern DWORD get_user_object_thread( HANDLE handle, unsigned short type, DWORD *process );
 extern DWORD get_window_thread( HWND hwnd, DWORD *process );
 extern HWND is_current_process_window( HWND hwnd );
 extern HWND is_current_thread_window( HWND hwnd );

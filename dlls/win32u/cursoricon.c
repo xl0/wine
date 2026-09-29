@@ -78,7 +78,16 @@ static struct cursoricon_object *get_icon_ptr( HICON handle )
 
 BOOL process_wine_setcursor( HWND hwnd, HWND window, HCURSOR handle )
 {
+    DWORD tid, pid;
+
     TRACE( "hwnd %p, window %p, hcursor %p\n", hwnd, window, handle );
+
+    /* a cursor set from another process, e.g. on its child window inside ours:
+     * only its owner can read it, let the owner set it on our window */
+    if (handle && (tid = get_user_object_thread( handle, NTUSER_OBJ_ICON, &pid )) &&
+        pid != GetCurrentProcessId())
+        return NtUserPostThreadMessage( tid, WM_WINE_SETCURSOR, (WPARAM)window, (LPARAM)handle );
+
     user_driver->pSetCursor( window, handle );
     return TRUE;
 }

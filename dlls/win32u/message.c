@@ -2221,8 +2221,8 @@ static LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPAR
         if (wparam & SET_CURSOR_FSCLIP) return clip_fullscreen_window( hwnd, FALSE );
         return process_wine_clipcursor( hwnd, wparam, lparam );
     case WM_WINE_SETCURSOR:
-        FIXME( "Unexpected non-hardware WM_WINE_SETCURSOR message\n" );
-        return FALSE;
+        /* posted by the process that owns the window, see process_wine_setcursor */
+        return process_wine_setcursor( hwnd, (HWND)wparam, (HCURSOR)lparam );
     case WM_WINE_IME_NOTIFY:
     {
         HWND ime_hwnd = get_default_ime_window( hwnd );
