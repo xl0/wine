@@ -895,17 +895,26 @@ HRESULT marshal_object(struct apartment *apt, STDOBJREF *stdobjref, REFIID riid,
         if (!IsEqualIID(riid, &IID_IUnknown))
         {
             IPSFactoryBuffer *psfb;
+            IUnknown *iface;
 
-            hr = get_facbuf_for_iid(riid, &psfb);
+            /* Don't look up the proxy/stub (registry, typelib) of an interface the
+             * object doesn't implement, e.g. for remote QIs of IAgileObject. */
+            hr = IUnknown_QueryInterface(manager->object, riid, (void **)&iface);
+            if (SUCCEEDED(hr))
+            {
+                IUnknown_Release(iface);
+                if ((hr = get_facbuf_for_iid(riid, &psfb)) != S_OK)
+                {
+                    WARN("couldn't get IPSFactory buffer for interface %s\n", debugstr_guid(riid));
+                    hr = E_NOINTERFACE;
+                }
+            }
             if (hr == S_OK) {
                 hr = IPSFactoryBuffer_CreateStub(psfb, riid, manager->object, &stub);
                 IPSFactoryBuffer_Release(psfb);
                 if (hr != S_OK)
                     ERR("Failed to create an IRpcStubBuffer from IPSFactory for %s with error %#lx\n",
                         debugstr_guid(riid), hr);
-            }else {
-                WARN("couldn't get IPSFactory buffer for interface %s\n", debugstr_guid(riid));
-                hr = E_NOINTERFACE;
             }
 
         }
