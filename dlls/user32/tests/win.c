@@ -13520,6 +13520,90 @@ static void test_SC_SIZE(void)
     DestroyWindow(hwnd);
 }
 
+static LRESULT WINAPI sc_move_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+{
+    if (msg == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
+    if (msg == WM_LBUTTONDOWN)
+    {
+        ReleaseCapture();
+        SendMessageA(hwnd, WM_SYSCOMMAND, GetWindowLongPtrA(hwnd, GWLP_USERDATA), 0);
+        return 0;
+    }
+    return DefWindowProcA(hwnd, msg, wparam, lparam);
+}
+
+static void send_abs_mouse_input(DWORD flags, int x, int y)
+{
+    INPUT input = {.type = INPUT_MOUSE};
+
+    input.mi.dx = MulDiv(x, 65535, GetSystemMetrics(SM_CXSCREEN) - 1);
+    input.mi.dy = MulDiv(y, 65535, GetSystemMetrics(SM_CYSCREEN) - 1);
+    input.mi.dwFlags = flags | MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
+    SendInput(1, &input, sizeof(input));
+}
+
+static DWORD WINAPI sc_move_input_thread(void *arg)
+{
+    POINT *end = arg;
+    int i;
+
+    send_abs_mouse_input(MOUSEEVENTF_LEFTDOWN, 150, 150);
+    Sleep(100);
+    for (i = 1; i <= 5; i++)
+    {
+        send_abs_mouse_input(0, 150 + 4 * i, 150 + 2 * i);
+        Sleep(20);
+    }
+    GetCursorPos(end);
+    send_abs_mouse_input(MOUSEEVENTF_LEFTUP, 170, 160);
+    return 0;
+}
+
+/* apps with their own caption send SC_MOVE with the low bits set to HTCLIENT and alike */
+static void test_SC_MOVE_hittest(void)
+{
+    static const WPARAM tests[] = {SC_MOVE | HTCLIENT, SC_MOVE | HTCAPTION, SC_MOVE | HTLEFT, SC_MOVE | 0xf};
+    WNDCLASSA cls = {0};
+    POINT pos, end;
+    unsigned int i;
+    HANDLE thread;
+    HWND hwnd;
+    RECT rect;
+    MSG msg;
+
+    cls.lpfnWndProc = sc_move_wndproc;
+    cls.hInstance = GetModuleHandleA(NULL);
+    cls.lpszClassName = "sc_move_class";
+    RegisterClassA(&cls);
+    GetCursorPos(&pos);
+
+    for (i = 0; i < ARRAY_SIZE(tests); i++)
+    {
+        winetest_push_context("%#Ix", tests[i]);
+        hwnd = CreateWindowExA(WS_EX_TOPMOST | WS_EX_NOACTIVATE, "sc_move_class", NULL, WS_POPUP | WS_VISIBLE,
+                               100, 100, 100, 100, 0, 0, NULL, NULL);
+        ok(!!hwnd, "CreateWindowEx failed.\n");
+        SetWindowLongPtrA(hwnd, GWLP_USERDATA, tests[i]);
+        SetCursorPos(150, 150);
+        flush_events(TRUE);
+
+        thread = CreateThread(NULL, 0, sc_move_input_thread, &end, 0, NULL);
+        while (MsgWaitForMultipleObjects(1, &thread, FALSE, 5000, QS_ALLINPUT) == WAIT_OBJECT_0 + 1)
+            while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE)) DispatchMessageA(&msg);
+        CloseHandle(thread);
+        flush_events(TRUE);
+
+        GetWindowRect(hwnd, &rect);
+        ok(rect.left == 100 + end.x - 150 && rect.top == 100 + end.y - 150 && rect.right - rect.left == 100 &&
+           rect.bottom - rect.top == 100, "got rect %s, cursor moved to %ld,%ld\n", wine_dbgstr_rect(&rect), end.x, end.y);
+        DestroyWindow(hwnd);
+        winetest_pop_context();
+    }
+
+    SetCursorPos(pos.x, pos.y);
+    UnregisterClassA("sc_move_class", GetModuleHandleA(NULL));
+}
+
 static void test_other_process_window(const char *argv0)
 {
     HANDLE window_ready_event, test_done_event;
@@ -14889,6 +14973,7 @@ START_TEST(win)
     test_arrange_iconic_windows();
     test_other_process_window(argv[0]);
     test_SC_SIZE();
+    test_SC_MOVE_hittest();
     test_cancel_mode();
     test_DragDetect();
     test_WM_NCCALCSIZE();

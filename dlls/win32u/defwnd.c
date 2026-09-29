@@ -704,6 +704,7 @@ static void sys_command_size_move( HWND hwnd, WPARAM wparam )
     {
         if (!hittest) hittest = start_size_move( hwnd, wparam, &capture_point, style );
         if (!hittest) return;
+        hittest = HTCAPTION;  /* the low bits don't matter, the window follows the mouse */
     }
     else  /* SC_SIZE */
     {
