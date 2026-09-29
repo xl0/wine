@@ -25,8 +25,11 @@
 #include <stdarg.h>
 #include <stdio.h>
 
+#include "ntstatus.h"
+#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winbase.h"
+#include "winternl.h"
 #include "objbase.h"
 #include "olectl.h"
 #include "shlguid.h"
@@ -67,6 +70,7 @@ static HRESULT (WINAPI *pDllGetClassObject)(REFCLSID,REFIID,LPVOID);
 static HRESULT (WINAPI *pCoIncrementMTAUsage)(CO_MTA_USAGE_COOKIE *cookie);
 static HRESULT (WINAPI *pCoDecrementMTAUsage)(CO_MTA_USAGE_COOKIE cookie);
 static HRESULT (WINAPI *pCoGetApartmentType)(APTTYPE *type, APTTYPEQUALIFIER *qualifier);
+static NTSTATUS (WINAPI *pNtQuerySystemInformation)(SYSTEM_INFORMATION_CLASS, void *, ULONG, ULONG *);
 
 /* helper macros to make tests a bit leaner */
 #define ok_more_than_one_lock() ok(cLocks > 0, "Number of locks should be > 0, but actually is %ld\n", cLocks)
@@ -3203,6 +3207,94 @@ static void test_proxy_interfaces(void)
     end_host_object(tid, thread);
 }
 
+static ULONG get_handle_count(void)
+{
+    SYSTEM_HANDLE_INFORMATION_EX *info;
+    ULONG size = 0x100000, count = 0, i;
+    NTSTATUS status;
+
+    info = malloc(size);
+    while ((status = pNtQuerySystemInformation(SystemExtendedHandleInformation, info, size, NULL)) == STATUS_INFO_LENGTH_MISMATCH)
+        info = realloc(info, size *= 2);
+    ok(!status, "got %#lx\n", status);
+    for (i = 0; i < info->NumberOfHandles; i++)
+        if (info->Handles[i].UniqueProcessId == GetCurrentProcessId()) count++;
+    free(info);
+    return count;
+}
+
+struct mta_objects
+{
+    IClassFactory objects[10];
+    IStream *streams[10];
+    HANDLE marshaled, done;
+};
+
+static DWORD CALLBACK mta_objects_proc(void *arg)
+{
+    struct mta_objects *data = arg;
+    HRESULT hr;
+    int i;
+
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    for (i = 0; i < ARRAY_SIZE(data->objects); i++)
+    {
+        data->objects[i].lpVtbl = &TestClassFactory_Vtbl;
+        hr = CreateStreamOnHGlobal(NULL, TRUE, &data->streams[i]);
+        ok_ole_success(hr, CreateStreamOnHGlobal);
+        hr = CoMarshalInterface(data->streams[i], &IID_IClassFactory, (IUnknown *)&data->objects[i],
+                                MSHCTX_INPROC, NULL, MSHLFLAGS_NORMAL);
+        ok_ole_success(hr, CoMarshalInterface);
+    }
+    SetEvent(data->marshaled);
+    WaitForSingleObject(data->done, INFINITE);
+    CoUninitialize();
+    return 0;
+}
+
+static void test_proxy_call_handles(void)
+{
+    struct mta_objects data;
+    IClassFactory *proxies[ARRAY_SIZE(data.objects)];
+    ULONG before, after;
+    HANDLE thread;
+    IUnknown *unk;
+    HRESULT hr;
+    int i;
+
+    data.marshaled = CreateEventW(NULL, FALSE, FALSE, NULL);
+    data.done = CreateEventW(NULL, FALSE, FALSE, NULL);
+    thread = CreateThread(NULL, 0, mta_objects_proc, &data, 0, NULL);
+    WaitForSingleObject(data.marshaled, INFINITE);
+    for (i = 0; i < ARRAY_SIZE(proxies); i++)
+    {
+        IStream_Seek(data.streams[i], ullZero, STREAM_SEEK_SET, NULL);
+        hr = CoUnmarshalInterface(data.streams[i], &IID_IClassFactory, (void **)&proxies[i]);
+        ok_ole_success(hr, CoUnmarshalInterface);
+        IStream_Release(data.streams[i]);
+    }
+
+    hr = IClassFactory_CreateInstance(proxies[0], NULL, &IID_IPersist, (void **)&unk);
+    ok(hr == E_NOINTERFACE, "got %#lx\n", hr);
+    before = get_handle_count();
+    for (i = 1; i < ARRAY_SIZE(proxies); i++)
+    {
+        hr = IClassFactory_CreateInstance(proxies[i], NULL, &IID_IPersist, (void **)&unk);
+        ok(hr == E_NOINTERFACE, "got %#lx\n", hr);
+    }
+    after = get_handle_count();
+    /* calls don't keep a kernel object per proxy alive */
+    ok(after - before < ARRAY_SIZE(proxies) / 2, "handles %lu -> %lu\n", before, after);
+
+    for (i = 0; i < ARRAY_SIZE(proxies); i++)
+        IClassFactory_Release(proxies[i]);
+    SetEvent(data.done);
+    WaitForSingleObject(thread, INFINITE);
+    CloseHandle(thread);
+    CloseHandle(data.marshaled);
+    CloseHandle(data.done);
+}
+
 static DWORD server_exception;
 static DWORD server_exception_flags;
 
@@ -5090,6 +5182,7 @@ START_TEST(marshal)
     pCoIncrementMTAUsage = (void*)GetProcAddress(hOle32, "CoIncrementMTAUsage");
     pCoDecrementMTAUsage = (void*)GetProcAddress(hOle32, "CoDecrementMTAUsage");
     pCoGetApartmentType = (void*)GetProcAddress(hOle32, "CoGetApartmentType");
+    pNtQuerySystemInformation = (void*)GetProcAddress(GetModuleHandleA("ntdll"), "NtQuerySystemInformation");
 
     argc = winetest_get_mainargs( &argv );
     if (argc > 2 && (!strcmp(argv[2], "-Embedding")))
@@ -5153,6 +5246,7 @@ START_TEST(marshal)
     test_message_filter();
     test_bad_marshal_stream();
     test_proxy_interfaces();
+    test_proxy_call_handles();
     test_server_exception();
     test_stubbuffer(&IID_IClassFactory);
     test_proxybuffer(&IID_IClassFactory);

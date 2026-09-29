@@ -3504,6 +3504,9 @@ static void com_cleanup_tlsdata(void)
     if (tlsdata->context_token)
         context_token_release(tlsdata->context_token);
 
+    if (tlsdata->call_event)
+        CloseHandle(tlsdata->call_event);
+
     free(tlsdata);
     NtCurrentTeb()->ReservedForOle = NULL;
 }

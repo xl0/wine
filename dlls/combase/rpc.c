@@ -95,7 +95,6 @@ typedef struct
     RPC_BINDING_HANDLE     bind; /* handle to the remote server */
     OXID                   oxid; /* apartment in which the channel is valid */
     DWORD                  server_pid; /* id of server process */
-    HANDLE                 event; /* cached event handle */
     IID                    iid; /* IID of the proxy this belongs to */
 } ClientRpcChannelBuffer;
 
@@ -1039,7 +1038,6 @@ static ULONG WINAPI ClientRpcChannelBuffer_Release(LPRPCCHANNELBUFFER iface)
     if (ref)
         return ref;
 
-    if (This->event) CloseHandle(This->event);
     RpcBindingFree(&This->bind);
     free(This);
     return 0;
@@ -1140,9 +1138,16 @@ static HRESULT WINAPI ServerRpcChannelBuffer_GetBuffer(LPRPCCHANNELBUFFER iface,
     return HRESULT_FROM_WIN32(status);
 }
 
-static HANDLE ClientRpcChannelBuffer_GetEventHandle(ClientRpcChannelBuffer *This)
+/* The call completion event is cached per thread, not per channel: apps may
+ * keep thousands of proxies alive. */
+static HANDLE get_call_event(void)
 {
-    HANDLE event = InterlockedExchangePointer(&This->event, NULL);
+    struct tlsdata *tlsdata;
+    HANDLE event;
+
+    com_get_tlsdata(&tlsdata);
+    event = tlsdata->call_event;
+    tlsdata->call_event = NULL;
 
     /* Note: must be auto-reset event so we can reuse it without a call
     * to ResetEvent */
@@ -1151,11 +1156,14 @@ static HANDLE ClientRpcChannelBuffer_GetEventHandle(ClientRpcChannelBuffer *This
     return event;
 }
 
-static void ClientRpcChannelBuffer_ReleaseEventHandle(ClientRpcChannelBuffer *This, HANDLE event)
+static void release_call_event(HANDLE event)
 {
-    if (InterlockedCompareExchangePointer(&This->event, event, NULL))
-        /* already a handle cached in This */
-        CloseHandle(event);
+    struct tlsdata *tlsdata;
+
+    com_get_tlsdata(&tlsdata);
+    /* a nested call may have cached one already */
+    if (tlsdata->call_event) CloseHandle(event);
+    else tlsdata->call_event = event;
 }
 
 static HRESULT WINAPI ClientRpcChannelBuffer_GetBuffer(LPRPCCHANNELBUFFER iface, RPCOLEMESSAGE* olemsg, REFIID riid)
@@ -1237,7 +1245,7 @@ static HRESULT WINAPI ClientRpcChannelBuffer_GetBuffer(LPRPCCHANNELBUFFER iface,
         }
     }
     if (apt) apartment_release(apt);
-    message_state->params.handle = ClientRpcChannelBuffer_GetEventHandle(This);
+    message_state->params.handle = get_call_event();
     /* Note: message_state->params.msg is initialised in
      * ClientRpcChannelBuffer_SendReceive */
 
@@ -1484,7 +1492,7 @@ static HRESULT WINAPI ClientRpcChannelBuffer_SendReceive(LPRPCCHANNELBUFFER ifac
             tlsdata->pending_call_count_client--;
         }
     }
-    ClientRpcChannelBuffer_ReleaseEventHandle(This, message_state->params.handle);
+    release_call_event(message_state->params.handle);
     if (message_state->params.actctx) ReleaseActCtx(message_state->params.actctx);
 
     /* for WM shortcut, faults are returned in params->hr */
@@ -1726,7 +1734,6 @@ HRESULT rpc_create_clientchannel(const OXID *oxid, const IPID *ipid,
     This->bind = bind;
     This->oxid = apartment_getoxid(apt);
     This->server_pid = oxid_info->dwPid;
-    This->event = NULL;
     This->iid = *iid;
 
     *chan = &This->super.IRpcChannelBuffer_iface;
