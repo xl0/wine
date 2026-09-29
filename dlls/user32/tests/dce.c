@@ -783,9 +783,80 @@ static void test_destroyed_window(void)
     DestroyWindow( hwnd_parent );
 }
 
+static void test_cross_process_visrgn_child( HWND container )
+{
+    HANDLE ready = OpenEventA( EVENT_ALL_ACCESS, FALSE, "wine_dce_test_ready" );
+    HANDLE hidden = OpenEventA( EVENT_ALL_ACCESS, FALSE, "wine_dce_test_hidden" );
+    HRGN rgn = CreateRectRgn( 0, 0, 0, 0 );
+    RECT rect;
+    HWND hwnd;
+    HDC dc;
+    int ret;
+
+    hwnd = CreateWindowA( "cache_class", NULL, WS_CHILD | WS_VISIBLE, 0, 0, 50, 50, container, 0, 0, NULL );
+    ok( hwnd != 0, "CreateWindow failed, error %lu\n", GetLastError() );
+
+    dc = GetDC( hwnd );
+    ret = GetRandomRgn( dc, rgn, SYSRGN );
+    ok( ret == 1, "GetRandomRgn returned %d\n", ret );
+    ret = GetRgnBox( rgn, &rect );
+    ok( ret == SIMPLEREGION, "got %d %s\n", ret, wine_dbgstr_rect( &rect ) );
+    ReleaseDC( hwnd, dc );
+
+    SetEvent( ready );
+    ok( !WaitForSingleObject( hidden, 5000 ), "wait failed\n" );
+
+    /* the other process hid our parent, the cached DC must see it */
+    dc = GetDC( hwnd );
+    ret = GetRandomRgn( dc, rgn, SYSRGN );
+    ok( ret == 1, "GetRandomRgn returned %d\n", ret );
+    ret = GetRgnBox( rgn, &rect );
+    ok( ret == NULLREGION, "got %d %s\n", ret, wine_dbgstr_rect( &rect ) );
+    ReleaseDC( hwnd, dc );
+
+    DestroyWindow( hwnd );
+    DeleteObject( rgn );
+    CloseHandle( ready );
+    CloseHandle( hidden );
+}
+
+static void test_cross_process_visrgn(void)
+{
+    HANDLE ready = CreateEventA( NULL, FALSE, FALSE, "wine_dce_test_ready" );
+    HANDLE hidden = CreateEventA( NULL, FALSE, FALSE, "wine_dce_test_hidden" );
+    PROCESS_INFORMATION pi;
+    STARTUPINFOA si = {sizeof(si)};
+    char cmd[MAX_PATH + 64], **argv;
+    HWND parent, container;
+    MSG msg;
+
+    parent = CreateWindowA( "cache_class", NULL, WS_POPUP | WS_VISIBLE, 0, 0, 100, 100, 0, 0, 0, NULL );
+    container = CreateWindowA( "cache_class", NULL, WS_CHILD | WS_VISIBLE, 0, 0, 50, 50, parent, 0, 0, NULL );
+    UpdateWindow( parent );
+
+    winetest_get_mainargs( &argv );
+    sprintf( cmd, "\"%s\" dce cross_process %p", argv[0], container );
+    ok( CreateProcessA( NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi ), "CreateProcess failed\n" );
+    /* the child's CreateWindow and DestroyWindow send us WM_PARENTNOTIFY */
+    while (MsgWaitForMultipleObjects( 1, &ready, FALSE, 5000, QS_ALLINPUT ) == WAIT_OBJECT_0 + 1)
+        while (PeekMessageA( &msg, 0, 0, 0, PM_REMOVE )) DispatchMessageA( &msg );
+    ShowWindow( container, SW_HIDE );
+    SetEvent( hidden );
+    while (MsgWaitForMultipleObjects( 1, &pi.hProcess, FALSE, 5000, QS_ALLINPUT ) == WAIT_OBJECT_0 + 1)
+        while (PeekMessageA( &msg, 0, 0, 0, PM_REMOVE )) DispatchMessageA( &msg );
+    wait_child_process( &pi );
+    CloseHandle( pi.hProcess );
+    CloseHandle( pi.hThread );
+
+    DestroyWindow( parent );
+    CloseHandle( ready );
+    CloseHandle( hidden );
+}
+
 START_TEST(dce)
 {
     WNDCLASSA cls;
+    char **argv;
 
     cls.style = CS_DBLCLKS;
     cls.lpfnWndProc = DefWindowProcA;
@@ -807,6 +878,12 @@ START_TEST(dce)
     cls.style = CS_PARENTDC;
     cls.lpszClassName = "parentdc_class";
     RegisterClassA(&cls);
+
+    if (winetest_get_mainargs( &argv ) >= 4 && !strcmp( argv[2], "cross_process" ))
+    {
+        test_cross_process_visrgn_child( (HWND)(ULONG_PTR)strtoull( argv[3], NULL, 16 ) );
+        return;
+    }
 
     hwnd_cache = CreateWindowA("cache_class", NULL, WS_OVERLAPPED | WS_VISIBLE,
                                0, 0, 100, 100,
@@ -833,6 +910,7 @@ START_TEST(dce)
     test_scroll_window();
     test_invisible_create();
     test_dc_layout();
+    test_cross_process_visrgn();
     /* this should be last */
     test_destroyed_window();
 }

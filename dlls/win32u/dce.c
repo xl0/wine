@@ -1411,8 +1411,10 @@ HDC WINAPI NtUserGetDCEx( HWND hwnd, HRGN clip_rgn, DWORD flags )
     dce->hwnd = hwnd;
     dce->flags = (dce->flags & ~user_flags) | (flags & user_flags);
 
-    /* cross-process invalidation is not supported yet, so always update the vis rgn */
-    if (!is_current_process_window( hwnd )) update_vis_rgn = TRUE;
+    /* cross-process invalidation is not supported yet, so always update the vis rgn,
+     * also for our own windows inside another process' window tree */
+    if (!is_current_process_window( hwnd ) || !is_current_process_window( NtUserGetAncestor( hwnd, GA_ROOT ) ))
+        update_vis_rgn = TRUE;
 
     if (set_dce_flags( dce->hdc, DCHF_VALIDATEVISRGN )) update_vis_rgn = TRUE;  /* DC was dirty */
 
