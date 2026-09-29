@@ -3522,30 +3522,25 @@ DWORD WINAPI NtUserWaitForInputIdle( HANDLE process, DWORD timeout, BOOL wow )
     for (;;)
     {
         ret = NtUserMsgWaitForMultipleObjectsEx( 2, handles, timeout - elapsed, QS_SENDMESSAGE, 0 );
-        switch (ret)
+        if (ret == WAIT_OBJECT_0 + 2)
         {
-        case WAIT_OBJECT_0:
-            return 0;
-        case WAIT_OBJECT_0+2:
             process_sent_messages();
-            break;
-        case WAIT_TIMEOUT:
-        case WAIT_FAILED:
-            TRACE("timeout or error\n");
-            return ret;
-        default:
-            TRACE("finished\n");
-            return 0;
-        }
-        if (timeout != INFINITE)
-        {
+            if (timeout == INFINITE) continue;
             elapsed = NtGetTickCount() - start_time;
-            if (elapsed > timeout)
-                break;
+            if (elapsed <= timeout) continue;
+            ret = WAIT_TIMEOUT;
         }
+        else if (ret == WAIT_TIMEOUT || ret == WAIT_FAILED) TRACE("timeout or error\n");
+        else
+        {
+            TRACE("finished\n");
+            ret = 0;
+        }
+        break;
     }
 
-    return WAIT_TIMEOUT;
+    NtClose( handles[1] );
+    return ret;
 }
 
 /***********************************************************************
