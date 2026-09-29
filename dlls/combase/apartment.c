@@ -370,6 +370,8 @@ static struct apartment *apartment_construct(DWORD model)
 
     list_init(&apt->proxies);
     list_init(&apt->stubmgrs);
+    rb_init(&apt->stubmgr_objects, stub_manager_compare_object);
+    rb_init(&apt->ifstub_ipids, ifstub_compare_ipid);
     list_init(&apt->loaded_dlls);
     list_init(&apt->usage_cookies);
     apt->ipidc = 0;

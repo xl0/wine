@@ -18,6 +18,7 @@
 #include "wine/orpc.h"
 
 #include "wine/list.h"
+#include "wine/rbtree.h"
 
 extern HINSTANCE hProxyDll;
 
@@ -33,6 +34,8 @@ struct apartment
     CRITICAL_SECTION cs;     /* thread safety */
     struct list proxies;     /* imported objects (CS cs) */
     struct list stubmgrs;    /* stub managers for exported objects (CS cs) */
+    struct rb_tree stubmgr_objects; /* stub managers by object (CS cs) */
+    struct rb_tree ifstub_ipids; /* interface stubs of the stub managers by IPID (CS cs) */
     BOOL remunk_exported;    /* has the IRemUnknown interface for this apartment been created yet? (CS cs) */
     LONG remoting_started;   /* has the RPC system been started for this apartment? (LOCK) */
     struct list loaded_dlls; /* list of dlls loaded by this apartment (CS cs) */
@@ -214,6 +217,8 @@ typedef enum ifstub_state
 struct ifstub
 {
     struct list       entry;      /* entry in stub_manager->ifstubs list (CS stub_manager->lock) */
+    struct rb_entry   ipid_entry; /* entry in apartment ifstub_ipids tree (CS apt->cs) */
+    struct stub_manager *manager; /* RO */
     IRpcStubBuffer   *stubbuffer; /* RO */
     IID               iid;        /* RO */
     IPID              ipid;       /* RO */
@@ -226,6 +231,7 @@ struct ifstub
 struct stub_manager
 {
     struct list       entry;      /* entry in apartment stubmgr list (CS apt->cs) */
+    struct rb_entry   object_entry; /* entry in apartment stubmgr_objects tree (CS apt->cs) */
     struct list       ifstubs;    /* list of active ifstubs for the object (CS lock) */
     CRITICAL_SECTION  lock;
     struct apartment *apt;        /* owning apt (RO) */
@@ -267,4 +273,6 @@ HRESULT ipid_get_dispatch_params(const IPID *ipid, struct apartment **stub_apt,
         IID *iid, IUnknown **iface);
 HRESULT ipid_get_dest_context(const IPID *ipid, MSHCTX *dest_context, void **dest_context_data);
 HRESULT start_apartment_remote_unknown(struct apartment *apt);
+int stub_manager_compare_object(const void *key, const struct rb_entry *entry);
+int ifstub_compare_ipid(const void *key, const struct rb_entry *entry);
 void get_process_secret(GUID *process_secret);

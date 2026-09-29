@@ -69,6 +69,21 @@ static inline HRESULT generate_ipid(struct stub_manager *m, IPID *ipid)
     return S_OK;
 }
 
+int stub_manager_compare_object(const void *key, const struct rb_entry *entry)
+{
+    const struct stub_manager *m = RB_ENTRY_VALUE(entry, const struct stub_manager, object_entry);
+
+    if ((ULONG_PTR)key < (ULONG_PTR)m->object) return -1;
+    return (ULONG_PTR)key > (ULONG_PTR)m->object;
+}
+
+int ifstub_compare_ipid(const void *key, const struct rb_entry *entry)
+{
+    const struct ifstub *ifstub = RB_ENTRY_VALUE(entry, const struct ifstub, ipid_entry);
+
+    return memcmp(key, &ifstub->ipid, sizeof(IPID));
+}
+
 /* registers a new interface stub COM object with the stub manager and returns registration record */
 struct ifstub * stub_manager_new_ifstub(struct stub_manager *m, IRpcStubBuffer *sb, REFIID iid, DWORD dest_context,
     void *dest_context_data, MSHLFLAGS flags)
@@ -102,6 +117,7 @@ struct ifstub * stub_manager_new_ifstub(struct stub_manager *m, IRpcStubBuffer *
 
     stub->flags = flags;
     stub->iid = *iid;
+    stub->manager = m;
 
     /* FIXME: find a cleaner way of identifying that we are creating an ifstub
      * for the remunknown interface */
@@ -115,6 +131,10 @@ struct ifstub * stub_manager_new_ifstub(struct stub_manager *m, IRpcStubBuffer *
     /* every normal marshal is counted so we don't allow more than we should */
     if (flags & MSHLFLAGS_NORMAL) m->norm_refs++;
     LeaveCriticalSection(&m->lock);
+
+    EnterCriticalSection(&m->apt->cs);
+    rb_put(&m->apt->ifstub_ipids, &stub->ipid, &stub->ipid_entry);
+    LeaveCriticalSection(&m->apt->cs);
 
     TRACE("ifstub %p created with ipid %s\n", stub, debugstr_guid(&stub->ipid));
 
@@ -234,6 +254,7 @@ static struct stub_manager *new_stub_manager(struct apartment *apt, IUnknown *ob
     EnterCriticalSection(&apt->cs);
     sm->oid = apt->oidc++;
     list_add_head(&apt->stubmgrs, &sm->entry);
+    rb_put(&apt->stubmgr_objects, object, &sm->object_entry);
     LeaveCriticalSection(&apt->cs);
 
     TRACE("Created new stub manager (oid=%s) at %p for object with IUnknown %p\n", wine_dbgstr_longlong(sm->oid), sm, object);
@@ -320,7 +341,16 @@ ULONG stub_manager_int_release(struct stub_manager *m)
 
     /* remove from apartment so no other thread can access it... */
     if (!refs)
+    {
+        struct ifstub *ifstub;
+
         list_remove(&m->entry);
+        /* a racing thread may have added another stub manager for the object first */
+        if (rb_get(&apt->stubmgr_objects, m->object) == &m->object_entry)
+            rb_remove(&apt->stubmgr_objects, &m->object_entry);
+        LIST_FOR_EACH_ENTRY(ifstub, &m->ifstubs, struct ifstub, entry)
+            rb_remove(&apt->ifstub_ipids, &ifstub->ipid_entry);
+    }
 
     LeaveCriticalSection(&apt->cs);
 
@@ -336,7 +366,8 @@ ULONG stub_manager_int_release(struct stub_manager *m)
  * it must also call release on the stub manager when it is no longer needed */
 struct stub_manager * get_stub_manager_from_object(struct apartment *apt, IUnknown *obj, BOOL alloc)
 {
-    struct stub_manager *result = NULL, *m;
+    struct stub_manager *result = NULL;
+    struct rb_entry *entry;
     IUnknown *object;
     HRESULT hres;
 
@@ -348,14 +379,10 @@ struct stub_manager * get_stub_manager_from_object(struct apartment *apt, IUnkno
     }
 
     EnterCriticalSection(&apt->cs);
-    LIST_FOR_EACH_ENTRY(m, &apt->stubmgrs, struct stub_manager, entry)
+    if ((entry = rb_get(&apt->stubmgr_objects, object)))
     {
-        if (m->object == object)
-        {
-            result = m;
-            stub_manager_int_addref(result);
-            break;
-        }
+        result = RB_ENTRY_VALUE(entry, struct stub_manager, object_entry);
+        stub_manager_int_addref(result);
     }
     LeaveCriticalSection(&apt->cs);
 
@@ -473,17 +500,15 @@ ULONG stub_manager_ext_release(struct stub_manager *m, ULONG refs, BOOL tablewea
  * it must also call release on the stub manager when it is no longer needed */
 static struct stub_manager *get_stub_manager_from_ipid(struct apartment *apt, const IPID *ipid, struct ifstub **ifstub)
 {
-    struct stub_manager *result = NULL, *m;
+    struct stub_manager *result = NULL;
+    struct rb_entry *entry;
 
     EnterCriticalSection(&apt->cs);
-    LIST_FOR_EACH_ENTRY(m, &apt->stubmgrs, struct stub_manager, entry)
+    if ((entry = rb_get(&apt->ifstub_ipids, ipid)))
     {
-        if ((*ifstub = stub_manager_ipid_to_ifstub(m, ipid)))
-        {
-            result = m;
-            stub_manager_int_addref(result);
-            break;
-        }
+        *ifstub = RB_ENTRY_VALUE(entry, struct ifstub, ipid_entry);
+        result = (*ifstub)->manager;
+        stub_manager_int_addref(result);
     }
     LeaveCriticalSection(&apt->cs);
 
