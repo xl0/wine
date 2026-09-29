@@ -90,7 +90,8 @@ static const user_entry_t *alloc_user_entry( struct obj_locator locator, unsigne
         nb_handles++;
     }
 
-    if (generation == 0 || generation == 0xffff) generation = 1;
+    /* wrap after 0x7ffe like Windows, so that handles never have bit 31 set */
+    if (generation > 0x7ffe) generation = 1;
 
     entry->offset = locator.offset;
     entry->tid = get_thread_id( current );

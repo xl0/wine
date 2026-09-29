@@ -10035,6 +10035,40 @@ static void test_handles( HWND full_hwnd )
 #endif
 }
 
+static HWND ncdestroy_hwnd;
+
+static LRESULT WINAPI handle_generation_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+{
+    if (msg == WM_NCDESTROY) ncdestroy_hwnd = hwnd;
+    return DefWindowProcA( hwnd, msg, wparam, lparam );
+}
+
+static void test_handle_generation(void)
+{
+    WNDCLASSA cls = {.lpfnWndProc = handle_generation_proc, .hInstance = GetModuleHandleA( NULL ),
+                     .lpszClassName = "handle_generation"};
+    HMENU menu;
+    HWND hwnd;
+    int i;
+
+    /* USER handles share one table; freed entries are reused with the next generation */
+    for (i = 0; i < 0x8000; i++)
+    {
+        if (!(menu = CreateMenu())) break;
+        DestroyMenu( menu );
+        if (HIWORD(menu) > 0x7ffe) break;
+    }
+    ok( menu && HIWORD(menu) <= 0x7ffe, "got menu %p\n", menu );
+
+    RegisterClassA( &cls );
+    hwnd = CreateWindowA( "handle_generation", NULL, WS_POPUP, 0, 0, 0, 0, 0, 0, 0, 0 );
+    ok( hwnd != 0, "CreateWindowA failed\n" );
+    ok( HIWORD(hwnd) <= 0x7ffe, "got hwnd %p\n", hwnd );
+    DestroyWindow( hwnd );
+    ok( ncdestroy_hwnd == hwnd, "got WM_NCDESTROY hwnd %p, expected %p\n", ncdestroy_hwnd, hwnd );
+    UnregisterClassA( "handle_generation", GetModuleHandleA( NULL ) );
+}
+
 static void test_winregion(void)
 {
     HWND hwnd;
@@ -14834,6 +14868,7 @@ START_TEST(win)
 
     test_SetForegroundWindow(hwndMain);
     test_handles( hwndMain );
+    test_handle_generation();
     test_winregion();
     test_map_points();
     test_update_region();
