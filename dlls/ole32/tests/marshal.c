@@ -1408,6 +1408,116 @@ static const IClassFactoryVtbl TestMTAClassFactory_Vtbl =
 
 static IClassFactory Test_MTAClassFactory = { &TestMTAClassFactory_Vtbl };
 
+static HANDLE call_actctx;
+
+static HRESULT WINAPI ActCtx_IClassFactory_CreateInstance(IClassFactory *iface, IUnknown *outer,
+                                                          REFIID riid, void **out)
+{
+    call_actctx = NULL;
+    if (GetCurrentActCtx(&call_actctx) && call_actctx) ReleaseActCtx(call_actctx);
+    *out = NULL;
+    return E_NOTIMPL;
+}
+
+static const IClassFactoryVtbl ActCtxClassFactory_Vtbl =
+{
+    Test_IClassFactory_QueryInterface,
+    Test_IClassFactory_AddRef,
+    Test_IClassFactory_Release,
+    ActCtx_IClassFactory_CreateInstance,
+    Test_IClassFactory_LockServer
+};
+
+static IClassFactory Test_ActCtxClassFactory = { &ActCtxClassFactory_Vtbl };
+
+struct actctx_host
+{
+    DWORD model;
+    IStream *stream;
+    HANDLE ready, done;
+};
+
+static DWORD CALLBACK actctx_host_proc(void *arg)
+{
+    struct actctx_host *host = arg;
+    DWORD index;
+    HRESULT hr;
+
+    CoInitializeEx(NULL, host->model);
+    hr = CoMarshalInterThreadInterfaceInStream(&IID_IClassFactory, (IUnknown *)&Test_ActCtxClassFactory, &host->stream);
+    ok_ole_success(hr, CoMarshalInterThreadInterfaceInStream);
+    SetEvent(host->ready);
+    CoWaitForMultipleHandles(0, INFINITE, 1, &host->done, &index);
+    CoUninitialize();
+    return 0;
+}
+
+/* in-process calls into another apartment run in the caller's activation context */
+static void test_call_actctx(void)
+{
+    static const char manifest[] =
+        "<assembly xmlns=\"urn:schemas-microsoft-com:asm.v1\" manifestVersion=\"1.0\">"
+        "<assemblyIdentity version=\"1.0.0.0\" name=\"Wine.Test\" type=\"win32\"/>"
+        "</assembly>";
+    static const DWORD models[] = { COINIT_MULTITHREADED, COINIT_APARTMENTTHREADED };
+    WCHAR path[MAX_PATH];
+    ACTCTXW actctx = { sizeof(actctx) };
+    struct actctx_host host;
+    IClassFactory *cf;
+    ULONG_PTR cookie;
+    IUnknown *unk;
+    HANDLE ctx, thread;
+    DWORD written;
+    HRESULT hr;
+    HANDLE file;
+    int i;
+
+    GetTempPathW(MAX_PATH, path);
+    wcscat(path, L"call_actctx.manifest");
+    file = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    ok(file != INVALID_HANDLE_VALUE, "CreateFile failed %lu\n", GetLastError());
+    WriteFile(file, manifest, sizeof(manifest) - 1, &written, NULL);
+    CloseHandle(file);
+    actctx.lpSource = path;
+    ctx = CreateActCtxW(&actctx);
+    ok(ctx != INVALID_HANDLE_VALUE, "CreateActCtx failed %lu\n", GetLastError());
+    DeleteFileW(path);
+
+    for (i = 0; i < ARRAY_SIZE(models); i++)
+    {
+        winetest_push_context("model %#lx", models[i]);
+        host.model = models[i];
+        host.ready = CreateEventW(NULL, FALSE, FALSE, NULL);
+        host.done = CreateEventW(NULL, FALSE, FALSE, NULL);
+        thread = CreateThread(NULL, 0, actctx_host_proc, &host, 0, NULL);
+        ok(!WaitForSingleObject(host.ready, 10000), "wait timed out\n");
+
+        hr = CoGetInterfaceAndReleaseStream(host.stream, &IID_IClassFactory, (void **)&cf);
+        ok_ole_success(hr, CoGetInterfaceAndReleaseStream);
+
+        call_actctx = INVALID_HANDLE_VALUE;
+        hr = IClassFactory_CreateInstance(cf, NULL, &IID_IUnknown, (void **)&unk);
+        ok(hr == E_NOTIMPL, "got %#lx\n", hr);
+        ok(!call_actctx, "got context %p\n", call_actctx);
+
+        ActivateActCtx(ctx, &cookie);
+        call_actctx = INVALID_HANDLE_VALUE;
+        hr = IClassFactory_CreateInstance(cf, NULL, &IID_IUnknown, (void **)&unk);
+        ok(hr == E_NOTIMPL, "got %#lx\n", hr);
+        ok(call_actctx == ctx, "got context %p, expected %p\n", call_actctx, ctx);
+        DeactivateActCtx(0, cookie);
+
+        IClassFactory_Release(cf);
+        SetEvent(host.done);
+        ok(!WaitForSingleObject(thread, 10000), "wait timed out\n");
+        CloseHandle(thread);
+        CloseHandle(host.ready);
+        CloseHandle(host.done);
+        winetest_pop_context();
+    }
+    ReleaseActCtx(ctx);
+}
+
 /* tests that proxies are working when the host joins mta apartment */
 static void test_marshal_proxy_join_mta_apartment(void)
 {
@@ -5053,6 +5163,7 @@ START_TEST(marshal)
     test_inproc_handler();
     test_handler_marshaling();
     test_client_security();
+    test_call_actctx();
 
     test_local_server();
 

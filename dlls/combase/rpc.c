@@ -108,6 +108,7 @@ struct dispatch_params
     IUnknown          *iface; /* interface being called */
     HANDLE             handle; /* handle that will become signaled when call finishes */
     BOOL               bypass_rpcrt; /* bypass RPC runtime? */
+    HANDLE             actctx; /* caller's activation context, for in-process calls */
     RPC_STATUS         status; /* status (out) */
     HRESULT            hr; /* hresult (out) */
 };
@@ -1428,6 +1429,9 @@ static HRESULT WINAPI ClientRpcChannelBuffer_SendReceive(LPRPCCHANNELBUFFER ifac
     {
         msg->ProcNum &= ~RPC_FLAGS_VALID_BIT;
 
+        /* in-process calls run in the caller's activation context */
+        GetCurrentActCtx(&message_state->params.actctx);
+
         if (!message_state->target_tid)
         {
             TRACE("Calling multithreaded apartment...\n");
@@ -1481,6 +1485,7 @@ static HRESULT WINAPI ClientRpcChannelBuffer_SendReceive(LPRPCCHANNELBUFFER ifac
         }
     }
     ClientRpcChannelBuffer_ReleaseEventHandle(This, message_state->params.handle);
+    if (message_state->params.actctx) ReleaseActCtx(message_state->params.actctx);
 
     /* for WM shortcut, faults are returned in params->hr */
     if (hr == S_OK)
@@ -1903,6 +1908,7 @@ void rpc_execute_call(struct dispatch_params *params)
     ORPC_EXTENT_ARRAY orpc_ext_array;
     WIRE_ORPC_EXTENT *first_wire_orpc_extent;
     GUID old_causality_id;
+    ULONG_PTR actctx_cookie;
     struct tlsdata *tlsdata;
     struct apartment *apt;
 
@@ -1992,6 +1998,8 @@ void rpc_execute_call(struct dispatch_params *params)
 
     /* invoke the method */
 
+    if (params->bypass_rpcrt) ActivateActCtx(params->actctx, &actctx_cookie);
+
     /* save the old causality ID - note: any calls executed while processing
      * messages received during the SendReceive will appear to originate from
      * this call - this should be checked with what Windows does */
@@ -2010,6 +2018,7 @@ void rpc_execute_call(struct dispatch_params *params)
     __ENDTRY
     tlsdata->pending_call_count_server--;
     tlsdata->causality_id = old_causality_id;
+    if (params->bypass_rpcrt) DeactivateActCtx(0, actctx_cookie);
 
     /* the invoke allocated a new buffer, so free the old one */
     if (message_state->bypass_rpcrt && original_buffer != msg->Buffer)
