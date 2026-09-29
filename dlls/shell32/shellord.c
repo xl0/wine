@@ -834,6 +834,7 @@ void WINAPI SHAddToRecentDocs (UINT uFlags,LPCVOID pv)
         if (!SHGetPathFromIDListA(pv, doc_name))
         {
             WARN("can't get path from PIDL\n");
+            RegCloseKey(HCUbasekey);
             return;
         }
         break;
@@ -848,6 +849,7 @@ void WINAPI SHAddToRecentDocs (UINT uFlags,LPCVOID pv)
 
     default:
         FIXME("Unsupported flags: %u\n", uFlags);
+        RegCloseKey(HCUbasekey);
         return;
     }
 

@@ -21,8 +21,11 @@
 
 #define COBJMACROS
 
+#include "ntstatus.h"
+#define WIN32_NO_STATUS
 #include "initguid.h"
 #include "windows.h"
+#include "winternl.h"
 #include "shlguid.h"
 #include "shobjidl.h"
 #include "shlobj.h"
@@ -39,6 +42,7 @@ static HRESULT (WINAPI *pSHGetFolderLocation)(HWND,INT,HANDLE,DWORD,PIDLIST_ABSO
 static HRESULT (WINAPI *pSHGetStockIconInfo)(SHSTOCKICONID, UINT, SHSTOCKICONINFO *);
 static UINT (WINAPI *pSHExtractIconsW)(LPCWSTR, int, int, int, HICON *, UINT *, UINT, UINT);
 static BOOL (WINAPI *pIsProcessDPIAware)(void);
+static NTSTATUS (WINAPI *pNtQuerySystemInformation)(SYSTEM_INFORMATION_CLASS, void *, ULONG, ULONG *);
 
 /* For some reason SHILCreateFromPath does not work on Win98 and
  * SHSimpleIDListFromPathA does not work on NT4. But if we call both we
@@ -1384,6 +1388,56 @@ static int get_shell_icon_size(void)
     return value;
 }
 
+/* GetProcessHandleCount() is a stub in Wine, count our handles in the system handle list. */
+static ULONG get_handle_count(void)
+{
+    SYSTEM_HANDLE_INFORMATION_EX *info;
+    ULONG size = 0x100000, count = 0, i;
+    NTSTATUS status;
+
+    info = malloc(size);
+    while ((status = pNtQuerySystemInformation(SystemExtendedHandleInformation, info, size, NULL)) == STATUS_INFO_LENGTH_MISMATCH)
+        info = realloc(info, size *= 2);
+    ok(!status, "got %#lx\n", status);
+    for (i = 0; i < info->NumberOfHandles; i++)
+        if (info->Handles[i].UniqueProcessId == GetCurrentProcessId()) count++;
+    free(info);
+    return count;
+}
+
+static void test_SHAddToRecentDocs(void)
+{
+    WCHAR path[MAX_PATH];
+    SHARDAPPIDINFO appid;
+    IShellItem *item;
+    ULONG before, after;
+    HRESULT hr;
+    int i;
+
+    /* Windows skips files in the temp directory, so this doesn't change the recent list. */
+    GetTempPathW(ARRAY_SIZE(path), path);
+    wcscat(path, L"recentdocs_test.txt");
+    CloseHandle(CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL));
+    hr = SHCreateItemFromParsingName(path, NULL, &IID_IShellItem, (void **)&item);
+    ok(hr == S_OK, "got %#lx\n", hr);
+    appid.psi = item;
+    appid.pszAppID = L"Wine.Test";
+
+    SHAddToRecentDocs(SHARD_SHELLITEM, item);
+    before = get_handle_count();
+    for (i = 0; i < 100; i++)
+    {
+        SHAddToRecentDocs(SHARD_SHELLITEM, item);
+        SHAddToRecentDocs(SHARD_APPIDINFO, &appid);
+        SHAddToRecentDocs(0xdead, path);
+    }
+    after = get_handle_count();
+    ok(after < before + 10, "handle count grew from %lu to %lu\n", before, after);
+
+    IShellItem_Release(item);
+    DeleteFileW(path);
+}
+
 static void test_SHGetImageList(void)
 {
     HRESULT hr;
@@ -1471,6 +1525,7 @@ START_TEST(shelllink)
     pSHGetStockIconInfo = (void *)GetProcAddress(hmod, "SHGetStockIconInfo");
     pSHExtractIconsW = (void *)GetProcAddress(hmod, "SHExtractIconsW");
     pIsProcessDPIAware = (void *)GetProcAddress(huser32, "IsProcessDPIAware");
+    pNtQuerySystemInformation = (void *)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQuerySystemInformation");
 
     r = CoInitialize(NULL);
     ok(r == S_OK, "CoInitialize failed (0x%08lx)\n", r);
@@ -1488,6 +1543,7 @@ START_TEST(shelllink)
     test_ExtractIcon();
     test_ExtractAssociatedIcon();
     test_SHGetImageList();
+    test_SHAddToRecentDocs();
 
     CoUninitialize();
 }
