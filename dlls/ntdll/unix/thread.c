@@ -1479,6 +1479,7 @@ NTSTATUS WINAPI PsCreateSystemThread( HANDLE *handle, ACCESS_MASK access, OBJECT
     if ((status = create_server_thread( handle, &data, access, attr, start, param, flags, TRUE )))
         return status;
 
+    data->high_res_timers = TRUE;  /* system threads run what are separate services on Windows */
     if ((status = spawn_thread( data )))
     {
         NtClose( *handle );
@@ -2409,6 +2410,13 @@ NTSTATUS WINAPI NtQueryInformationThread( HANDLE handle, THREADINFOCLASS class,
     case ThreadWow64Context:
         return get_thread_wow64_context( handle, data, length );
 
+    case ThreadWineHighResolutionTimers:
+        if (length != sizeof(BOOLEAN)) return STATUS_INFO_LENGTH_MISMATCH;
+        if (handle != GetCurrentThread()) return STATUS_NOT_SUPPORTED;
+        *(BOOLEAN *)data = get_thread_data()->high_res_timers;
+        if (ret_len) *ret_len = sizeof(BOOLEAN);
+        return STATUS_SUCCESS;
+
     case ThreadHideFromDebugger:
         /* TP Shell Service depends on ThreadHideFromDebugger returning
          * STATUS_ACCESS_VIOLATION if *ret_len is not writable, before
@@ -2658,6 +2666,12 @@ NTSTATUS WINAPI NtSetInformationThread( HANDLE handle, THREADINFOCLASS class,
         set_native_thread_name( handle, &info->ThreadName );
         return STATUS_SUCCESS;
     }
+
+    case ThreadWineHighResolutionTimers:
+        if (length != sizeof(BOOLEAN)) return STATUS_INFO_LENGTH_MISMATCH;
+        if (handle != GetCurrentThread()) return STATUS_NOT_SUPPORTED;
+        get_thread_data()->high_res_timers = *(const BOOLEAN *)data;
+        return STATUS_SUCCESS;
 
     case ThreadWow64Context:
         return set_thread_wow64_context( handle, data, length );

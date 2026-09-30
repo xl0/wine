@@ -119,6 +119,7 @@ struct thread_data
     int          alert_fd;          /* inproc sync fd for user apc alerts */
     DWORD        tid;               /* thread id */
     BOOL         allow_writes;      /* ThreadAllowWrites flags */
+    BOOL         high_res_timers;   /* timed waits are exempt from the default timer resolution */
     BOOL         suspend;           /* suspend on startup */
     BOOL         filesys_redir;     /* WOW64_TLS_FILESYSREDIR before the TEB is created */
     pthread_t    pthread_id;        /* pthread thread id */
