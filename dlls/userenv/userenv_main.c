@@ -27,6 +27,7 @@
 #include "winternl.h"
 #include "winnls.h"
 #include "sddl.h"
+#include "bcrypt.h"
 #include "objbase.h"
 #include "userenv.h"
 
@@ -695,4 +696,29 @@ HRESULT WINAPI CreateAppContainerProfile(PCWSTR container_name, PCWSTR display_n
           debugstr_w(description), capabilities, capability_count, container_sid);
 
     return E_NOTIMPL;
+}
+
+HRESULT WINAPI DeriveAppContainerSidFromAppContainerName(const WCHAR *name, PSID *sid)
+{
+    SID_IDENTIFIER_AUTHORITY authority = {SECURITY_APP_PACKAGE_AUTHORITY};
+    UNICODE_STRING str, lower;
+    DWORD hash[8];
+    NTSTATUS status;
+
+    TRACE("(%s, %p)\n", debugstr_w(name), sid);
+
+    if (!name || !name[0] || wcslen(name) > 64) return E_INVALIDARG;
+
+    /* S-1-15-2 followed by the first 7 dwords of the SHA-256 of the lowercase name */
+    RtlInitUnicodeString(&str, name);
+    if ((status = RtlDowncaseUnicodeString(&lower, &str, TRUE))) return HRESULT_FROM_NT(status);
+    status = BCryptHash(BCRYPT_SHA256_ALG_HANDLE, NULL, 0, (UCHAR *)lower.Buffer, lower.Length,
+                        (UCHAR *)hash, sizeof(hash));
+    RtlFreeUnicodeString(&lower);
+    if (status) return HRESULT_FROM_NT(status);
+
+    if (!AllocateAndInitializeSid(&authority, SECURITY_APP_PACKAGE_RID_COUNT, SECURITY_APP_PACKAGE_BASE_RID,
+                                  hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], sid))
+        return HRESULT_FROM_WIN32(GetLastError());
+    return S_OK;
 }

@@ -26,6 +26,7 @@
 #include "winbase.h"
 #include "winnls.h"
 #include "winreg.h"
+#include "sddl.h"
 
 #include "userenv.h"
 
@@ -36,6 +37,7 @@
 #define expect_gle(EXPECTED) ok(GetLastError() == (EXPECTED), "Expected %d, got %ld\n", (EXPECTED), GetLastError())
 
 static BOOL (WINAPI *pIsWow64Process)(HANDLE,PBOOL);
+static HRESULT (WINAPI *pDeriveAppContainerSidFromAppContainerName)(const WCHAR *,PSID *);
 
 struct profile_item
 {
@@ -457,11 +459,67 @@ static void test_get_user_profile_dir(void)
     CloseHandle( token );
 }
 
+static void test_derive_app_container_sid(void)
+{
+    static const struct
+    {
+        const WCHAR *name;
+        const char *sid;
+    }
+    tests[] =
+    {
+        {L"a", "S-1-15-2-3937069567-81109666-199193729-4036909440-616594969-3159470276-4124008600"},
+        {L"Microsoft.Test", "S-1-15-2-2454443906-1738442090-3058733645-3218179882-3578097541-2650956773-59835215"},
+        {L"MICROSOFT.TEST", "S-1-15-2-2454443906-1738442090-3058733645-3218179882-3578097541-2650956773-59835215"},
+        {L"a\\b", "S-1-15-2-168751494-2430055864-932483239-4188945568-3832122792-3405294360-3231463771"},
+        {L"abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijkl",
+         "S-1-15-2-1525069260-5500402-4076865119-4149119022-2260998677-858580337-3155732100"},
+        {L"abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklm"},
+        {L""},
+        {NULL},
+    };
+    unsigned int i;
+    HRESULT hr;
+    char *str;
+    PSID sid;
+
+    if (!pDeriveAppContainerSidFromAppContainerName)
+    {
+        win_skip("DeriveAppContainerSidFromAppContainerName is not available.\n");
+        return;
+    }
+
+    for (i = 0; i < ARRAY_SIZE(tests); i++)
+    {
+        winetest_push_context("%s", debugstr_w(tests[i].name));
+        sid = (PSID)0xdeadbeef;
+        hr = pDeriveAppContainerSidFromAppContainerName(tests[i].name, &sid);
+        if (!tests[i].sid)
+        {
+            ok(hr == E_INVALIDARG, "got %#lx.\n", hr);
+            ok(sid == (PSID)0xdeadbeef, "got %p.\n", sid);
+        }
+        else
+        {
+            ok(hr == S_OK, "got %#lx.\n", hr);
+            ConvertSidToStringSidA(sid, &str);
+            ok(!strcmp(str, tests[i].sid), "got %s.\n", str);
+            LocalFree(str);
+            ok(!FreeSid(sid), "FreeSid failed.\n");
+        }
+        winetest_pop_context();
+    }
+}
+
 START_TEST(userenv)
 {
+    HMODULE hmod = GetModuleHandleA("userenv.dll");
+
     pIsWow64Process = (void*)GetProcAddress(GetModuleHandleA("kernel32.dll"), "IsWow64Process");
+    pDeriveAppContainerSidFromAppContainerName = (void *)GetProcAddress(hmod, "DeriveAppContainerSidFromAppContainerName");
 
     test_create_env();
     test_get_profiles_dir();
     test_get_user_profile_dir();
+    test_derive_app_container_sid();
 }
