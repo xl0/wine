@@ -163,6 +163,56 @@ static const char * get_priority(int priority)
 static int priority = 0;
 static BOOL fired = FALSE;
 
+static double sleep_1ms(void)
+{
+    LARGE_INTEGER start, end, freq;
+    int i;
+
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&start);
+    for (i = 0; i < 8; i++) Sleep(1);
+    QueryPerformanceCounter(&end);
+    return (end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart / 8;
+}
+
+static void CALLBACK null_time_proc(UINT id, UINT msg, DWORD_PTR user, DWORD_PTR dw1, DWORD_PTR dw2)
+{
+}
+
+static void test_timer_resolution(void)
+{
+    UINT id;
+    double ms;
+
+    /* Since Windows 10 2004, a process that didn't raise its timer resolution sleeps until the
+     * 15.625 ms clock tick. A multimedia event raises it while it exists, unless its resolution is
+     * coarser than its delay. */
+    ms = sleep_1ms();
+    ok(ms >= 10.0 || broken(ms < 10.0), "Sleep(1) took %.2f ms\n", ms);
+
+    id = timeSetEvent(10, 1, null_time_proc, 0, TIME_PERIODIC);
+    ok(id != 0, "timeSetEvent failed\n");
+    ms = sleep_1ms();
+    ok(ms < 10.0, "Sleep(1) took %.2f ms\n", ms);
+    timeKillEvent(id);
+    ms = sleep_1ms();
+    ok(ms >= 10.0 || broken(ms < 10.0), "Sleep(1) took %.2f ms\n", ms);
+
+    id = timeSetEvent(5, 10, null_time_proc, 0, TIME_PERIODIC);
+    ok(id != 0, "timeSetEvent failed\n");
+    ms = sleep_1ms();
+    ok(ms >= 10.0 || broken(ms < 10.0), "Sleep(1) took %.2f ms\n", ms);
+    timeKillEvent(id);
+
+    id = timeSetEvent(50, 1, null_time_proc, 0, TIME_ONESHOT);
+    ok(id != 0, "timeSetEvent failed\n");
+    ms = sleep_1ms();
+    ok(ms < 10.0, "Sleep(1) took %.2f ms\n", ms);
+    Sleep(200);
+    ms = sleep_1ms();
+    ok(ms >= 10.0 || broken(ms < 10.0), "Sleep(1) took %.2f ms after the event\n", ms);
+}
+
 static void CALLBACK priorityTimeProc(UINT uID, UINT uMsg, DWORD_PTR dwUser,
                                       DWORD_PTR dw1, DWORD_PTR dw2)
 {
@@ -250,6 +300,7 @@ static void test_timer_lifetime(void)
 START_TEST(timer)
 {
     test_timeGetDevCaps();
+    test_timer_resolution();
 
     if (tc.wPeriodMin <= 1) {
         test_timer(1, 0);

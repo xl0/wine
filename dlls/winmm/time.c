@@ -102,6 +102,17 @@ static    CONDITION_VARIABLE    TIME_cv;
 #define MMSYSTIME_MININTERVAL (1)
 #define MMSYSTIME_MAXINTERVAL (65535)
 
+/* An event holds a timer resolution request of the process while it exists (as on Windows),
+ * unless its resolution is coarser than its delay. */
+static void TIME_RequestPeriod(const WINE_TIMERENTRY *timer, BOOL begin)
+{
+    UINT period = max(timer->wResol, 1);
+
+    if (timer->wResol > timer->wDelay) return;
+    if (begin) timeBeginPeriod(period);
+    else timeEndPeriod(period);
+}
+
 /**************************************************************************
  *           TIME_MMSysTimeCallback
  */
@@ -168,7 +179,10 @@ static int TIME_MMSysTimeCallback(void)
             break;
         }
         if (timer && !(timer->wFlags & TIME_PERIODIC))
+        {
             timer->wTimerID = 0;
+            TIME_RequestPeriod(timer, FALSE);
+        }
     }
     return delta_time;
 }
@@ -269,13 +283,12 @@ MMRESULT WINAPI timeSetEvent(UINT wDelay, UINT wResol, LPTIMECALLBACK lpFunc,
     timers[i].wDelay = wDelay;
     timers[i].dwTriggerTime = timeGetTime() + wDelay;
 
-    /* FIXME - wResol is not respected, although it is not clear
-       that we could change our precision meaningfully  */
     timers[i].wResol = wResol;
     timers[i].lpFunc = lpFunc;
     timers[i].dwUser = dwUser;
     timers[i].wFlags = wFlags;
     timers[i].wTimerID = new_id;
+    TIME_RequestPeriod(&timers[i], TRUE);
 
     TIME_MMTimeStart();
 
@@ -310,6 +323,7 @@ MMRESULT WINAPI timeKillEvent(UINT wID)
 
     timer->wTimerID = 0;
     flags = timer->wFlags;
+    TIME_RequestPeriod(timer, FALSE);
     LeaveCriticalSection(&WINMM_cs);
 
     if (flags & TIME_KILL_SYNCHRONOUS)
