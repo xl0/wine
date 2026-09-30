@@ -1490,7 +1490,10 @@ static BOOL x11drv_egl_surface_swap( struct opengl_drawable *base )
     funcs->p_eglSwapBuffers( egl->display, gl->base.surface );
 
     if (InterlockedCompareExchange( &base->client->offscreen, 0, 0 ))
+    {
+        funcs->p_glFinish(); /* the swap must have reached the client window before it's copied */
         XFlush( gdi_display );
+    }
 
     client_surface_present( base->client );
     return TRUE;
