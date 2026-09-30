@@ -1707,6 +1707,12 @@ static HRESULT com_get_class_object(REFCLSID rclsid, DWORD clscontext,
     {
         HKEY hkey;
 
+        if ((clscontext & CLSCTX_PS_DLL) && apartment_get_ps_class_object(apt, rclsid, riid, obj, &hr))
+        {
+            apartment_release(apt);
+            return hr;
+        }
+
         hr = open_key_for_clsid(rclsid, L"InprocServer32", KEY_READ, &hkey);
         if (FAILED(hr))
         {
@@ -2172,6 +2178,29 @@ HRESULT WINAPI CoRegisterMessageFilter(IMessageFilter *filter, IMessageFilter **
     return S_OK;
 }
 
+/* Like on Windows, the proxy/stub class of an interface is read from the
+ * registry once while COM is initialized; changes or removals aren't seen until the
+ * last CoUninitialize(). */
+struct ps_clsid
+{
+    struct rb_entry entry;
+    IID iid;
+    CLSID clsid;
+};
+
+static int ps_clsid_compare(const void *key, const struct rb_entry *entry)
+{
+    return memcmp(key, &RB_ENTRY_VALUE(entry, const struct ps_clsid, entry)->iid, sizeof(IID));
+}
+
+static struct rb_tree ps_clsids = { ps_clsid_compare };
+static SRWLOCK ps_clsids_lock = SRWLOCK_INIT;
+
+static void free_ps_clsid(struct rb_entry *entry, void *context)
+{
+    free(RB_ENTRY_VALUE(entry, struct ps_clsid, entry));
+}
+
 static void com_revoke_all_ps_clsids(void)
 {
     struct registered_ps *cur, *cur2;
@@ -2185,6 +2214,11 @@ static void com_revoke_all_ps_clsids(void)
     }
 
     LeaveCriticalSection(&cs_registered_ps);
+
+    AcquireSRWLockExclusive(&ps_clsids_lock);
+    rb_destroy(&ps_clsids, free_ps_clsid, NULL);
+    ReleaseSRWLockExclusive(&ps_clsids_lock);
+    apartment_forget_ps_dlls();
 }
 
 static HRESULT get_ps_clsid_from_registry(const WCHAR* path, REGSAM access, CLSID *pclsid)
@@ -2209,6 +2243,7 @@ static HRESULT get_ps_clsid_from_registry(const WCHAR* path, REGSAM access, CLSI
     return S_OK;
 }
 
+
 /*****************************************************************************
  *             CoGetPSClsid        (combase.@)
  */
@@ -2220,6 +2255,8 @@ HRESULT WINAPI CoGetPSClsid(REFIID riid, CLSID *pclsid)
     ACTCTX_SECTION_KEYED_DATA data;
     struct registered_ps *cur;
     REGSAM opposite = (sizeof(void*) > sizeof(int)) ? KEY_WOW64_32KEY : KEY_WOW64_64KEY;
+    struct rb_entry *entry;
+    struct ps_clsid *cached;
     BOOL is_wow64;
     HRESULT hr;
 
@@ -2257,6 +2294,12 @@ HRESULT WINAPI CoGetPSClsid(REFIID riid, CLSID *pclsid)
         return S_OK;
     }
 
+    AcquireSRWLockShared(&ps_clsids_lock);
+    if ((entry = rb_get(&ps_clsids, riid)))
+        *pclsid = RB_ENTRY_VALUE(entry, struct ps_clsid, entry)->clsid;
+    ReleaseSRWLockShared(&ps_clsids_lock);
+    if (entry) return S_OK;
+
     /* Interface\\{string form of riid}\\ProxyStubClsid32 */
     lstrcpyW(path, interfaceW);
     StringFromGUID2(riid, path + ARRAY_SIZE(interfaceW) - 1, CHARS_IN_GUID);
@@ -2267,7 +2310,17 @@ HRESULT WINAPI CoGetPSClsid(REFIID riid, CLSID *pclsid)
         hr = get_ps_clsid_from_registry(path, opposite | KEY_READ, pclsid);
 
     if (hr == S_OK)
+    {
         TRACE("() Returning CLSID %s\n", debugstr_guid(pclsid));
+        AcquireSRWLockExclusive(&ps_clsids_lock);
+        if (!rb_get(&ps_clsids, riid) && (cached = malloc(sizeof(*cached))))
+        {
+            cached->iid = *riid;
+            cached->clsid = *pclsid;
+            rb_put(&ps_clsids, riid, &cached->entry);
+        }
+        ReleaseSRWLockExclusive(&ps_clsids_lock);
+    }
     else
         WARN("No PSFactoryBuffer object is registered for IID %s\n", debugstr_guid(riid));
 

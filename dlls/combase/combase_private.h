@@ -171,6 +171,8 @@ HRESULT ensure_mta(void);
 struct apartment * apartment_get_mta(void);
 HRESULT apartment_get_inproc_class_object(struct apartment *apt, const struct class_reg_data *regdata,
         REFCLSID rclsid, REFIID riid, DWORD class_context, void **ppv);
+void apartment_forget_ps_dlls(void);
+BOOL apartment_get_ps_class_object(struct apartment *apt, REFCLSID rclsid, REFIID riid, void **ppv, HRESULT *hr);
 HRESULT apartment_get_local_server_stream(struct apartment *apt, IStream **ret);
 IUnknown *com_get_registered_class_object(const struct apartment *apartment, REFCLSID rclsid,
         DWORD clscontext);

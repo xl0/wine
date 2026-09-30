@@ -116,6 +116,7 @@ static const WCHAR cf_brokenW[] = {'{','0','0','0','0','0','0','0','1','-','0','
                                     'c','0','0','0','-','0','0','0','0','0','0','0','0','0','0','4','6','}','a',0};
 
 DEFINE_GUID(IID_IWineTest, 0x5201163f, 0x8164, 0x4fd0, 0xa1, 0xa2, 0x5d, 0x5a, 0x36, 0x54, 0xd3, 0xbd);
+DEFINE_GUID(CLSID_PSDispatch, 0x00020420, 0x0000, 0x0000, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46);
 DEFINE_GUID(CLSID_WineOOPTest, 0x5201163f, 0x8164, 0x4fd0, 0xa1, 0xa2, 0x5d, 0x5a, 0x36, 0x54, 0xd3, 0xbd);
 
 static LONG cLocks;
@@ -1511,6 +1512,53 @@ static void test_CoGetPSClsid(void)
     }
     res = RegDeleteTreeA(HKEY_CURRENT_USER, "Software\\Classes\\Interface\\{5201163f-8164-4fd0-a1a2-5d5a3654d3bd}");
     ok(!res, "RegDeleteTree returned %ld\n", res);
+
+    /* the proxy/stub class and its dll are read from the registry once while COM is initialized */
+    hr = CoGetPSClsid(&IID_IWineTest, &clsid);
+    if (elevation.TokenIsElevated) ok(hr == REGDB_E_IIDNOTREG, "got %#lx\n", hr);
+    else
+    {
+        IUnknown *unk;
+
+        ok(hr == S_OK, "got %#lx\n", hr);
+        ok(clsid.Data1 == 0x00020424, "got clsid %s\n", wine_dbgstr_guid(&clsid));
+        CoUninitialize();
+        CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+        hr = CoGetPSClsid(&IID_IWineTest, &clsid);
+        ok(hr == REGDB_E_IIDNOTREG, "got %#lx\n", hr);
+
+        res = RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\Classes\\CLSID\\{00020420-0000-0000-C000-000000000046}",
+                            0, KEY_READ, &hkey);
+        if (!res)
+        {
+            skip("per-user PSDispatch registration exists\n");
+            RegCloseKey(hkey);
+        }
+        else
+        {
+            hr = CoGetClassObject(&CLSID_PSDispatch, CLSCTX_INPROC_SERVER | CLSCTX_PS_DLL, NULL, &IID_IUnknown, (void **)&unk);
+            ok(hr == S_OK, "got %#lx\n", hr);
+            IUnknown_Release(unk);
+            res = RegCreateKeyExA(HKEY_CURRENT_USER, "Software\\Classes\\CLSID\\{00020420-0000-0000-C000-000000000046}"
+                                  "\\InprocServer32", 0, NULL, 0, KEY_ALL_ACCESS, NULL, &hkey, NULL);
+            ok(!res, "RegCreateKeyEx returned %ld\n", res);
+            RegSetValueExA(hkey, NULL, 0, REG_SZ, (const BYTE *)"C:\\wine_missing.dll", 20);
+            RegCloseKey(hkey);
+            hr = CoGetClassObject(&CLSID_PSDispatch, CLSCTX_INPROC_SERVER | CLSCTX_PS_DLL, NULL, &IID_IUnknown, (void **)&unk);
+            ok(hr == S_OK, "got %#lx\n", hr);
+            if (hr == S_OK) IUnknown_Release(unk);
+            hr = CoGetClassObject(&CLSID_PSDispatch, CLSCTX_INPROC_SERVER, NULL, &IID_IUnknown, (void **)&unk);
+            todo_wine ok(hr == S_OK, "got %#lx\n", hr);
+            if (hr == S_OK) IUnknown_Release(unk);
+            CoUninitialize();
+            CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+            hr = CoGetClassObject(&CLSID_PSDispatch, CLSCTX_INPROC_SERVER | CLSCTX_PS_DLL, NULL, &IID_IUnknown, (void **)&unk);
+            ok(FAILED(hr), "got %#lx\n", hr);
+            if (hr == S_OK) IUnknown_Release(unk);
+            res = RegDeleteTreeA(HKEY_CURRENT_USER, "Software\\Classes\\CLSID\\{00020420-0000-0000-C000-000000000046}");
+            ok(!res, "RegDeleteTree returned %ld\n", res);
+        }
+    }
 
     hr = CoGetPSClsid(&IID_IClassFactory, NULL);
     ok(hr == E_INVALIDARG,

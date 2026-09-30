@@ -757,6 +757,49 @@ static BOOL get_object_dll_path(const struct class_reg_data *regdata, WCHAR *dst
     }
 }
 
+/* Like on Windows, the dll of a proxy/stub class is looked up in the registry once,
+ * the registration isn't read again until the last CoUninitialize(). */
+struct ps_dll
+{
+    struct rb_entry entry;
+    CLSID clsid;
+    WCHAR path[MAX_PATH + 1];
+};
+
+static int ps_dll_compare(const void *key, const struct rb_entry *entry)
+{
+    return memcmp(key, &RB_ENTRY_VALUE(entry, const struct ps_dll, entry)->clsid, sizeof(CLSID));
+}
+
+static struct rb_tree ps_dlls = { ps_dll_compare };
+static SRWLOCK ps_dlls_lock = SRWLOCK_INIT;
+
+static void add_ps_dll(REFCLSID clsid, const WCHAR *path)
+{
+    struct ps_dll *dll;
+
+    AcquireSRWLockExclusive(&ps_dlls_lock);
+    if (!rb_get(&ps_dlls, clsid) && (dll = malloc(sizeof(*dll))))
+    {
+        dll->clsid = *clsid;
+        lstrcpynW(dll->path, path, ARRAY_SIZE(dll->path));
+        rb_put(&ps_dlls, clsid, &dll->entry);
+    }
+    ReleaseSRWLockExclusive(&ps_dlls_lock);
+}
+
+static void free_ps_dll(struct rb_entry *entry, void *context)
+{
+    free(RB_ENTRY_VALUE(entry, struct ps_dll, entry));
+}
+
+void apartment_forget_ps_dlls(void)
+{
+    AcquireSRWLockExclusive(&ps_dlls_lock);
+    rb_destroy(&ps_dlls, free_ps_dll, NULL);
+    ReleaseSRWLockExclusive(&ps_dlls_lock);
+}
+
 /* gets the specified class object by loading the appropriate DLL, if
  * necessary and calls the DllGetClassObject function for the DLL */
 static HRESULT apartment_getclassobject(struct apartment *apt, LPCWSTR dllpath,
@@ -1035,6 +1078,7 @@ HRESULT apartment_get_inproc_class_object(struct apartment *apt, const struct cl
 {
     WCHAR dllpath[MAX_PATH+1];
     BOOL apartment_threaded;
+    HRESULT hr;
 
     if (!(class_context & CLSCTX_PS_DLL))
     {
@@ -1076,7 +1120,26 @@ HRESULT apartment_get_inproc_class_object(struct apartment *apt, const struct cl
         return REGDB_E_CLASSNOTREG;
     }
 
-    return apartment_getclassobject(apt, dllpath, apartment_threaded, rclsid, riid, ppv);
+    hr = apartment_getclassobject(apt, dllpath, apartment_threaded, rclsid, riid, ppv);
+    if (SUCCEEDED(hr) && (class_context & CLSCTX_PS_DLL) && regdata->origin == CLASS_REG_REGISTRY)
+        add_ps_dll(rclsid, dllpath);
+    return hr;
+}
+
+/* get the class object of a proxy/stub class that was loaded before from its registration */
+BOOL apartment_get_ps_class_object(struct apartment *apt, REFCLSID rclsid, REFIID riid, void **ppv, HRESULT *hr)
+{
+    WCHAR dllpath[MAX_PATH + 1];
+    struct rb_entry *entry;
+
+    AcquireSRWLockShared(&ps_dlls_lock);
+    if ((entry = rb_get(&ps_dlls, rclsid)))
+        lstrcpyW(dllpath, RB_ENTRY_VALUE(entry, struct ps_dll, entry)->path);
+    ReleaseSRWLockShared(&ps_dlls_lock);
+    if (!entry) return FALSE;
+
+    *hr = apartment_getclassobject(apt, dllpath, !apt->multi_threaded, rclsid, riid, ppv);
+    return TRUE;
 }
 
 static HRESULT apartment_hostobject(struct apartment *apt, const struct host_object_params *params)
