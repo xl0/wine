@@ -3619,6 +3619,7 @@ static void wined3d_cs_exec_execute_command_list(struct wined3d_cs *cs, const vo
 
 static DWORD WINAPI wined3d_cs_run(void *ctx)
 {
+    static const BOOLEAN high_res = TRUE;
     struct wined3d_cs_queue *queue;
     unsigned int spin_count = 0;
     struct wined3d_cs *cs = ctx;
@@ -3628,6 +3629,8 @@ static DWORD WINAPI wined3d_cs_run(void *ctx)
 
     TRACE("Started.\n");
     SetThreadDescription(GetCurrentThread(), L"wined3d_cs");
+    /* the command stream thread does the driver's job, queries are polled on time */
+    NtSetInformationThread(GetCurrentThread(), ThreadWineHighResolutionTimers, &high_res, sizeof(high_res));
 
     /* Copy the module handle to a local variable to avoid racing with the
      * thread freeing "cs" before the FreeLibraryAndExitThread() call. */
