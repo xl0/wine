@@ -53,6 +53,7 @@ typedef struct _RpcPacket
   RPC_MESSAGE* msg;
   unsigned char *auth_data;
   ULONG auth_length;
+  RPC_SYNTAX_IDENTIFIER if_id; /* interface of the request's presentation context */
 } RpcPacket;
 
 typedef struct _RpcObjTypeMap
@@ -202,11 +203,40 @@ static RpcPktHdr *handle_bind_error(RpcConnection *conn, RPC_STATUS error)
                                       reject_reason);
 }
 
+static struct rpc_context *find_context(RpcConnection *conn, USHORT id)
+{
+  unsigned int i;
+
+  for (i = 0; i < conn->context_count; i++)
+    if (conn->contexts[i].id == id) return &conn->contexts[i];
+  return NULL;
+}
+
+/* adds or redefines a presentation context of the connection */
+static RPC_STATUS add_context(RpcConnection *conn, USHORT id, const RPC_SYNTAX_IDENTIFIER *syntax)
+{
+  struct rpc_context *context = find_context(conn, id);
+
+  if (!context)
+  {
+    if (conn->context_count >= RPC_MAX_CONTEXTS ||
+        !(context = realloc(conn->contexts, (conn->context_count + 1) * sizeof(*context))))
+      return RPC_S_OUT_OF_RESOURCES;
+    conn->contexts = context;
+    context += conn->context_count++;
+    context->id = id;
+  }
+  context->syntax = *syntax;
+  return RPC_S_OK;
+}
+
+/* handles bind and alter_context packets */
 static RPC_STATUS process_bind_packet_no_send(
     RpcConnection *conn, RpcPktBindHdr *hdr, RPC_MESSAGE *msg,
     unsigned char *auth_data, ULONG auth_length, RpcPktHdr **ack_response,
     unsigned char **auth_data_out, ULONG *auth_length_out)
 {
+  BOOL alter = hdr->common.ptype == PKT_ALTER_CONTEXT;
   RPC_STATUS status;
   RpcContextElement *ctxt_elem;
   unsigned int i;
@@ -226,11 +256,18 @@ static RPC_STATUS process_bind_packet_no_send(
       }
   }
 
-  if (hdr->max_tsize < RPC_MIN_PACKET_SIZE ||
-      !UuidIsNil(&conn->ActiveInterface.SyntaxGUID, &status) ||
-      conn->server_binding)
+  if (alter)
   {
-    TRACE("packet size less than min size, or active interface syntax guid non-null\n");
+    /* FIXME: alter_context on authenticated connections is not supported */
+    if (!conn->server_binding || auth_length)
+    {
+      WARN("alter_context on an unbound or authenticated connection\n");
+      return RPC_S_PROTOCOL_ERROR;
+    }
+  }
+  else if (hdr->max_tsize < RPC_MIN_PACKET_SIZE || conn->server_binding)
+  {
+    TRACE("packet size less than min size, or connection already bound\n");
 
     return RPC_S_INVALID_BOUND;
   }
@@ -262,9 +299,11 @@ static RPC_STATUS process_bind_packet_no_send(
           results[i].reason = REASON_NONE;
           results[i].transfer_syntax = ctxt_elem->transfer_syntaxes[j];
 
-          /* save the interface for later use */
-          /* FIXME: save linked list */
-          conn->ActiveInterface = ctxt_elem->abstract_syntax;
+          if ((status = add_context(conn, ctxt_elem->context_id, &ctxt_elem->abstract_syntax)) != RPC_S_OK)
+          {
+              free(results);
+              return status;
+          }
       }
       else if ((sif = RPCRT4_find_interface(NULL, &ctxt_elem->abstract_syntax,
                                             NULL, FALSE)) != NULL)
@@ -284,6 +323,18 @@ static RPC_STATUS process_bind_packet_no_send(
           results[i].reason = REASON_ABSTRACT_SYNTAX_NOT_SUPPORTED;
           memset(&results[i].transfer_syntax, 0, sizeof(results[i].transfer_syntax));
       }
+  }
+
+  if (alter)
+  {
+      *ack_response = RPCRT4_BuildBindAckHeader(NDR_LOCAL_DATA_REPRESENTATION,
+                                                PKT_ALTER_CONTEXT_RESP,
+                                                RPC_MAX_PACKET_SIZE,
+                                                RPC_MAX_PACKET_SIZE,
+                                                conn->server_binding->Assoc->assoc_group_id,
+                                                NULL, hdr->num_elements, results);
+      free(results);
+      return *ack_response ? RPC_S_OK : RPC_S_OUT_OF_RESOURCES;
   }
 
   /* create temporary binding */
@@ -319,6 +370,7 @@ static RPC_STATUS process_bind_packet_no_send(
   }
 
   *ack_response = RPCRT4_BuildBindAckHeader(NDR_LOCAL_DATA_REPRESENTATION,
+                                            PKT_BIND_ACK,
                                             RPC_MAX_PACKET_SIZE,
                                             RPC_MAX_PACKET_SIZE,
                                             conn->server_binding->Assoc->assoc_group_id,
@@ -339,6 +391,7 @@ static RPC_STATUS process_bind_packet(RpcConnection *conn, RpcPktBindHdr *hdr,
                                       unsigned char *auth_data,
                                       ULONG auth_length)
 {
+    BOOL bound = conn->server_binding != NULL;
     RPC_STATUS status;
     RpcPktHdr *response = NULL;
     unsigned char *auth_data_out = NULL;
@@ -347,8 +400,19 @@ static RPC_STATUS process_bind_packet(RpcConnection *conn, RpcPktBindHdr *hdr,
     status = process_bind_packet_no_send(conn, hdr, msg, auth_data, auth_length,
                                          &response, &auth_data_out,
                                          &auth_length_out);
-    if (status != RPC_S_OK)
+    if (status != RPC_S_OK && hdr->common.ptype == PKT_ALTER_CONTEXT)
+        response = RPCRT4_BuildFaultHeader(NDR_LOCAL_DATA_REPRESENTATION, RPC2NCA_STATUS(status));
+    else if (status != RPC_S_OK)
+    {
+        /* a failed bind leaves the connection unbound */
+        if (!bound)
+        {
+            if (conn->server_binding) RPCRT4_ReleaseBinding(conn->server_binding);
+            conn->server_binding = NULL;
+            conn->context_count = 0;
+        }
         response = handle_bind_error(conn, status);
+    }
     if (response)
         status = RPCRT4_SendWithAuth(conn, response, NULL, 0, auth_data_out, auth_length_out);
     else
@@ -359,7 +423,8 @@ static RPC_STATUS process_bind_packet(RpcConnection *conn, RpcPktBindHdr *hdr,
 }
 
 
-static RPC_STATUS process_request_packet(RpcConnection *conn, RpcPktRequestHdr *hdr, RPC_MESSAGE *msg)
+static RPC_STATUS process_request_packet(RpcConnection *conn, RpcPktRequestHdr *hdr, RPC_MESSAGE *msg,
+                                         RPC_SYNTAX_IDENTIFIER *if_id)
 {
   RPC_STATUS status;
   RpcPktHdr *response = NULL;
@@ -370,11 +435,10 @@ static RPC_STATUS process_request_packet(RpcConnection *conn, RpcPktRequestHdr *
   NDR_SCONTEXT context_handle;
   void *buf = msg->Buffer;
 
-  /* fail if the connection isn't bound with an interface */
-  if (UuidIsNil(&conn->ActiveInterface.SyntaxGUID, &status)) {
-    /* FIXME: should send BindNack instead */
+  /* fail if the request's presentation context isn't bound */
+  if (UuidIsNil(&if_id->SyntaxGUID, &status)) {
     response = RPCRT4_BuildFaultHeader(NDR_LOCAL_DATA_REPRESENTATION,
-                                       status);
+                                       NCA_S_UNK_IF);
 
     RPCRT4_Send(conn, response, NULL, 0);
     free(response);
@@ -387,9 +451,9 @@ static RPC_STATUS process_request_packet(RpcConnection *conn, RpcPktRequestHdr *
     object_uuid = NULL;
   }
 
-  sif = RPCRT4_find_interface(object_uuid, &conn->ActiveInterface, NULL, TRUE);
+  sif = RPCRT4_find_interface(object_uuid, if_id, NULL, TRUE);
   if (!sif) {
-    WARN("interface %s no longer registered, returning fault packet\n", debugstr_guid(&conn->ActiveInterface.SyntaxGUID));
+    WARN("interface %s no longer registered, returning fault packet\n", debugstr_guid(&if_id->SyntaxGUID));
     response = RPCRT4_BuildFaultHeader(NDR_LOCAL_DATA_REPRESENTATION,
                                        NCA_S_UNK_IF);
 
@@ -478,17 +542,9 @@ static RPC_STATUS process_auth3_packet(RpcConnection *conn,
                                        unsigned char *auth_data,
                                        ULONG auth_length)
 {
-    RPC_STATUS status;
-
-    if (UuidIsNil(&conn->ActiveInterface.SyntaxGUID, &status) ||
-        !auth_length || msg->BufferLength != 0)
-        status = RPC_S_PROTOCOL_ERROR;
-    else
-    {
-        status = RPCRT4_ServerConnectionAuth(conn, FALSE,
-                                             (RpcAuthVerifier *)auth_data,
-                                             auth_length, NULL, NULL);
-    }
+    if (conn->context_count && auth_length && msg->BufferLength == 0)
+        RPCRT4_ServerConnectionAuth(conn, FALSE, (RpcAuthVerifier *)auth_data,
+                                    auth_length, NULL, NULL);
 
     /* FIXME: client doesn't expect a response to this message so must store
      * status in connection so that fault packet can be returned when next
@@ -499,7 +555,7 @@ static RPC_STATUS process_auth3_packet(RpcConnection *conn,
 
 static void RPCRT4_process_packet(RpcConnection* conn, RpcPktHdr* hdr,
                                   RPC_MESSAGE* msg, unsigned char *auth_data,
-                                  ULONG auth_length)
+                                  ULONG auth_length, RPC_SYNTAX_IDENTIFIER *if_id)
 {
   msg->Handle = (RPC_BINDING_HANDLE)conn->server_binding;
 
@@ -511,7 +567,7 @@ static void RPCRT4_process_packet(RpcConnection* conn, RpcPktHdr* hdr,
 
     case PKT_REQUEST:
       TRACE("got request packet\n");
-      process_request_packet(conn, &hdr->request, msg);
+      process_request_packet(conn, &hdr->request, msg, if_id);
       break;
 
     case PKT_AUTH3:
@@ -534,7 +590,7 @@ static DWORD CALLBACK RPCRT4_worker_thread(LPVOID the_arg)
 {
   RpcPacket *pkt = the_arg;
   RPCRT4_process_packet(pkt->conn, pkt->hdr, pkt->msg, pkt->auth_data,
-                        pkt->auth_length);
+                        pkt->auth_length, &pkt->if_id);
   RPCRT4_ReleaseConnection(pkt->conn);
   free(pkt);
   return 0;
@@ -547,6 +603,7 @@ static DWORD CALLBACK RPCRT4_io_thread(LPVOID the_arg)
   RPC_MESSAGE *msg;
   RPC_STATUS status;
   RpcPacket *packet;
+  struct rpc_context *context;
   unsigned char *auth_data;
   ULONG auth_length;
 
@@ -566,6 +623,7 @@ static DWORD CALLBACK RPCRT4_io_thread(LPVOID the_arg)
 
     switch (hdr->common.ptype) {
     case PKT_BIND:
+    case PKT_ALTER_CONTEXT:
       TRACE("got bind packet\n");
 
       status = process_bind_packet(conn, &hdr->bind, msg, auth_data,
@@ -575,7 +633,7 @@ static DWORD CALLBACK RPCRT4_io_thread(LPVOID the_arg)
     case PKT_REQUEST:
       TRACE("got request packet\n");
 
-      packet = malloc(sizeof(RpcPacket));
+      packet = calloc(1, sizeof(RpcPacket));
       if (!packet) {
         I_RpcFree(msg->Buffer);
         free(hdr);
@@ -588,6 +646,9 @@ static DWORD CALLBACK RPCRT4_io_thread(LPVOID the_arg)
       packet->msg = msg;
       packet->auth_data = auth_data;
       packet->auth_length = auth_length;
+      /* contexts can change while the request is processed, look it up now */
+      if ((context = find_context(conn, hdr->request.context_id)))
+        packet->if_id = context->syntax;
       if (!QueueUserWorkItem(RPCRT4_worker_thread, packet, WT_EXECUTELONGFUNCTION)) {
         ERR("couldn't queue work item for worker thread, error was %ld\n", GetLastError());
         free(packet);

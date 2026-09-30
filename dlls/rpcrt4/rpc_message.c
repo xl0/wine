@@ -61,7 +61,7 @@ DWORD RPCRT4_GetHeaderSize(const RpcPktHdr *Header)
     sizeof(Header->request), 0, sizeof(Header->response),
     sizeof(Header->fault), 0, 0, 0, 0, 0, 0, 0, sizeof(Header->bind),
     sizeof(Header->bind_ack), sizeof(Header->bind_nack),
-    0, 0, sizeof(Header->auth3), 0, 0, 0, sizeof(Header->http)
+    sizeof(Header->bind), sizeof(Header->bind_ack), sizeof(Header->auth3), 0, 0, 0, sizeof(Header->http)
   };
   ULONG ret = 0;
 
@@ -250,6 +250,7 @@ RpcPktHdr *RPCRT4_BuildBindNackHeader(ULONG DataRepresentation,
 }
 
 RpcPktHdr *RPCRT4_BuildBindAckHeader(ULONG DataRepresentation,
+                                     unsigned char PacketType,
                                      unsigned short MaxTransmissionSize,
                                      unsigned short MaxReceiveSize,
                                      ULONG AssocGroupId,
@@ -261,9 +262,10 @@ RpcPktHdr *RPCRT4_BuildBindAckHeader(ULONG DataRepresentation,
   ULONG header_size;
   RpcAddressString *server_address;
   RpcResultList *results;
+  unsigned short address_length = ServerAddress ? strlen(ServerAddress) + 1 : 0;
 
   header_size = sizeof(header->bind_ack) +
-                ROUND_UP(FIELD_OFFSET(RpcAddressString, string[strlen(ServerAddress) + 1]), 4) +
+                ROUND_UP(FIELD_OFFSET(RpcAddressString, string[address_length]), 4) +
                 FIELD_OFFSET(RpcResultList, results[ResultCount]);
 
   header = calloc(1, header_size);
@@ -271,14 +273,14 @@ RpcPktHdr *RPCRT4_BuildBindAckHeader(ULONG DataRepresentation,
     return NULL;
   }
 
-  RPCRT4_BuildCommonHeader(&header->common, PKT_BIND_ACK, DataRepresentation);
+  RPCRT4_BuildCommonHeader(&header->common, PacketType, DataRepresentation);
   header->common.frag_len = header_size;
   header->bind_ack.max_tsize = MaxTransmissionSize;
   header->bind_ack.max_rsize = MaxReceiveSize;
   header->bind_ack.assoc_gid = AssocGroupId;
   server_address = (RpcAddressString*)(&header->bind_ack + 1);
-  server_address->length = strlen(ServerAddress) + 1;
-  strcpy(server_address->string, ServerAddress);
+  server_address->length = address_length;
+  memcpy(server_address->string, ServerAddress, address_length);
   /* results is 4-byte aligned */
   results = (RpcResultList*)((ULONG_PTR)server_address + ROUND_UP(FIELD_OFFSET(RpcAddressString, string[server_address->length]), 4));
   results->num_results = ResultCount;

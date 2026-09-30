@@ -3399,6 +3399,7 @@ void RPCRT4_ReleaseConnection(RpcConnection *connection)
         free(connection->NetworkAddr);
         free(connection->NetworkOptions);
         free(connection->CookieAuth);
+        free(connection->contexts);
         if (connection->AuthInfo) RpcAuthInfo_Release(connection->AuthInfo);
         if (connection->QOS) RpcQualityOfService_Release(connection->QOS);
 

@@ -59,6 +59,15 @@ typedef struct _RpcQualityOfService
 
 struct connection_ops;
 
+#define RPC_MAX_CONTEXTS 256 /* per connection */
+
+/* presentation context: an interface bound on a connection */
+struct rpc_context
+{
+  USHORT id;
+  RPC_SYNTAX_IDENTIFIER syntax;
+};
+
 typedef struct _RpcConnection
 {
   LONG ref;
@@ -81,15 +90,18 @@ typedef struct _RpcConnection
   RpcQualityOfService *QOS;
   LPWSTR CookieAuth;
 
+  /* bound presentation contexts */
+  struct rpc_context *contexts;
+  unsigned int context_count;
+
   /* client-only */
   struct list conn_pool_entry;
   ULONG assoc_group_id; /* association group returned during binding */
   RPC_ASYNC_STATE *async_state;
   struct _RpcAssoc *assoc; /* association this connection is part of */
+  RPC_SYNTAX_IDENTIFIER ActiveInterface; /* interface bound to the connection */
 
   /* server-only */
-  /* The active interface bound to server. */
-  RPC_SYNTAX_IDENTIFIER ActiveInterface;
   USHORT NextCallId;
   struct list protseq_entry;
   struct _RpcServerProtseq *protseq;
