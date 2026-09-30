@@ -5095,11 +5095,14 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
 {
     static void *handler;
     LARGE_INTEGER count;
+    ULONG res;
 
     switch(reason)
     {
     case DLL_PROCESS_ATTACH:
         DisableThreadLibraryCalls( inst );
+        /* kernel waits and timers are not bound to the timer resolution of a process */
+        NtSetTimerResolution( 10000, TRUE, &res );
 #if defined(__i386__) || defined(__x86_64__)
         handler = RtlAddVectoredExceptionHandler( TRUE, vectored_handler );
 #endif
