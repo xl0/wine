@@ -1958,6 +1958,7 @@ static VkResult win32u_vkQueuePresentKHR( VkQueue client_queue, const VkPresentI
     VkSwapchainKHR swapchains_buffer[16], *swapchains = swapchains_buffer;
     struct vulkan_device *device = queue->device;
     const VkSwapchainKHR *client_swapchains;
+    BOOL offscreen = FALSE;
     VkResult res;
 
     TRACE( "queue %p, present_info %p\n", queue, present_info );
@@ -1987,9 +1988,12 @@ static VkResult win32u_vkQueuePresentKHR( VkQueue client_queue, const VkPresentI
         struct swapchain *swapchain = swapchain_from_handle( client_swapchains[i] );
         struct surface *surface = swapchain->surface;
         client_surface_update( surface->client );
+        offscreen |= surface->client->offscreen;
     }
 
     res = device->p_vkQueuePresentKHR( queue->host.queue, present_info );
+    /* offscreen surfaces are copied from their host window below, wait for the presents to reach it */
+    if (offscreen) device->p_vkQueueWaitIdle( queue->host.queue );
 
     for (uint32_t i = 0; i < present_info->swapchainCount; i++)
     {
