@@ -37,11 +37,11 @@
 @ stdcall AllocateUserPhysicalPages(long ptr ptr)
 @ stdcall AllocateUserPhysicalPagesNuma(long ptr ptr long)
 # @ stub AppContainerDeriveSidFromMoniker
-# @ stub AppContainerFreeMemory
+@ stdcall AppContainerFreeMemory(ptr)
 # @ stub AppContainerLookupDisplayNameMrtReference
-# @ stub AppContainerLookupMoniker
-# @ stub AppContainerRegisterSid
-# @ stub AppContainerUnregisterSid
+@ stdcall AppContainerLookupMoniker(ptr ptr)
+@ stdcall AppContainerRegisterSid(ptr wstr wstr)
+@ stdcall AppContainerUnregisterSid(ptr)
 # @ stub AppPolicyGetClrCompat
 # @ stub AppPolicyGetCreateFileAccess
 # @ stub AppPolicyGetLifecycleManagement

@@ -25,10 +25,16 @@
 #include <winbase.h>
 #include <winerror.h>
 #include <winternl.h>
+#include <winreg.h>
 
 #include "wine/test.h"
 
 static BOOL (WINAPI *pDeriveCapabilitySidsFromName)(const WCHAR *, PSID **, DWORD *, PSID **, DWORD *);
+
+static HRESULT (WINAPI *pAppContainerRegisterSid)(PSID, const WCHAR *, const WCHAR *);
+static HRESULT (WINAPI *pAppContainerUnregisterSid)(PSID);
+static HRESULT (WINAPI *pAppContainerLookupMoniker)(PSID, WCHAR **);
+static void (WINAPI *pAppContainerFreeMemory)(void *);
 
 static NTSTATUS (WINAPI *pRtlDeriveCapabilitySidsFromName)(UNICODE_STRING *, PSID, PSID);
 static BOOL (WINAPI *pCreateAppContainerToken)(HANDLE, SECURITY_CAPABILITIES *, HANDLE *);
@@ -207,6 +213,93 @@ static void test_CreateAppContainerToken(void)
     FreeSid(capability_sid);
 }
 
+static void test_AppContainerRegisterSid(void)
+{
+    static const WCHAR mappings[] = L"Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows"
+                                    L"\\CurrentVersion\\AppContainer\\Mappings\\"
+                                    L"S-1-15-2-1-2-3-4-5-6-2166136261";
+    SID_IDENTIFIER_AUTHORITY app_authority = {SECURITY_APP_PACKAGE_AUTHORITY}, nt_authority = {SECURITY_NT_AUTHORITY};
+    PSID sid, system_sid;
+    WCHAR *moniker, buffer[64];
+    DWORD size;
+    HRESULT hr;
+    LSTATUS ret;
+    HKEY key;
+
+    if (!pAppContainerRegisterSid)
+    {
+        win_skip("AppContainerRegisterSid is not available.\n");
+        return;
+    }
+
+    AllocateAndInitializeSid(&app_authority, SECURITY_APP_PACKAGE_RID_COUNT, SECURITY_APP_PACKAGE_BASE_RID,
+                             1, 2, 3, 4, 5, 6, 2166136261, &sid);
+    AllocateAndInitializeSid(&nt_authority, 1, SECURITY_LOCAL_SYSTEM_RID, 0, 0, 0, 0, 0, 0, 0, &system_sid);
+    pAppContainerUnregisterSid(sid);
+
+    moniker = (WCHAR *)0xdeadbeef;
+    hr = pAppContainerLookupMoniker(sid, &moniker);
+    ok(hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND), "got %#lx.\n", hr);
+    ok(moniker == (WCHAR *)0xdeadbeef, "got %p.\n", moniker);
+
+    hr = pAppContainerRegisterSid(sid, L"Wine.Test.Moniker", L"display");
+    ok(hr == S_OK, "got %#lx.\n", hr);
+
+    ret = RegOpenKeyExW(HKEY_CURRENT_USER, mappings, 0, KEY_READ, &key);
+    ok(!ret, "got %ld.\n", ret);
+    size = sizeof(buffer);
+    ret = RegGetValueW(key, NULL, L"Moniker", RRF_RT_REG_SZ, NULL, buffer, &size);
+    ok(!ret && !wcscmp(buffer, L"Wine.Test.Moniker"), "got %ld, %s.\n", ret, debugstr_w(buffer));
+    size = sizeof(buffer);
+    ret = RegGetValueW(key, NULL, L"DisplayName", RRF_RT_REG_SZ, NULL, buffer, &size);
+    ok(!ret && !wcscmp(buffer, L"display"), "got %ld, %s.\n", ret, debugstr_w(buffer));
+    RegCloseKey(key);
+
+    hr = pAppContainerLookupMoniker(sid, &moniker);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+    ok(!wcscmp(moniker, L"Wine.Test.Moniker"), "got %s.\n", debugstr_w(moniker));
+    pAppContainerFreeMemory(moniker);
+
+    /* The display name of an existing mapping is updated, the moniker is not. */
+    hr = pAppContainerRegisterSid(sid, L"other", L"display2");
+    ok(hr == HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS), "got %#lx.\n", hr);
+    size = sizeof(buffer);
+    ret = RegGetValueW(HKEY_CURRENT_USER, mappings, L"DisplayName", RRF_RT_REG_SZ, NULL, buffer, &size);
+    ok(!ret && !wcscmp(buffer, L"display2"), "got %ld, %s.\n", ret, debugstr_w(buffer));
+    hr = pAppContainerLookupMoniker(sid, &moniker);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+    ok(!wcscmp(moniker, L"Wine.Test.Moniker"), "got %s.\n", debugstr_w(moniker));
+    pAppContainerFreeMemory(moniker);
+
+    hr = pAppContainerUnregisterSid(sid);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+    ret = RegOpenKeyExW(HKEY_CURRENT_USER, mappings, 0, KEY_READ, &key);
+    ok(ret == ERROR_FILE_NOT_FOUND, "got %ld.\n", ret);
+    hr = pAppContainerUnregisterSid(sid);
+    ok(hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND), "got %#lx.\n", hr);
+    hr = pAppContainerLookupMoniker(sid, &moniker);
+    ok(hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND), "got %#lx.\n", hr);
+
+    hr = pAppContainerLookupMoniker(system_sid, &moniker);
+    ok(hr == HRESULT_FROM_WIN32(ERROR_NOT_APPCONTAINER), "got %#lx.\n", hr);
+
+    hr = pAppContainerRegisterSid(NULL, L"a", L"a");
+    ok(hr == E_INVALIDARG, "got %#lx.\n", hr);
+    hr = pAppContainerRegisterSid(sid, NULL, L"a");
+    ok(hr == E_INVALIDARG, "got %#lx.\n", hr);
+    hr = pAppContainerRegisterSid(sid, L"", L"a");
+    ok(hr == E_INVALIDARG, "got %#lx.\n", hr);
+    hr = pAppContainerRegisterSid(sid, L"a", NULL);
+    ok(hr == E_INVALIDARG, "got %#lx.\n", hr);
+    hr = pAppContainerUnregisterSid(NULL);
+    ok(hr == E_INVALIDARG, "got %#lx.\n", hr);
+    hr = pAppContainerLookupMoniker(NULL, &moniker);
+    ok(hr == E_INVALIDARG, "got %#lx.\n", hr);
+
+    FreeSid(sid);
+    FreeSid(system_sid);
+}
+
 START_TEST(security)
 {
     HMODULE hmod;
@@ -214,6 +307,10 @@ START_TEST(security)
     hmod = LoadLibraryA("kernelbase.dll");
     pDeriveCapabilitySidsFromName = (void *)GetProcAddress(hmod, "DeriveCapabilitySidsFromName");
     pCreateAppContainerToken = (void *)GetProcAddress(hmod, "CreateAppContainerToken");
+    pAppContainerRegisterSid = (void *)GetProcAddress(hmod, "AppContainerRegisterSid");
+    pAppContainerUnregisterSid = (void *)GetProcAddress(hmod, "AppContainerUnregisterSid");
+    pAppContainerLookupMoniker = (void *)GetProcAddress(hmod, "AppContainerLookupMoniker");
+    pAppContainerFreeMemory = (void *)GetProcAddress(hmod, "AppContainerFreeMemory");
 
     hmod = LoadLibraryA("ntdll.dll");
     pRtlDeriveCapabilitySidsFromName = (void *)GetProcAddress(hmod, "RtlDeriveCapabilitySidsFromName");
@@ -221,4 +318,5 @@ START_TEST(security)
 
     test_DeriveCapabilitySidsFromName();
     test_CreateAppContainerToken();
+    test_AppContainerRegisterSid();
 }

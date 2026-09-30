@@ -26,6 +26,7 @@
 #include "windef.h"
 #include "winbase.h"
 #include "winerror.h"
+#include "winreg.h"
 #include "winternl.h"
 #include "winioctl.h"
 #include "ddk/ntddk.h"
@@ -628,6 +629,105 @@ BOOL WINAPI CreateAppContainerToken( HANDLE token, SECURITY_CAPABILITIES *caps, 
     if (!token) token = GetCurrentProcessToken();
     return set_ntstatus( NtCreateLowBoxToken( ret, token, TOKEN_ALL_ACCESS, NULL, caps->AppContainerSid,
                                               caps->CapabilityCount, caps->Capabilities, 0, NULL ));
+}
+
+static LSTATUS open_app_container_mapping( PSID sid, BOOL create, HKEY *key, DWORD *disposition )
+{
+    static const WCHAR mappingsW[] = L"Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows"
+                                     L"\\CurrentVersion\\AppContainer\\Mappings\\";
+    WCHAR path[ARRAY_SIZE(mappingsW) + 256];
+    UNICODE_STRING str;
+    NTSTATUS status;
+
+    wcscpy( path, mappingsW );
+    str.Buffer = path + ARRAY_SIZE(mappingsW) - 1;
+    str.MaximumLength = sizeof(path) - ARRAY_SIZE(mappingsW) * sizeof(WCHAR);
+    if ((status = RtlConvertSidToUnicodeString( &str, sid, FALSE ))) return RtlNtStatusToDosError( status );
+    str.Buffer[str.Length / sizeof(WCHAR)] = 0;
+
+    if (create)
+        return RegCreateKeyExW( HKEY_CURRENT_USER, path, 0, NULL, 0, KEY_ALL_ACCESS, NULL, key, disposition );
+    return RegOpenKeyExW( HKEY_CURRENT_USER, path, 0, KEY_ALL_ACCESS, key );
+}
+
+/*************************************************************************
+ * AppContainerRegisterSid    (kernelbase.@)
+ */
+HRESULT WINAPI AppContainerRegisterSid( PSID sid, const WCHAR *moniker, const WCHAR *display_name )
+{
+    DWORD disposition;
+    LSTATUS ret;
+    HKEY key, children;
+
+    TRACE( "sid %s, moniker %s, display_name %s\n", debugstr_sid( sid ), debugstr_w( moniker ),
+           debugstr_w( display_name ));
+
+    if (!sid || !moniker || !moniker[0] || !display_name) return E_INVALIDARG;
+
+    if ((ret = open_app_container_mapping( sid, TRUE, &key, &disposition ))) return HRESULT_FROM_WIN32( ret );
+    /* Windows updates the display name of an existing mapping, but not its moniker. */
+    ret = RegSetValueExW( key, L"DisplayName", 0, REG_SZ, (const BYTE *)display_name,
+                          (wcslen( display_name ) + 1) * sizeof(WCHAR) );
+    if (!ret && disposition == REG_OPENED_EXISTING_KEY) ret = ERROR_ALREADY_EXISTS;
+    if (!ret) ret = RegSetValueExW( key, L"Moniker", 0, REG_SZ, (const BYTE *)moniker,
+                                    (wcslen( moniker ) + 1) * sizeof(WCHAR) );
+    if (!ret && !(ret = RegCreateKeyExW( key, L"Children", 0, NULL, 0, KEY_ALL_ACCESS, NULL, &children, NULL )))
+        RegCloseKey( children );
+    RegCloseKey( key );
+    return HRESULT_FROM_WIN32( ret );
+}
+
+/*************************************************************************
+ * AppContainerUnregisterSid    (kernelbase.@)
+ */
+HRESULT WINAPI AppContainerUnregisterSid( PSID sid )
+{
+    LSTATUS ret;
+    HKEY key;
+
+    TRACE( "sid %s\n", debugstr_sid( sid ));
+
+    if (!sid) return E_INVALIDARG;
+    if ((ret = open_app_container_mapping( sid, FALSE, &key, NULL ))) return HRESULT_FROM_WIN32( ret );
+    if (!(ret = RegDeleteTreeW( key, NULL ))) ret = RtlNtStatusToDosError( NtDeleteKey( key ));
+    RegCloseKey( key );
+    return HRESULT_FROM_WIN32( ret );
+}
+
+/*************************************************************************
+ * AppContainerLookupMoniker    (kernelbase.@)
+ */
+HRESULT WINAPI AppContainerLookupMoniker( PSID sid, WCHAR **moniker )
+{
+    static const SID_IDENTIFIER_AUTHORITY app_package_authority = {SECURITY_APP_PACKAGE_AUTHORITY};
+    DWORD size = 0;
+    LSTATUS ret;
+    HKEY key;
+
+    TRACE( "sid %s, moniker %p\n", debugstr_sid( sid ), moniker );
+
+    if (!sid || !moniker) return E_INVALIDARG;
+    if (memcmp( GetSidIdentifierAuthority( sid ), &app_package_authority, sizeof(app_package_authority) )
+        || !*GetSidSubAuthorityCount( sid ) || *GetSidSubAuthority( sid, 0 ) != SECURITY_APP_PACKAGE_BASE_RID)
+        return HRESULT_FROM_WIN32( ERROR_NOT_APPCONTAINER );
+
+    if ((ret = open_app_container_mapping( sid, FALSE, &key, NULL ))) return HRESULT_FROM_WIN32( ret );
+    if (!(ret = RegGetValueW( key, NULL, L"Moniker", RRF_RT_REG_SZ, NULL, NULL, &size )))
+    {
+        if (!(*moniker = HeapAlloc( GetProcessHeap(), 0, size ))) ret = ERROR_OUTOFMEMORY;
+        else if ((ret = RegGetValueW( key, NULL, L"Moniker", RRF_RT_REG_SZ, NULL, *moniker, &size )))
+            HeapFree( GetProcessHeap(), 0, *moniker );
+    }
+    RegCloseKey( key );
+    return HRESULT_FROM_WIN32( ret );
+}
+
+/*************************************************************************
+ * AppContainerFreeMemory    (kernelbase.@)
+ */
+void WINAPI AppContainerFreeMemory( void *ptr )
+{
+    HeapFree( GetProcessHeap(), 0, ptr );
 }
 
 /*************************************************************************
