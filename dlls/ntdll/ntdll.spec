@@ -209,6 +209,7 @@
 @ stdcall -syscall=0x004e NtCreateThread(ptr long ptr long ptr ptr ptr long)
 @ stdcall -syscall NtCreateThreadEx(ptr long ptr long ptr ptr long long long long ptr)
 @ stdcall -syscall NtCreateTimer(ptr long ptr long)
+@ stdcall -syscall NtCreateTimer2(ptr ptr ptr long long)
 @ stdcall -syscall NtCreateToken(ptr long ptr long ptr ptr ptr ptr ptr ptr ptr ptr ptr)
 @ stdcall -syscall NtCreateTransaction(ptr long ptr ptr long long long long ptr ptr)
 @ stdcall -syscall NtCreateUserProcess(ptr ptr long long ptr ptr long long ptr ptr ptr)
@@ -1293,6 +1294,7 @@
 @ stdcall -private ZwCreateThread(ptr long ptr long ptr ptr ptr long) NtCreateThread
 @ stdcall -private ZwCreateThreadEx(ptr long ptr long ptr ptr long long long long ptr) NtCreateThreadEx
 @ stdcall -private ZwCreateTimer(ptr long ptr long) NtCreateTimer
+@ stdcall -private ZwCreateTimer2(ptr ptr ptr long long) NtCreateTimer2
 @ stdcall -private ZwCreateToken(ptr long ptr long ptr ptr ptr ptr ptr ptr ptr ptr ptr) NtCreateToken
 @ stdcall -private ZwCreateTransaction(ptr long ptr ptr long long long long ptr ptr) NtCreateTransaction
 @ stdcall -private ZwCreateUserProcess(ptr ptr long long ptr ptr long long ptr ptr ptr) NtCreateUserProcess

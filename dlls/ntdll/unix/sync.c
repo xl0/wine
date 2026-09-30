@@ -2174,6 +2174,40 @@ NTSTATUS WINAPI NtCreateTimer( HANDLE *handle, ACCESS_MASK access, const OBJECT_
 
 
 /**************************************************************************
+ *		NtCreateTimer2 (NTDLL.@)
+ */
+NTSTATUS WINAPI NtCreateTimer2( HANDLE *handle, void *reserved, const OBJECT_ATTRIBUTES *attr,
+                                ULONG attributes, ACCESS_MASK access )
+{
+    unsigned int ret;
+    data_size_t len;
+    struct object_attributes *objattr;
+
+    TRACE( "access %#x, name %s, attributes %#x\n", access,
+           attr ? debugstr_us(attr->ObjectName) : "(null)", attributes );
+
+    *handle = 0;
+    if (attributes & 2) return STATUS_INVALID_PARAMETER;
+    if (attributes & ~(EX_TIMER_HIGH_RESOLUTION | EX_TIMER_NO_WAKE | EX_TIMER_NOTIFICATION))
+        return STATUS_INVALID_PARAMETER_4;
+    if ((ret = wine_server_alloc_object_attributes( attr, &objattr, &len ))) return ret;
+
+    SERVER_START_REQ( create_timer )
+    {
+        req->access   = access;
+        req->manual   = !!(attributes & EX_TIMER_NOTIFICATION);
+        wine_server_add_data( req, objattr, len );
+        ret = wine_server_call( req );
+        *handle = wine_server_ptr_handle( reply->handle );
+    }
+    SERVER_END_REQ;
+
+    free( objattr );
+    return ret;
+}
+
+
+/**************************************************************************
  *		NtOpenTimer (NTDLL.@)
  */
 NTSTATUS WINAPI NtOpenTimer( HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr )

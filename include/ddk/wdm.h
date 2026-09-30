@@ -533,6 +533,10 @@ typedef struct _WAIT_CONTEXT_BLOCK {
 #define IO_TYPE_DEVICE_OBJECT_EXTENSION 0x0d
 #define IO_TYPE_DEVICE_QUEUE            0x14
 
+#define EX_TIMER_HIGH_RESOLUTION        0x00000004
+#define EX_TIMER_NO_WAKE                0x00000008
+#define EX_TIMER_NOTIFICATION           0x80000000
+
 typedef struct _DEVICE_OBJECT {
   CSHORT  Type;
   USHORT  Size;

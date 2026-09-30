@@ -470,6 +470,28 @@ NTSTATUS WINAPI wow64_NtCreateTimer( UINT *args )
 
 
 /**********************************************************************
+ *           wow64_NtCreateTimer2
+ */
+NTSTATUS WINAPI wow64_NtCreateTimer2( UINT *args )
+{
+    ULONG *handle_ptr = get_ptr( &args );
+    void *reserved = get_ptr( &args );
+    OBJECT_ATTRIBUTES32 *attr32 = get_ptr( &args );
+    ULONG attributes = get_ulong( &args );
+    ACCESS_MASK access = get_ulong( &args );
+
+    struct object_attr64 attr;
+    HANDLE handle = 0;
+    NTSTATUS status;
+
+    *handle_ptr = 0;
+    status = NtCreateTimer2( &handle, reserved, objattr_32to64( &attr, attr32 ), attributes, access );
+    put_handle( handle_ptr, handle );
+    return status;
+}
+
+
+/**********************************************************************
  *           wow64_NtDebugContinue
  */
 NTSTATUS WINAPI wow64_NtDebugContinue( UINT *args )
