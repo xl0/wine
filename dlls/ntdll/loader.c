@@ -594,6 +594,12 @@ static BOOL update_load_count( LDR_DATA_TABLE_ENTRY *mod, SHORT delta, SHORT min
     return TRUE;
 }
 
+/* check whether a module can be used without the loader lock: initialized and not being unloaded */
+static BOOL is_module_ready( const LDR_DATA_TABLE_ENTRY *mod )
+{
+    return (mod->Flags & LDR_PROCESS_ATTACHED) && mod->LoadCount;
+}
+
 /* compute basename hash */
 static ULONG hash_basename( const UNICODE_STRING *basename )
 {
@@ -2753,6 +2759,7 @@ static NTSTATUS get_dll_load_path_search_flags( LPCWSTR module, DWORD flags, WCH
  *	open_dll_file
  *
  * Open a file for a new dll. Helper for find_dll_file.
+ * Without a mapping pointer, only looks for a module loaded with that name.
  */
 static NTSTATUS open_dll_file( UNICODE_STRING *nt_name, WINE_MODREF **pwm, HANDLE *mapping,
                                SECTION_IMAGE_INFORMATION *image_info, struct file_id *id )
@@ -2766,6 +2773,7 @@ static NTSTATUS open_dll_file( UNICODE_STRING *nt_name, WINE_MODREF **pwm, HANDL
     HANDLE handle;
 
     if ((*pwm = find_fullname_module( nt_name ))) return STATUS_SUCCESS;
+    if (!mapping) return STATUS_DLL_NOT_FOUND;
 
     InitializeObjectAttributes( &attr, nt_name, OBJ_CASE_INSENSITIVE, 0, NULL );
     if ((status = NtOpenFile( &handle, GENERIC_READ | SYNCHRONIZE, &attr, &io,
@@ -3532,6 +3540,8 @@ NTSTATUS WINAPI DECLSPEC_HOTPATCH LdrLoadDll(LPCWSTR search_path, DWORD *load_fl
     const ULONG load_library_search_flags = LOAD_WITH_ALTERED_SEARCH_PATH | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
                 | LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_USER_DIRS
                 | LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
+    UNICODE_STRING nt_name;
+    BOOL redirected;
     WINE_MODREF *wm;
     NTSTATUS nts;
     ULONG flags = 0;
@@ -3545,6 +3555,19 @@ NTSTATUS WINAPI DECLSPEC_HOTPATCH LdrLoadDll(LPCWSTR search_path, DWORD *load_fl
             return nts;
     }
     else path_name = (WCHAR *)search_path;
+
+    /* already loaded and initialized modules don't need the loader lock */
+    lock_ldr_data( FALSE );
+    find_dll_file( path_name, dllname ? dllname : libname->Buffer, &nt_name, &wm, NULL, NULL, NULL,
+                   &redirected, TRUE );
+    if (wm && is_module_ready( &wm->ldr ) && update_load_count( &wm->ldr, 1, 0 ))
+        *hModule = wm->ldr.DllBase;
+    else wm = NULL;
+    unlock_ldr_data( FALSE );
+    RtlFreeUnicodeString( &nt_name );
+
+    nts = STATUS_SUCCESS;
+    if (wm) goto done;
 
     RtlEnterCriticalSection( &loader_section );
 
@@ -3562,6 +3585,7 @@ NTSTATUS WINAPI DECLSPEC_HOTPATCH LdrLoadDll(LPCWSTR search_path, DWORD *load_fl
     if (wm) *hModule = wm->ldr.DllBase;
 
     RtlLeaveCriticalSection( &loader_section );
+done:
     RtlFreeHeap( GetProcessHeap(), 0, dllname );
     if (path_name != search_path) RtlReleasePath( path_name );
     return nts;
@@ -3610,7 +3634,7 @@ NTSTATUS WINAPI LdrGetDllHandleEx( ULONG flags, LPCWSTR load_path, ULONG *dll_ch
     SECTION_IMAGE_INFORMATION image_info;
     UNICODE_STRING nt_name;
     struct file_id id;
-    BOOL redirected;
+    BOOL redirected, locked = FALSE, retry;
     NTSTATUS status;
     WINE_MODREF *wm;
     WCHAR *dllname;
@@ -3630,28 +3654,38 @@ NTSTATUS WINAPI LdrGetDllHandleEx( ULONG flags, LPCWSTR load_path, ULONG *dll_ch
 
     dllname = append_dll_ext( name->Buffer );
 
-    RtlEnterCriticalSection( &loader_section );
-
-    status = find_dll_file( load_path, dllname ? dllname : name->Buffer,
-                            &nt_name, &wm, &mapping, &image_info, &id, &redirected, TRUE );
-
-    if (wm) *base = wm->ldr.DllBase;
-    else
+    /* only changing the load count of modules that are not initialized yet needs the loader lock */
+    for (;;)
     {
-        if (status == STATUS_SUCCESS) NtClose( mapping );
-        status = STATUS_DLL_NOT_FOUND;
-    }
-    RtlFreeUnicodeString( &nt_name );
+        if (locked) RtlEnterCriticalSection( &loader_section );
+        else lock_ldr_data( FALSE );
 
-    if (!status)
-    {
-        if (flags & LDR_GET_DLL_HANDLE_EX_FLAG_PIN)
-            LdrAddRefDll( LDR_ADDREF_DLL_PIN, *base );
-        else if (!(flags & LDR_GET_DLL_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT))
-            LdrAddRefDll( 0, *base );
+        status = find_dll_file( load_path, dllname ? dllname : name->Buffer,
+                                &nt_name, &wm, &mapping, &image_info, &id, &redirected, TRUE );
+
+        if (wm) *base = wm->ldr.DllBase;
+        else
+        {
+            if (status == STATUS_SUCCESS) NtClose( mapping );
+            status = STATUS_DLL_NOT_FOUND;
+        }
+        RtlFreeUnicodeString( &nt_name );
+
+        retry = FALSE;
+        if (!status && !(flags & LDR_GET_DLL_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT))
+        {
+            SHORT delta = (flags & LDR_GET_DLL_HANDLE_EX_FLAG_PIN) ? 0 : 1;
+
+            if (locked) update_load_count( &wm->ldr, delta, -1 );
+            else retry = !is_module_ready( &wm->ldr ) || !update_load_count( &wm->ldr, delta, 0 );
+        }
+
+        if (locked) RtlLeaveCriticalSection( &loader_section );
+        else unlock_ldr_data( FALSE );
+        if (!retry) break;
+        locked = TRUE;
     }
 
-    RtlLeaveCriticalSection( &loader_section );
     RtlFreeHeap( GetProcessHeap(), 0, dllname );
     TRACE( "%s -> %p (load path %s)\n", debugstr_us(name), status ? NULL : *base, debugstr_w(load_path) );
     return status;
@@ -3673,21 +3707,30 @@ NTSTATUS WINAPI LdrGetDllHandle( LPCWSTR load_path, ULONG flags, const UNICODE_S
 NTSTATUS WINAPI LdrAddRefDll( ULONG flags, HMODULE module )
 {
     NTSTATUS ret = STATUS_SUCCESS;
+    SHORT delta = (flags & LDR_ADDREF_DLL_PIN) ? 0 : 1;
+    BOOL locked = FALSE, retry;
     WINE_MODREF *wm;
 
     if (flags & ~LDR_ADDREF_DLL_PIN) FIXME( "%p flags %lx not implemented\n", module, flags );
 
-    RtlEnterCriticalSection( &loader_section );
-
-    if ((wm = get_modref( module )))
+    /* only modules that are not initialized yet need the loader lock */
+    for (;;)
     {
-        update_load_count( &wm->ldr, (flags & LDR_ADDREF_DLL_PIN) ? 0 : 1, -1 );
-        TRACE( "(%s) ldr.LoadCount: %d\n", debugstr_w(wm->ldr.BaseDllName.Buffer), wm->ldr.LoadCount );
-    }
-    else ret = STATUS_INVALID_PARAMETER;
+        if (locked) RtlEnterCriticalSection( &loader_section );
+        else lock_ldr_data( FALSE );
 
-    RtlLeaveCriticalSection( &loader_section );
-    return ret;
+        retry = FALSE;
+        if (!(wm = get_modref( module ))) ret = STATUS_INVALID_PARAMETER;
+        else if (locked) update_load_count( &wm->ldr, delta, -1 );
+        else retry = !is_module_ready( &wm->ldr ) || !update_load_count( &wm->ldr, delta, 0 );
+        if (wm && !retry)
+            TRACE( "(%s) ldr.LoadCount: %d\n", debugstr_w(wm->ldr.BaseDllName.Buffer), wm->ldr.LoadCount );
+
+        if (locked) RtlLeaveCriticalSection( &loader_section );
+        else unlock_ldr_data( FALSE );
+        if (!retry) return ret;
+        locked = TRUE;
+    }
 }
 
 
@@ -4204,6 +4247,15 @@ NTSTATUS WINAPI LdrUnloadDll( HMODULE hModule )
     if (process_detaching) return retv;
 
     TRACE("(%p)\n", hModule);
+
+    /* only releasing the last reference needs the loader lock */
+    lock_ldr_data( FALSE );
+    wm = get_modref( hModule );
+    if (wm && is_module_ready( &wm->ldr ) && update_load_count( &wm->ldr, -1, 1 ))
+        TRACE("(%s) ldr.LoadCount: %d\n", debugstr_w(wm->ldr.BaseDllName.Buffer), wm->ldr.LoadCount );
+    else wm = NULL;
+    unlock_ldr_data( FALSE );
+    if (wm) return retv;
 
     RtlEnterCriticalSection( &loader_section );
 

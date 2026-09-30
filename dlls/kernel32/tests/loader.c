@@ -3332,15 +3332,15 @@ static void test_lookups_during_dllmain(void)
     }
     tests[] =
     {
-        { "LoadLibrary loaded", lookup_load_loaded, FALSE, TRUE },
+        { "LoadLibrary loaded", lookup_load_loaded },
         { "LoadLibrary new", lookup_load_new, TRUE },
         { "LoadLibrary initializing", lookup_load_initializing, TRUE },
-        { "LoadLibraryEx datafile", lookup_load_datafile, FALSE, TRUE },
-        { "GetModuleHandle", lookup_handle, FALSE, TRUE },
-        { "GetModuleHandle path", lookup_handle_path, FALSE, TRUE },
-        { "GetModuleHandle initializing", lookup_handle_initializing, FALSE, TRUE },
-        { "GetModuleHandleEx addref", lookup_handle_addref, FALSE, TRUE },
-        { "GetModuleHandleEx pin", lookup_handle_pin, FALSE, TRUE },
+        { "LoadLibraryEx datafile", lookup_load_datafile },
+        { "GetModuleHandle", lookup_handle },
+        { "GetModuleHandle path", lookup_handle_path },
+        { "GetModuleHandle initializing", lookup_handle_initializing },
+        { "GetModuleHandleEx addref", lookup_handle_addref },
+        { "GetModuleHandleEx pin", lookup_handle_pin },
         { "GetModuleHandleEx address", lookup_handle_address },
         { "GetModuleFileName", lookup_filename },
         { "GetProcAddress", lookup_proc, FALSE, TRUE },
