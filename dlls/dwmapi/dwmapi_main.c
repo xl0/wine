@@ -296,6 +296,7 @@ HRESULT WINAPI DwmFlush(void)
 {
     LARGE_INTEGER qpf, qpc, delay;
     LONG64 qpc_refresh_period;
+    BOOLEAN high_res = TRUE, prev = FALSE;
     int display_frequency;
     static BOOL once;
 
@@ -309,7 +310,11 @@ HRESULT WINAPI DwmFlush(void)
     qpc_refresh_period = qpf.QuadPart / display_frequency;
     delay.QuadPart = (qpc.QuadPart - ((qpc.QuadPart + qpc_refresh_period - 1) / qpc_refresh_period) * qpc_refresh_period)
             * 10000000 / qpf.QuadPart;
+    /* DWM composes on Windows, not bound to the timer resolution of the process */
+    NtQueryInformationThread(GetCurrentThread(), ThreadWineHighResolutionTimers, &prev, sizeof(prev), NULL);
+    NtSetInformationThread(GetCurrentThread(), ThreadWineHighResolutionTimers, &high_res, sizeof(high_res));
     NtDelayExecution(FALSE, &delay);
+    NtSetInformationThread(GetCurrentThread(), ThreadWineHighResolutionTimers, &prev, sizeof(prev));
 
     return S_OK;
 }
