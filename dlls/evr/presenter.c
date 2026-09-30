@@ -23,6 +23,7 @@
 #include "mfapi.h"
 #include "mferror.h"
 #include "dxva2api.h"
+#include "winternl.h"
 
 #include "evr_classes.h"
 #include "evr_private.h"
@@ -674,11 +675,14 @@ static HRESULT video_presenter_process_input(struct video_presenter *presenter)
 
 static DWORD CALLBACK video_presenter_streaming_thread(void *arg)
 {
+    static const BOOLEAN high_res = TRUE;
     struct video_presenter *presenter = arg;
     unsigned int wait = INFINITE;
     BOOL stop_thread = FALSE;
     MSG msg;
 
+    /* frames are presented on time, whatever the timer resolution */
+    NtSetInformationThread(GetCurrentThread(), ThreadWineHighResolutionTimers, &high_res, sizeof(high_res));
     PeekMessageW(&msg, NULL, WM_USER, WM_USER, PM_NOREMOVE);
 
     SetEvent(presenter->thread.ready_event);
