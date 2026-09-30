@@ -831,17 +831,26 @@ MMRESULT WINAPI timeGetDevCaps(TIMECAPS *caps, UINT size)
     return 0;
 }
 
+/* periods shorter than the 15.625 ms clock tick hold a timer resolution request for the process */
+#define MMSYSTIME_TICK 16
+static SRWLOCK period_lock = SRWLOCK_INIT;
+static unsigned int period_counts[MMSYSTIME_TICK], period_total;
+
 /******************************************************************************
  *		timeBeginPeriod (KERNEL32.@)
  */
 MMRESULT WINAPI timeBeginPeriod(UINT period)
 {
+    ULONG cur;
+
     if (period < MMSYSTIME_MININTERVAL || period > MMSYSTIME_MAXINTERVAL)
         return TIMERR_NOCANDO;
 
-    if (period > MMSYSTIME_MININTERVAL)
-        WARN("Stub; we set our timer resolution at minimum\n");
-
+    if (period >= MMSYSTIME_TICK) return 0;
+    AcquireSRWLockExclusive( &period_lock );
+    period_counts[period]++;
+    if (!period_total++) NtSetTimerResolution( period * 10000, TRUE, &cur );
+    ReleaseSRWLockExclusive( &period_lock );
     return 0;
 }
 
@@ -850,13 +859,22 @@ MMRESULT WINAPI timeBeginPeriod(UINT period)
  */
 MMRESULT WINAPI timeEndPeriod(UINT period)
 {
+    MMRESULT ret = 0;
+    ULONG cur;
+
     if (period < MMSYSTIME_MININTERVAL || period > MMSYSTIME_MAXINTERVAL)
         return TIMERR_NOCANDO;
 
-    if (period > MMSYSTIME_MININTERVAL)
-        WARN("Stub; we set our timer resolution at minimum\n");
-
-    return 0;
+    if (period >= MMSYSTIME_TICK) return 0;
+    AcquireSRWLockExclusive( &period_lock );
+    if (!period_counts[period]) ret = TIMERR_NOCANDO;
+    else
+    {
+        period_counts[period]--;
+        if (!--period_total) NtSetTimerResolution( period * 10000, FALSE, &cur );
+    }
+    ReleaseSRWLockExclusive( &period_lock );
+    return ret;
 }
 
 
