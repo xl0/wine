@@ -19,6 +19,7 @@
  */
 
 #include "quartz_private.h"
+#include "winternl.h"
 
 #include "wine/debug.h"
 #include <assert.h>
@@ -139,12 +140,15 @@ static inline struct system_clock *impl_from_IReferenceClock(IReferenceClock *if
 
 static DWORD WINAPI SystemClockAdviseThread(void *param)
 {
+    static const BOOLEAN high_res = TRUE;
     struct system_clock *clock = param;
     struct advise_sink *sink, *cursor;
     REFERENCE_TIME current_time;
 
     TRACE("Starting advise thread for clock %p.\n", clock);
     SetThreadDescription(GetCurrentThread(), L"wine_qz_clock_advise");
+    /* advise times are kept on Windows whatever the timer resolution */
+    NtSetInformationThread(GetCurrentThread(), ThreadWineHighResolutionTimers, &high_res, sizeof(high_res));
 
     for (;;)
     {
