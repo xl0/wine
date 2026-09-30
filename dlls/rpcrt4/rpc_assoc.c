@@ -226,10 +226,26 @@ ULONG RpcAssoc_Release(RpcAssoc *assoc)
 
 #define ROUND_UP(value, alignment) (((value) + ((alignment) - 1)) & ~((alignment)-1))
 
+static const struct rpc_context *find_context(const RpcConnection *conn, const RPC_SYNTAX_IDENTIFIER *InterfaceId)
+{
+    unsigned int i;
+
+    for (i = 0; i < conn->context_count; i++)
+        if (!memcmp(&conn->contexts[i].syntax, InterfaceId, sizeof(*InterfaceId)))
+            return &conn->contexts[i];
+    return NULL;
+}
+
+/* Binds the interface to a new connection, or adds it to a bound one with an
+ * alter_context request. *rejected is set if the server rejected the interface. */
 static RPC_STATUS RpcAssoc_BindConnection(const RpcAssoc *assoc, RpcConnection *conn,
                                           const RPC_SYNTAX_IDENTIFIER *InterfaceId,
-                                          const RPC_SYNTAX_IDENTIFIER *TransferSyntax)
+                                          const RPC_SYNTAX_IDENTIFIER *TransferSyntax,
+                                          BOOL *rejected)
 {
+    unsigned char ptype = conn->context_count ? PKT_ALTER_CONTEXT : PKT_BIND;
+    unsigned short context_id = conn->context_count;
+    struct rpc_context *contexts;
     RpcPktHdr *hdr;
     RpcPktHdr *response_hdr;
     RPC_MESSAGE msg;
@@ -237,11 +253,11 @@ static RPC_STATUS RpcAssoc_BindConnection(const RpcAssoc *assoc, RpcConnection *
     unsigned char *auth_data = NULL;
     ULONG auth_length;
 
-    TRACE("sending bind request to server\n");
+    TRACE("sending %s request to server\n", ptype == PKT_BIND ? "bind" : "alter_context");
 
-    hdr = RPCRT4_BuildBindHeader(NDR_LOCAL_DATA_REPRESENTATION,
+    hdr = RPCRT4_BuildBindHeader(NDR_LOCAL_DATA_REPRESENTATION, ptype,
                                  RPC_MAX_PACKET_SIZE, RPC_MAX_PACKET_SIZE,
-                                 assoc->assoc_group_id,
+                                 assoc->assoc_group_id, context_id,
                                  InterfaceId, TransferSyntax);
 
     status = RPCRT4_Send(conn, hdr, NULL, 0);
@@ -259,9 +275,15 @@ static RPC_STATUS RpcAssoc_BindConnection(const RpcAssoc *assoc, RpcConnection *
     switch (response_hdr->common.ptype)
     {
     case PKT_BIND_ACK:
+    case PKT_ALTER_CONTEXT_RESP:
     {
         RpcAddressString *server_address = msg.Buffer;
-        if ((msg.BufferLength >= FIELD_OFFSET(RpcAddressString, string[0])) ||
+        if (response_hdr->common.ptype != (ptype == PKT_BIND ? PKT_BIND_ACK : PKT_ALTER_CONTEXT_RESP))
+        {
+            ERR("wrong packet type received %d\n", response_hdr->common.ptype);
+            status = RPC_S_PROTOCOL_ERROR;
+        }
+        else if ((msg.BufferLength >= FIELD_OFFSET(RpcAddressString, string[0])) ||
             (msg.BufferLength >= ROUND_UP(FIELD_OFFSET(RpcAddressString, string[server_address->length]), 4)))
         {
             unsigned short remaining = msg.BufferLength -
@@ -271,6 +293,7 @@ static RPC_STATUS RpcAssoc_BindConnection(const RpcAssoc *assoc, RpcConnection *
             if ((results->num_results == 1) &&
                 (remaining >= FIELD_OFFSET(RpcResultList, results[results->num_results])))
             {
+                *rejected = results->results[0].result != RESULT_ACCEPT;
                 switch (results->results[0].result)
                 {
                 case RESULT_ACCEPT:
@@ -279,11 +302,21 @@ static RPC_STATUS RpcAssoc_BindConnection(const RpcAssoc *assoc, RpcConnection *
                         status = RPCRT4_ClientConnectionAuth(conn,
                                                              auth_data + sizeof(RpcAuthVerifier),
                                                              auth_length);
+                    if (status == RPC_S_OK &&
+                        !(contexts = realloc(conn->contexts, (context_id + 1) * sizeof(*contexts))))
+                        status = RPC_S_OUT_OF_RESOURCES;
                     if (status == RPC_S_OK)
                     {
-                        conn->assoc_group_id = response_hdr->bind_ack.assoc_gid;
-                        conn->MaxTransmissionSize = response_hdr->bind_ack.max_tsize;
-                        conn->ActiveInterface = *InterfaceId;
+                        if (ptype == PKT_BIND)
+                        {
+                            conn->assoc_group_id = response_hdr->bind_ack.assoc_gid;
+                            conn->MaxTransmissionSize = response_hdr->bind_ack.max_tsize;
+                        }
+                        contexts[context_id].id = context_id;
+                        contexts[context_id].syntax = *InterfaceId;
+                        conn->contexts = contexts;
+                        conn->context_count++;
+                        conn->ActiveContextId = context_id;
                     }
                     break;
                 case RESULT_PROVIDER_REJECTION:
@@ -366,25 +399,32 @@ static RpcConnection *RpcAssoc_GetIdleConnection(RpcAssoc *assoc,
                                                  const RPC_SYNTAX_IDENTIFIER *TransferSyntax, const RpcAuthInfo *AuthInfo,
                                                  const RpcQualityOfService *QOS)
 {
-    RpcConnection *Connection;
+    RpcConnection *Connection, *found = NULL;
     EnterCriticalSection(&assoc->cs);
-    /* try to find a compatible connection from the connection pool */
+    /* try to find a compatible connection from the connection pool, preferably
+     * one with the interface already bound */
     LIST_FOR_EACH_ENTRY(Connection, &assoc->free_connection_pool, RpcConnection, conn_pool_entry)
     {
-        if (!memcmp(&Connection->ActiveInterface, InterfaceId,
-                    sizeof(RPC_SYNTAX_IDENTIFIER)) &&
-            RpcAuthInfo_IsEqual(Connection->AuthInfo, AuthInfo) &&
-            RpcQualityOfService_IsEqual(Connection->QOS, QOS))
+        if (!RpcAuthInfo_IsEqual(Connection->AuthInfo, AuthInfo) ||
+            !RpcQualityOfService_IsEqual(Connection->QOS, QOS))
+            continue;
+        if (find_context(Connection, InterfaceId))
         {
-            list_remove(&Connection->conn_pool_entry);
-            LeaveCriticalSection(&assoc->cs);
-            TRACE("got connection from pool %p\n", Connection);
-            return Connection;
+            found = Connection;
+            break;
         }
+        /* FIXME: alter_context on authenticated connections is not supported */
+        if (!found && !Connection->AuthInfo && Connection->context_count < RPC_MAX_CONTEXTS)
+            found = Connection;
+    }
+    if (found)
+    {
+        list_remove(&found->conn_pool_entry);
+        TRACE("got connection from pool %p\n", found);
     }
 
     LeaveCriticalSection(&assoc->cs);
-    return NULL;
+    return found;
 }
 
 RPC_STATUS RpcAssoc_GetClientConnection(RpcAssoc *assoc,
@@ -393,10 +433,28 @@ RPC_STATUS RpcAssoc_GetClientConnection(RpcAssoc *assoc,
                                         RpcQualityOfService *QOS, LPCWSTR CookieAuth,
                                         RpcConnection **Connection, BOOL *from_cache)
 {
+    const struct rpc_context *context;
     RpcConnection *NewConnection;
+    BOOL rejected = FALSE;
     RPC_STATUS status;
 
     *Connection = RpcAssoc_GetIdleConnection(assoc, InterfaceId, TransferSyntax, AuthInfo, QOS);
+    if (*Connection) {
+        if ((context = find_context(*Connection, InterfaceId)))
+            (*Connection)->ActiveContextId = context->id;
+        else if ((status = RpcAssoc_BindConnection(assoc, *Connection, InterfaceId, TransferSyntax, &rejected)) != RPC_S_OK)
+        {
+            /* the connection is still usable if the server rejected the interface */
+            if (rejected)
+                RpcAssoc_ReleaseIdleConnection(assoc, *Connection);
+            else
+                RPCRT4_ReleaseConnection(*Connection);
+            *Connection = NULL;
+            if (rejected || status == RPC_S_CALL_CANCELLED)
+                return status;
+            WARN("alter_context failed with error %ld, opening a new connection\n", status);
+        }
+    }
     if (*Connection) {
         TRACE("return idle connection %p for association %p\n", *Connection, assoc);
         if (from_cache) *from_cache = TRUE;
@@ -421,7 +479,7 @@ RPC_STATUS RpcAssoc_GetClientConnection(RpcAssoc *assoc,
         return status;
     }
 
-    status = RpcAssoc_BindConnection(assoc, NewConnection, InterfaceId, TransferSyntax);
+    status = RpcAssoc_BindConnection(assoc, NewConnection, InterfaceId, TransferSyntax, &rejected);
     if (status != RPC_S_OK)
     {
         RPCRT4_ReleaseConnection(NewConnection);

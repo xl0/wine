@@ -19,12 +19,15 @@
  */
 
 #define COBJMACROS
+#include <ntstatus.h>
+#define WIN32_NO_STATUS
 #include <windows.h>
 #include <ole2.h>
 #include <oleauto.h>
 #include <secext.h>
 #include <rpcdce.h>
 #include <netfw.h>
+#include <winternl.h>
 #include "wine/test.h"
 #include "server.h"
 #define SKIP_TYPE_DECLS
@@ -2155,6 +2158,61 @@ static void _test_is_server_listening2(unsigned line, RPC_BINDING_HANDLE binding
                        status, expected_status, expected_status2);
 }
 
+static ULONG get_handle_count(void)
+{
+    static NTSTATUS (WINAPI *pNtQuerySystemInformation)(SYSTEM_INFORMATION_CLASS, void *, ULONG, ULONG *);
+    SYSTEM_HANDLE_INFORMATION_EX *info;
+    ULONG size = 0x100000, count = 0, i;
+    NTSTATUS status;
+
+    if (!pNtQuerySystemInformation)
+        pNtQuerySystemInformation = (void *)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQuerySystemInformation");
+    info = malloc(size);
+    while ((status = pNtQuerySystemInformation(SystemExtendedHandleInformation, info, size, NULL)) == STATUS_INFO_LENGTH_MISMATCH)
+        info = realloc(info, size *= 2);
+    ok(!status, "got %#lx\n", status);
+    for (i = 0; i < info->NumberOfHandles; i++)
+        if (info->Handles[i].UniqueProcessId == GetCurrentProcessId()) count++;
+    free(info);
+    return count;
+}
+
+static void test_second_interface(unsigned char *string_binding)
+{
+    ULONG before, after;
+
+    ok(RPC_S_OK == RpcBindingFromStringBindingA(string_binding, &IInterpServer_IfHandle), "RpcBindingFromStringBinding\n");
+    ok(mixed_int_return() == INT_CODE, "RPC int_return\n");
+    before = get_handle_count();
+    ok(interp_int_return() == INT_CODE, "RPC int_return\n");
+    after = get_handle_count();
+    /* the interface is added to the existing connection */
+    ok(after == before, "handles %lu -> %lu\n", before, after);
+    ok(RPC_S_OK == RpcBindingFree(&IInterpServer_IfHandle), "RpcBindingFree\n");
+}
+
+static void test_unknown_interface(unsigned char *string_binding)
+{
+    RPC_MESSAGE msg;
+    RPC_STATUS status;
+    int i;
+
+    ok(RPC_S_OK == RpcBindingFromStringBindingA(string_binding, &IInterpServer_IfHandle), "RpcBindingFromStringBinding\n");
+    for (i = 0; i < 2; i++)
+    {
+        /* RPCExplicitHandle isn't registered yet */
+        memset(&msg, 0, sizeof(msg));
+        msg.Handle = IMixedServer_IfHandle;
+        msg.RpcInterfaceInformation = RPCExplicitHandle_v0_0_c_ifspec;
+        status = I_RpcGetBuffer(&msg);
+        ok(status == RPC_S_UNKNOWN_IF, "got %lu\n", status);
+        /* the rejection doesn't affect other interfaces */
+        ok(mixed_int_return() == INT_CODE, "RPC int_return\n");
+        ok(interp_int_return() == INT_CODE, "RPC int_return\n");
+    }
+    ok(RPC_S_OK == RpcBindingFree(&IInterpServer_IfHandle), "RpcBindingFree\n");
+}
+
 static void
 client(const char *test)
 {
@@ -2174,6 +2232,7 @@ client(const char *test)
   {
     ok(RPC_S_OK == RpcStringBindingComposeA(NULL, iptcp, address, port, NULL, &binding), "RpcStringBindingCompose\n");
     ok(RPC_S_OK == RpcBindingFromStringBindingA(binding, &IMixedServer_IfHandle), "RpcBindingFromStringBinding\n");
+    test_second_interface(binding);
 
     run_tests();
     authinfo_test(RPC_PROTSEQ_TCP, 0);
@@ -2200,6 +2259,8 @@ client(const char *test)
   {
     ok(RPC_S_OK == RpcStringBindingComposeA(NULL, ncalrpc, NULL, guid, NULL, &binding), "RpcStringBindingCompose\n");
     ok(RPC_S_OK == RpcBindingFromStringBindingA(binding, &IMixedServer_IfHandle), "RpcBindingFromStringBinding\n");
+    test_second_interface(binding);
+    test_unknown_interface(binding);
 
     run_tests(); /* can cause RPC_X_BAD_STUB_DATA exception */
     authinfo_test(RPC_PROTSEQ_LRPC, 0);
@@ -2243,6 +2304,8 @@ client(const char *test)
   {
     ok(RPC_S_OK == RpcStringBindingComposeA(NULL, np, address_np, pipe, NULL, &binding), "RpcStringBindingCompose\n");
     ok(RPC_S_OK == RpcBindingFromStringBindingA(binding, &IMixedServer_IfHandle), "RpcBindingFromStringBinding\n");
+    test_second_interface(binding);
+    test_unknown_interface(binding);
 
     test_is_server_listening(IMixedServer_IfHandle, RPC_S_OK);
     run_tests();

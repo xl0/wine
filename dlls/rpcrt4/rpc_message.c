@@ -184,9 +184,11 @@ RpcPktHdr *RPCRT4_BuildFaultHeader(ULONG DataRepresentation, RPC_STATUS Status)
 }
 
 RpcPktHdr *RPCRT4_BuildBindHeader(ULONG DataRepresentation,
+                                  unsigned char PacketType,
                                   unsigned short MaxTransmissionSize,
                                   unsigned short MaxReceiveSize,
                                   ULONG  AssocGroupId,
+                                  unsigned short ContextId,
                                   const RPC_SYNTAX_IDENTIFIER *AbstractId,
                                   const RPC_SYNTAX_IDENTIFIER *TransferId)
 {
@@ -199,12 +201,13 @@ RpcPktHdr *RPCRT4_BuildBindHeader(ULONG DataRepresentation,
   }
   ctxt_elem = (RpcContextElement *)(&header->bind + 1);
 
-  RPCRT4_BuildCommonHeader(&header->common, PKT_BIND, DataRepresentation);
+  RPCRT4_BuildCommonHeader(&header->common, PacketType, DataRepresentation);
   header->common.frag_len = sizeof(header->bind) + FIELD_OFFSET(RpcContextElement, transfer_syntaxes[1]);
   header->bind.max_tsize = MaxTransmissionSize;
   header->bind.max_rsize = MaxReceiveSize;
   header->bind.assoc_gid = AssocGroupId;
   header->bind.num_elements = 1;
+  ctxt_elem->context_id = ContextId;
   ctxt_elem->num_syntaxes = 1;
   ctxt_elem->abstract_syntax = *AbstractId;
   ctxt_elem->transfer_syntaxes[0] = *TransferId;
@@ -1806,6 +1809,7 @@ RPC_STATUS WINAPI I_RpcSend(PRPC_MESSAGE pMsg)
           return ERROR_OUTOFMEMORY;
 
       hdr->common.call_id = conn->NextCallId++;
+      hdr->request.context_id = conn->ActiveContextId;
       status = RPCRT4_Send(conn, hdr, pMsg->Buffer, pMsg->BufferLength);
       free(hdr);
       if (status == RPC_S_OK || conn->server || !from_cache)

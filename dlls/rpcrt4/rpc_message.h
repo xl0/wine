@@ -27,7 +27,7 @@ typedef unsigned int NCA_STATUS;
 
 RpcPktHdr *RPCRT4_BuildFaultHeader(ULONG DataRepresentation, RPC_STATUS Status);
 RpcPktHdr *RPCRT4_BuildResponseHeader(ULONG DataRepresentation, ULONG BufferLength);
-RpcPktHdr *RPCRT4_BuildBindHeader(ULONG DataRepresentation, unsigned short MaxTransmissionSize, unsigned short MaxReceiveSize, ULONG AssocGroupId, const RPC_SYNTAX_IDENTIFIER *AbstractId, const RPC_SYNTAX_IDENTIFIER *TransferId);
+RpcPktHdr *RPCRT4_BuildBindHeader(ULONG DataRepresentation, unsigned char PacketType, unsigned short MaxTransmissionSize, unsigned short MaxReceiveSize, ULONG AssocGroupId, unsigned short ContextId, const RPC_SYNTAX_IDENTIFIER *AbstractId, const RPC_SYNTAX_IDENTIFIER *TransferId);
 RpcPktHdr *RPCRT4_BuildBindNackHeader(ULONG DataRepresentation, unsigned char RpcVersion, unsigned char RpcVersionMinor, unsigned short RejectReason);
 RpcPktHdr *RPCRT4_BuildBindAckHeader(ULONG DataRepresentation, unsigned char PacketType, unsigned short MaxTransmissionSize, unsigned short MaxReceiveSize, ULONG AssocGroupId, LPCSTR ServerAddress, unsigned char ResultCount, const RpcResult *Results);
 RpcPktHdr *RPCRT4_BuildHttpHeader(ULONG DataRepresentation, unsigned short flags, unsigned short num_data_items, unsigned int payload_size);

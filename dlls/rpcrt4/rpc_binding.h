@@ -90,7 +90,7 @@ typedef struct _RpcConnection
   RpcQualityOfService *QOS;
   LPWSTR CookieAuth;
 
-  /* bound presentation contexts */
+  /* bound presentation contexts; client context ids are their indices */
   struct rpc_context *contexts;
   unsigned int context_count;
 
@@ -99,7 +99,7 @@ typedef struct _RpcConnection
   ULONG assoc_group_id; /* association group returned during binding */
   RPC_ASYNC_STATE *async_state;
   struct _RpcAssoc *assoc; /* association this connection is part of */
-  RPC_SYNTAX_IDENTIFIER ActiveInterface; /* interface bound to the connection */
+  USHORT ActiveContextId; /* context of the call in progress */
 
   /* server-only */
   USHORT NextCallId;
