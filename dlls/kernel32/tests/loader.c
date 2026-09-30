@@ -3071,6 +3071,308 @@ static void test_export_forwarder_dep_chain(void)
     winetest_pop_context();
 }
 
+#if defined(__i386__) || defined(__x86_64__) || defined(__aarch64__)
+
+static char plain_dll[MAX_PATH], new_dll[MAX_PATH], blocking_dll[MAX_PATH];
+static HMODULE plain_module, blocking_module;
+static HANDLE dllmain_entered, dllmain_release, lookup_ready, lookup_go, lookup_done;
+static PVOID (WINAPI *pRtlPcToFileHeader)(PVOID, PVOID *);
+
+static BOOL WINAPI plain_dll_entry( HINSTANCE inst, DWORD reason, void *reserved )
+{
+    return TRUE;
+}
+
+static BOOL WINAPI blocking_dll_entry( HINSTANCE inst, DWORD reason, void *reserved )
+{
+    if (reason == DLL_PROCESS_ATTACH)
+    {
+        blocking_module = inst;
+        SetEvent( dllmain_entered );
+        WaitForSingleObject( dllmain_release, 10000 );
+    }
+    return TRUE;
+}
+
+/* create a dll whose entry point jumps to a function of the test */
+static void create_entry_point_dll( char dll_name[MAX_PATH], void *entry )
+{
+#pragma pack(push,1)
+    struct
+    {
+#ifdef __x86_64__
+        BYTE mov_rax[2];
+        void *target;
+        BYTE jmp_rax[2];
+    } thunk = { { 0x48,0xb8 }, entry, { 0xff,0xe0 } };
+#elif defined(__i386__)
+        BYTE mov_eax;
+        void *target;
+        BYTE jmp_eax[2];
+    } thunk = { 0xb8, entry, { 0xff,0xe0 } };
+#else
+        DWORD ldr;  /* ldr x16,target */
+        DWORD br;   /* br x16 */
+        void *target;
+    } thunk = { 0x58000050, 0xd61f0200, entry };
+#endif
+#pragma pack(pop)
+    IMAGE_SECTION_HEADER code =
+    {
+        .Name = ".text",
+        .Misc = { .VirtualSize = sizeof(thunk) },
+        .VirtualAddress = 0x1000,
+        .SizeOfRawData = 0x200,
+        .PointerToRawData = 0x200,
+        .Characteristics = IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_EXECUTE,
+    };
+    IMAGE_NT_HEADERS nt_header = nt_header_template;
+    BYTE data[0x200] = { 0 };
+
+    nt_header.OptionalHeader.AddressOfEntryPoint = 0x1000;
+    nt_header.OptionalHeader.SectionAlignment = 0x1000;
+    nt_header.OptionalHeader.FileAlignment = 0x200;
+    nt_header.OptionalHeader.SizeOfHeaders = 0x200;
+    nt_header.OptionalHeader.SizeOfImage = 0x2000;
+    memcpy( data, &thunk, sizeof(thunk) );
+    create_test_dll_sections( &dos_header, &nt_header, &code, data, dll_name );
+}
+
+static void lookup_load_loaded(void)
+{
+    HMODULE module = LoadLibraryA( plain_dll );
+    ok( module == plain_module, "got %p\n", module );
+    FreeLibrary( module );
+}
+
+static void lookup_load_new(void)
+{
+    HMODULE module = LoadLibraryA( new_dll );
+    ok( module != NULL, "got %p\n", module );
+    FreeLibrary( module );
+}
+
+static void lookup_load_initializing(void)
+{
+    HMODULE module = LoadLibraryA( blocking_dll );
+    ok( module == blocking_module, "got %p\n", module );
+    FreeLibrary( module );
+}
+
+static void lookup_load_datafile(void)
+{
+    HMODULE module = LoadLibraryExA( new_dll, NULL, LOAD_LIBRARY_AS_DATAFILE );
+    ok( module != NULL, "got %p\n", module );
+    FreeLibrary( module );
+}
+
+static void lookup_handle(void)
+{
+    HMODULE module = GetModuleHandleA( strrchr( plain_dll, '\\' ) + 1 );
+    ok( module == plain_module, "got %p\n", module );
+}
+
+static void lookup_handle_path(void)
+{
+    HMODULE module = GetModuleHandleA( plain_dll );
+    ok( module == plain_module, "got %p\n", module );
+}
+
+static void lookup_handle_initializing(void)
+{
+    HMODULE module = GetModuleHandleA( blocking_dll );
+    ok( module == blocking_module, "got %p / %p\n", module, blocking_module );
+}
+
+static void lookup_handle_addref(void)
+{
+    HMODULE module = NULL;
+    BOOL ret = GetModuleHandleExA( 0, plain_dll, &module );
+    ok( ret && module == plain_module, "got %d %p\n", ret, module );
+    FreeLibrary( module );
+}
+
+static void lookup_handle_pin(void)
+{
+    HMODULE module = NULL;
+    BOOL ret = GetModuleHandleExA( GET_MODULE_HANDLE_EX_FLAG_PIN, "kernel32.dll", &module );
+    ok( ret && module == GetModuleHandleA( "kernel32.dll" ), "got %d %p\n", ret, module );
+}
+
+static void lookup_handle_address(void)
+{
+    HMODULE module = NULL;
+    BOOL ret = GetModuleHandleExA( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   (const char *)plain_module + 0x1000, &module );
+    ok( ret && module == plain_module, "got %d %p\n", ret, module );
+}
+
+static void lookup_filename(void)
+{
+    char buffer[MAX_PATH];
+    DWORD len = GetModuleFileNameA( plain_module, buffer, ARRAY_SIZE(buffer) );
+    ok( len, "failed, error %lu\n", GetLastError() );
+}
+
+static void lookup_proc(void)
+{
+    void *proc = GetProcAddress( GetModuleHandleA( "ntdll.dll" ), "RtlPcToFileHeader" );
+    ok( proc == pRtlPcToFileHeader, "got %p\n", proc );
+}
+
+static void lookup_proc_forward(void)
+{
+    void *proc = GetProcAddress( GetModuleHandleA( "kernel32.dll" ), "HeapAlloc" );
+    ok( proc == GetProcAddress( GetModuleHandleA( "ntdll.dll" ), "RtlAllocateHeap" ), "got %p\n", proc );
+}
+
+static void lookup_proc_missing(void)
+{
+    void *proc = GetProcAddress( GetModuleHandleA( "kernel32.dll" ), "NonExistentFunction" );
+    ok( !proc, "got %p\n", proc );
+}
+
+static void lookup_proc_initializing(void)
+{
+    void *proc = GetProcAddress( blocking_module, "NonExistentFunction" );
+    ok( !proc, "got %p\n", proc );
+}
+
+static void lookup_pc(void)
+{
+    void *base = NULL, *ret = pRtlPcToFileHeader( lookup_pc, &base );
+    ok( ret == GetModuleHandleA( NULL ) && base == ret, "got %p %p\n", ret, base );
+}
+
+static void lookup_pc_initializing(void)
+{
+    void *base = NULL, *ret = pRtlPcToFileHeader( (char *)blocking_module + 0x1000, &base );
+    ok( ret == blocking_module && base == ret, "got %p %p\n", ret, base );
+}
+
+static DWORD WINAPI lookup_noop_thread( void *arg )
+{
+    return 0;
+}
+
+static void lookup_create_thread(void)
+{
+    HANDLE thread = CreateThread( NULL, 0, lookup_noop_thread, NULL, 0, NULL );
+    WaitForSingleObject( thread, INFINITE );
+    CloseHandle( thread );
+}
+
+static DWORD WINAPI lookup_thread( void *arg )
+{
+    void (*func)(void) = arg;
+
+    SetEvent( lookup_ready );
+    WaitForSingleObject( lookup_go, INFINITE );
+    func();
+    SetEvent( lookup_done );
+    return 0;
+}
+
+static DWORD WINAPI load_blocking_thread( void *arg )
+{
+    HMODULE module = LoadLibraryA( blocking_dll );
+    ok( module != NULL, "LoadLibrary failed, error %lu\n", GetLastError() );
+    return 0;
+}
+
+/* Which loader calls wait for another thread's DllMain (i.e. for the loader lock) */
+static void test_lookups_during_dllmain(void)
+{
+    static const struct
+    {
+        const char *name;
+        void (*func)(void);
+        BOOL waits;
+        BOOL todo;
+    }
+    tests[] =
+    {
+        { "LoadLibrary loaded", lookup_load_loaded, FALSE, TRUE },
+        { "LoadLibrary new", lookup_load_new, TRUE },
+        { "LoadLibrary initializing", lookup_load_initializing, TRUE },
+        { "LoadLibraryEx datafile", lookup_load_datafile, FALSE, TRUE },
+        { "GetModuleHandle", lookup_handle, FALSE, TRUE },
+        { "GetModuleHandle path", lookup_handle_path, FALSE, TRUE },
+        { "GetModuleHandle initializing", lookup_handle_initializing, FALSE, TRUE },
+        { "GetModuleHandleEx addref", lookup_handle_addref, FALSE, TRUE },
+        { "GetModuleHandleEx pin", lookup_handle_pin, FALSE, TRUE },
+        { "GetModuleHandleEx address", lookup_handle_address, FALSE, TRUE },
+        { "GetModuleFileName", lookup_filename, FALSE, TRUE },
+        { "GetProcAddress", lookup_proc, FALSE, TRUE },
+        { "GetProcAddress forward", lookup_proc_forward, FALSE, TRUE },
+        { "GetProcAddress missing", lookup_proc_missing, FALSE, TRUE },
+        { "GetProcAddress initializing", lookup_proc_initializing, TRUE },
+        { "RtlPcToFileHeader", lookup_pc, FALSE, TRUE },
+        { "RtlPcToFileHeader initializing", lookup_pc_initializing, FALSE, TRUE },
+        { "CreateThread", lookup_create_thread, TRUE },
+    };
+    HANDLE thread_a, thread_b;
+    unsigned int i;
+    DWORD ret;
+
+    pRtlPcToFileHeader = (void *)GetProcAddress( GetModuleHandleA( "ntdll.dll" ), "RtlPcToFileHeader" );
+    create_entry_point_dll( plain_dll, plain_dll_entry );
+    create_entry_point_dll( new_dll, plain_dll_entry );
+    create_entry_point_dll( blocking_dll, blocking_dll_entry );
+    plain_module = LoadLibraryA( plain_dll );
+    ok( plain_module != NULL, "LoadLibrary failed, error %lu\n", GetLastError() );
+    dllmain_entered = CreateEventW( NULL, FALSE, FALSE, NULL );
+    dllmain_release = CreateEventW( NULL, TRUE, FALSE, NULL );
+    lookup_ready = CreateEventW( NULL, FALSE, FALSE, NULL );
+    lookup_go = CreateEventW( NULL, FALSE, FALSE, NULL );
+    lookup_done = CreateEventW( NULL, TRUE, FALSE, NULL );
+
+    for (i = 0; i < ARRAY_SIZE(tests); i++)
+    {
+        winetest_push_context( "%s", tests[i].name );
+        ResetEvent( dllmain_release );
+        ResetEvent( lookup_done );
+        /* thread B has to be running before thread A takes the loader lock */
+        thread_b = CreateThread( NULL, 0, lookup_thread, tests[i].func, 0, NULL );
+        WaitForSingleObject( lookup_ready, INFINITE );
+        thread_a = CreateThread( NULL, 0, load_blocking_thread, NULL, 0, NULL );
+        ret = WaitForSingleObject( dllmain_entered, 5000 );
+        ok( !ret, "DllMain not called\n" );
+
+        SetEvent( lookup_go );
+        ret = WaitForSingleObject( lookup_done, tests[i].waits ? 200 : 1000 );
+        todo_wine_if( tests[i].todo )
+        ok( ret == (tests[i].waits ? WAIT_TIMEOUT : WAIT_OBJECT_0), "got %#lx\n", ret );
+
+        SetEvent( dllmain_release );
+        WaitForSingleObject( thread_a, INFINITE );
+        WaitForSingleObject( thread_b, INFINITE );
+        CloseHandle( thread_a );
+        CloseHandle( thread_b );
+        FreeLibrary( blocking_module );
+        winetest_pop_context();
+    }
+
+    FreeLibrary( plain_module );
+    CloseHandle( dllmain_entered );
+    CloseHandle( dllmain_release );
+    CloseHandle( lookup_ready );
+    CloseHandle( lookup_go );
+    CloseHandle( lookup_done );
+    DeleteFileA( plain_dll );
+    DeleteFileA( new_dll );
+    DeleteFileA( blocking_dll );
+}
+
+#else
+
+static void test_lookups_during_dllmain(void)
+{
+    skip( "not supported on this platform\n" );
+}
+
+#endif
+
 #define MAX_COUNT 10
 static HANDLE attached_thread[MAX_COUNT];
 static DWORD attached_thread_count;
@@ -5010,6 +5312,7 @@ START_TEST(loader)
     test_security_cookie_readonly();
     test_import_resolution();
     test_export_forwarder_dep_chain();
+    test_lookups_during_dllmain();
     test_ExitProcess();
     test_InMemoryOrderModuleList();
     test_LoadPackagedLibrary();
