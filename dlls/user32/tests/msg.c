@@ -5508,8 +5508,22 @@ static void CALLBACK apc_test_proc(ULONG_PTR param)
 
 static void test_MsgWaitForMultipleObjects(HWND hwnd)
 {
+    LARGE_INTEGER freq, start, end;
     DWORD ret;
     MSG msg;
+    int i;
+
+    /* short timeouts don't expire early */
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&start);
+    for (i = 0; i < 10; i++)
+    {
+        ret = MsgWaitForMultipleObjects(0, NULL, FALSE, 1, QS_ALLINPUT);
+        ok(ret == WAIT_TIMEOUT, "MsgWaitForMultipleObjects returned %lx\n", ret);
+    }
+    QueryPerformanceCounter(&end);
+    ok((end.QuadPart - start.QuadPart) * 1000 >= 8 * freq.QuadPart, "10 waits of 1 ms took %I64d us\n",
+       (end.QuadPart - start.QuadPart) * 1000000 / freq.QuadPart);
 
     ret = MsgWaitForMultipleObjects(0, NULL, FALSE, 0, QS_POSTMESSAGE);
     ok(ret == WAIT_TIMEOUT, "MsgWaitForMultipleObjects returned %lx\n", ret);

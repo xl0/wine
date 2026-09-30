@@ -3407,16 +3407,19 @@ static DWORD wait_message( DWORD count, const HANDLE *handles, DWORD timeout, DW
 {
     struct thunk_lock_params params = {.dispatch.callback = thunk_lock_callback};
     WAIT_TYPE type = flags & MWMO_WAITALL ? WaitAll : WaitAny;
-    LARGE_INTEGER time, now, *abs;
+    LARGE_INTEGER time, start, now, freq, *timeout_ptr;
     void *ret_ptr;
     ULONG ret_len;
     HANDLE event;
+    LONGLONG rel = 0;
     DWORD ret;
 
-    if ((abs = get_nt_timeout( &time, timeout )))
+    /* Relative timeouts, counted from here: NtQuerySystemTime() is coarse and may lag behind the
+     * server's clock, and wall clock steps would move an absolute deadline. */
+    if ((timeout_ptr = get_nt_timeout( &time, timeout )))
     {
-        NtQuerySystemTime( &now );
-        abs->QuadPart = now.QuadPart - abs->QuadPart;
+        rel = time.QuadPart;
+        NtQueryPerformanceCounter( &start, &freq );
     }
 
     if (!KeUserDispatchCallback( &params.dispatch, sizeof(params), &ret_ptr, &ret_len ) &&
@@ -3429,8 +3432,16 @@ static DWORD wait_message( DWORD count, const HANDLE *handles, DWORD timeout, DW
     process_driver_events( QS_ALLINPUT, wake_mask, changed_mask );
     if (!(changed_mask & QS_SMRESULT) && (event = get_user_thread_info()->idle_event)) NtSetEvent( event, NULL );
 
-    do ret = NtWaitForMultipleObjects( count, handles, type, !!(flags & MWMO_ALERTABLE), abs );
-    while (ret == count - 1 && !process_driver_events( QS_ALLINPUT, wake_mask, changed_mask ));
+    for (;;)
+    {
+        if (timeout_ptr)
+        {
+            NtQueryPerformanceCounter( &now, NULL );
+            time.QuadPart = min( 0, rel + (now.QuadPart - start.QuadPart) * 10000000 / freq.QuadPart );
+        }
+        ret = NtWaitForMultipleObjects( count, handles, type, !!(flags & MWMO_ALERTABLE), timeout_ptr );
+        if (ret != count - 1 || process_driver_events( QS_ALLINPUT, wake_mask, changed_mask )) break;
+    }
 
     if (HIWORD(ret)) /* is it an error code? */
     {
