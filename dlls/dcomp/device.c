@@ -827,12 +827,16 @@ static DWORD WINAPI composite_thread_proc(void *iface)
 {
     struct composition_device *device = impl_from_IDCompositionDevice(iface);
     unsigned int count, frequency, refresh_period;
+    static const BOOLEAN high_res = TRUE;
     struct composition_target *target;
     struct composition_visual *visual;
     BOOL compose_all;
     DWORD now;
     LONG damage;
     HDC hdc;
+
+    /* DWM composes on Windows, not bound to the timer resolution of the process */
+    NtSetInformationThread(GetCurrentThread(), ThreadWineHighResolutionTimers, &high_res, sizeof(high_res));
 
     /* TODO: Implement and use D3DKMTWaitForVerticalBlankEvent() */
     hdc = GetDC(0);
