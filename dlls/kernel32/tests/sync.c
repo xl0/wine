@@ -27,6 +27,7 @@
 #include <windef.h>
 #include <winbase.h>
 #include <winternl.h>
+#include <mmsystem.h>
 #include <setjmp.h>
 
 #include "wine/test.h"
@@ -68,6 +69,7 @@ static PSLIST_ENTRY (WINAPI *pRtlInterlockedPushListSListEx)(PSLIST_HEADER list,
                                                              PSLIST_ENTRY last, ULONG count);
 static NTSTATUS (WINAPI *pNtQueueApcThread)(HANDLE,PNTAPCFUNC,ULONG_PTR,ULONG_PTR,ULONG_PTR);
 static NTSTATUS (WINAPI *pNtTestAlert)(void);
+static NTSTATUS (WINAPI *pNtSetTimerResolution)(ULONG, BOOLEAN, ULONG *);
 
 BOOL (WINAPI *pInitializeSynchronizationBarrier)(SYNCHRONIZATION_BARRIER *,LONG, LONG);
 BOOL (WINAPI *pDeleteSynchronizationBarrier)(SYNCHRONIZATION_BARRIER *);
@@ -1283,6 +1285,100 @@ static HANDLE modify_handle(HANDLE handle, DWORD modify)
     DWORD tmp = HandleToULong(handle);
     tmp |= modify;
     return ULongToHandle(tmp);
+}
+
+static HANDLE port;
+
+/* mean duration of Sleep(1) calls, of 1 ms timers or of 1 ms completion port waits */
+static double wait_1ms( HANDLE timer )
+{
+    LARGE_INTEGER due = {.QuadPart = -10000}, start, end, freq;
+    OVERLAPPED *overlapped;
+    ULONG_PTR key;
+    DWORD size;
+    int i;
+
+    QueryPerformanceFrequency( &freq );
+    QueryPerformanceCounter( &start );
+    for (i = 0; i < 8; i++)
+    {
+        if (!timer) Sleep( 1 );
+        else if (timer == port) GetQueuedCompletionStatus( port, &size, &key, &overlapped, 1 );
+        else
+        {
+            SetWaitableTimer( timer, &due, 0, NULL, NULL, FALSE );
+            WaitForSingleObject( timer, INFINITE );
+        }
+    }
+    QueryPerformanceCounter( &end );
+    return (end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart / 8;
+}
+
+static void test_timer_resolution(void)
+{
+    MMRESULT (WINAPI *ptimeBeginPeriod)(UINT);
+    MMRESULT (WINAPI *ptimeEndPeriod)(UINT);
+    HMODULE winmm = LoadLibraryA( "winmm.dll" );
+    NTSTATUS status;
+    HANDLE timer;
+    MMRESULT ret;
+    double ms;
+    ULONG cur;
+
+    port = CreateIoCompletionPort( INVALID_HANDLE_VALUE, NULL, 0, 1 );
+    ptimeBeginPeriod = (void *)GetProcAddress( winmm, "timeBeginPeriod" );
+    ptimeEndPeriod = (void *)GetProcAddress( winmm, "timeEndPeriod" );
+
+    /* Since Windows 10 2004, the timed waits and timers of a process that didn't raise its own
+     * timer resolution expire on the 15.625 ms clock tick, whatever other processes requested. */
+    ms = wait_1ms( NULL );
+    ok( ms >= 10.0 || broken( ms < 10.0 ), "Sleep(1) took %.2f ms\n", ms );
+    ms = wait_1ms( port );
+    ok( ms >= 10.0 || broken( ms < 10.0 ), "GetQueuedCompletionStatus took %.2f ms\n", ms );
+
+    timer = CreateWaitableTimerExW( NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS );
+    ok( timer || broken( GetLastError() == ERROR_INVALID_PARAMETER ) /* before Win10 1803 */,
+        "got error %lu\n", GetLastError() );
+    if (timer)
+    {
+        ms = wait_1ms( timer );
+        ok( ms < 10.0, "high resolution timer took %.2f ms\n", ms );
+        CloseHandle( timer );
+    }
+
+    /* only periods shorter than the tick raise the resolution */
+    ret = ptimeBeginPeriod( 20 );
+    ok( !ret, "got %u\n", ret );
+    ms = wait_1ms( NULL );
+    ok( ms >= 10.0 || broken( ms < 10.0 ), "Sleep(1) took %.2f ms\n", ms );
+    ret = ptimeEndPeriod( 20 );
+    ok( !ret, "got %u\n", ret );
+
+    ret = ptimeBeginPeriod( 1 );
+    ok( !ret, "got %u\n", ret );
+    ret = ptimeBeginPeriod( 2 );
+    ok( !ret, "got %u\n", ret );
+    ms = wait_1ms( NULL );
+    ok( ms < 10.0, "Sleep(1) took %.2f ms\n", ms );
+    ms = wait_1ms( port );
+    ok( ms < 10.0, "GetQueuedCompletionStatus took %.2f ms\n", ms );
+    ret = ptimeEndPeriod( 3 );
+    ok( ret == TIMERR_NOCANDO, "got %u\n", ret );
+    ret = ptimeEndPeriod( 2 );
+    ok( !ret, "got %u\n", ret );
+    ms = wait_1ms( NULL );
+    ok( ms < 10.0, "Sleep(1) took %.2f ms\n", ms );
+
+    /* the last request is the process timer resolution request */
+    status = pNtSetTimerResolution( 10000, FALSE, &cur );
+    ok( !status, "got %#lx\n", status );
+    ms = wait_1ms( NULL );
+    ok( ms >= 10.0 || broken( ms < 10.0 ), "Sleep(1) took %.2f ms\n", ms );
+    ret = ptimeEndPeriod( 1 );
+    ok( !ret, "got %u\n", ret );
+    ret = ptimeEndPeriod( 1 );
+    ok( ret == TIMERR_NOCANDO, "got %u\n", ret );
+    CloseHandle( port );
 }
 
 static void test_WaitForSingleObject(void)
@@ -3397,6 +3493,7 @@ START_TEST(sync)
     pRtlInterlockedPushListSListEx = (void *)GetProcAddress(hntdll, "RtlInterlockedPushListSListEx");
     pNtQueueApcThread = (void *)GetProcAddress(hntdll, "NtQueueApcThread");
     pNtTestAlert = (void *)GetProcAddress(hntdll, "NtTestAlert");
+    pNtSetTimerResolution = (void *)GetProcAddress(hntdll, "NtSetTimerResolution");
 
     argc = winetest_get_mainargs( &argv );
     if (argc >= 3)
@@ -3420,6 +3517,7 @@ START_TEST(sync)
     test_waitable_timer();
     test_iocp_callback();
     test_timer_queue();
+    test_timer_resolution();
     test_WaitForSingleObject();
     test_WaitForMultipleObjects();
     test_initonce();

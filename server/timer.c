@@ -57,6 +57,8 @@ struct timer
     int                  signaled;  /* current signaled state */
     unsigned int         period;    /* timer period in ms */
     abstime_t            when;      /* next expiration */
+    int                  high_res;  /* exempt from the timer resolution */
+    unsigned int         resolution; /* expirations are rounded up to this tick, 0 for none */
     struct timeout_user *timeout;   /* timeout user */
     struct thread       *thread;    /* thread that set the APC function */
     client_ptr_t         callback;  /* callback APC function */
@@ -66,6 +68,7 @@ struct timer
 struct timer_init_data
 {
     int manual;
+    int high_res;
 };
 
 static void timer_dump( struct object *obj, int verbose );
@@ -83,6 +86,32 @@ static const struct object_ops timer_ops =
     .destroy  = timer_destroy,
 };
 
+
+/* timeout of the next expiration, extended to the first tick of the timer resolution (on the
+ * monotonic clock) at or after timer->when; a periodic timer that fell behind (next) fires once
+ * per tick. Absolute timeouts stay absolute. */
+static timeout_t get_timer_timeout( struct timer *timer, int next )
+{
+    unsigned int res = timer->high_res ? 0 : timer->resolution;
+    timeout_t timeout = abstime_to_timeout( timer->when ), when, rounded;
+
+    if (!res) return timeout;
+    if (timer->when > 0)
+    {
+        /* due before the last tick */
+        if (timer->when <= current_time - res || timer->when > TIMEOUT_INFINITE - res) return timeout;
+        when = monotonic_time + timer->when - current_time;
+    }
+    else
+    {
+        if (!timeout) return next ? monotonic_time - (monotonic_time / res + 1) * res : 0;
+        if (-timer->when > TIMEOUT_INFINITE - res) return timeout;
+        when = -timer->when;
+    }
+    rounded = (when + res - 1) / res * res;
+    if (rounded <= monotonic_time) return timeout;
+    return timeout > 0 ? timeout + rounded - when : timeout - (rounded - when);
+}
 
 /* callback on timer expiration */
 static void timer_callback( void *private )
@@ -114,7 +143,7 @@ static void timer_callback( void *private )
     {
         if (timer->when > 0) timer->when = -monotonic_time;
         timer->when -= (abstime_t)timer->period * 10000;
-        timer->timeout = add_timeout_user( abstime_to_timeout(timer->when), timer_callback, timer );
+        timer->timeout = add_timeout_user( get_timer_timeout( timer, 1 ), timer_callback, timer );
     }
     else timer->timeout = NULL;
 
@@ -143,7 +172,7 @@ static int cancel_timer( struct timer *timer )
 
 /* set the timer expiration and period */
 static int set_timer( struct timer *timer, timeout_t expire, unsigned int period,
-                      client_ptr_t callback, client_ptr_t arg )
+                      unsigned int resolution, client_ptr_t callback, client_ptr_t arg )
 {
     int signaled = cancel_timer( timer );
     if (timer->manual)
@@ -154,11 +183,12 @@ static int set_timer( struct timer *timer, timeout_t expire, unsigned int period
     }
     timer->when     = (expire <= 0) ? expire - monotonic_time : max( expire, current_time );
     timer->period   = period;
+    timer->resolution = resolution;
     timer->callback = callback;
     timer->arg      = arg;
     if (callback) timer->thread = (struct thread *)grab_object( current );
     if (expire != TIMEOUT_INFINITE)
-        timer->timeout = add_timeout_user( expire, timer_callback, timer );
+        timer->timeout = add_timeout_user( get_timer_timeout( timer, 0 ), timer_callback, timer );
     return signaled;
 }
 
@@ -181,6 +211,8 @@ static bool timer_init( struct object *obj, const void *init_data )
     timer->signaled = 0;
     timer->when     = 0;
     timer->period   = 0;
+    timer->high_res = data->high_res;
+    timer->resolution = 0;
     timer->timeout  = NULL;
     timer->thread   = NULL;
     return !!(timer->sync = create_internal_sync( data->manual, 0 ));
@@ -206,7 +238,7 @@ static void timer_destroy( struct object *obj )
 /* create a timer */
 DECL_HANDLER(create_timer)
 {
-    struct timer_init_data data = { .manual = req->manual };
+    struct timer_init_data data = { .manual = req->manual, .high_res = req->high_res };
     struct object_params params = { .ops = &timer_ops, .access = req->access, .init_data = &data };
 
     if (!get_req_object_attributes( &params )) return;
@@ -229,7 +261,7 @@ DECL_HANDLER(set_timer)
     if ((timer = (struct timer *)get_handle_obj( current->process, req->handle,
                                                  TIMER_MODIFY_STATE, &timer_ops )))
     {
-        reply->signaled = set_timer( timer, req->expire, req->period, req->callback, req->arg );
+        reply->signaled = set_timer( timer, req->expire, req->period, req->resolution, req->callback, req->arg );
         release_object( timer );
     }
 }

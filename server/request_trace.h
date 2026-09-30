@@ -1232,6 +1232,7 @@ static void dump_create_timer_request( const struct create_timer_request *req )
 {
     fprintf( stderr, " access=%08x", req->access );
     fprintf( stderr, ", manual=%d", req->manual );
+    fprintf( stderr, ", high_res=%d", req->high_res );
     dump_varargs_object_attributes( ", objattr=", cur_size );
 }
 
@@ -1260,6 +1261,7 @@ static void dump_set_timer_request( const struct set_timer_request *req )
     dump_uint64( ", callback=", &req->callback );
     dump_uint64( ", arg=", &req->arg );
     fprintf( stderr, ", period=%d", req->period );
+    fprintf( stderr, ", resolution=%08x", req->resolution );
 }
 
 static void dump_set_timer_reply( const struct set_timer_reply *req )

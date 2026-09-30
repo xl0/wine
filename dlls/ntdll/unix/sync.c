@@ -107,6 +107,65 @@ static inline ULONGLONG monotonic_counter(void)
     return ticks_from_time_t( now.tv_sec ) + now.tv_usec * 10 - server_start_time;
 }
 
+static BOOL timer_resolution_set;  /* set with NtSetTimerResolution() */
+
+/* Timed waits and timers of a process that didn't raise its timer resolution only expire on the
+ * clock tick (15.625 ms), unless the thread is exempt. Returns the tick, or 0 for no rounding.
+ * WINE_TIMER_RESOLUTION overrides the tick, in 100 ns units; 0 disables the rounding. */
+static ULONG get_timer_resolution(void)
+{
+    static int default_res = -1;
+
+    if (default_res == -1)
+    {
+        const char *env = getenv( "WINE_TIMER_RESOLUTION" );
+        unsigned long val;
+        char *end;
+
+        default_res = 156250;
+        if (env && *env)
+        {
+            errno = 0;
+            val = strtoul( env, &end, 10 );
+            if (!*end && !errno && val <= 10000000) default_res = val;
+            else ERR( "invalid WINE_TIMER_RESOLUTION %s\n", debugstr_a(env) );
+        }
+    }
+    if (timer_resolution_set || get_thread_data()->high_res_timers) return 0;
+    return default_res;
+}
+
+/* extend a wait timeout to the next tick of the monotonic clock; absolute timeouts stay absolute */
+static const LARGE_INTEGER *round_timeout( const LARGE_INTEGER *timeout, LARGE_INTEGER *buf )
+{
+    LONGLONG now, when, rounded;
+    ULONG res;
+
+    if (!timeout || !timeout->QuadPart || timeout->QuadPart == TIMEOUT_INFINITE) return timeout;
+    if (!(res = get_timer_resolution())) return timeout;
+
+    now = monotonic_counter();
+    if (timeout->QuadPart < 0)
+    {
+        if (timeout->QuadPart < now + res - LLONG_MAX) return timeout;  /* practically infinite */
+        when = now - timeout->QuadPart;
+    }
+    else
+    {
+        LARGE_INTEGER system;
+
+        if (timeout->QuadPart > LLONG_MAX - res) return timeout;
+        NtQuerySystemTime( &system );
+        when = now + timeout->QuadPart - system.QuadPart;
+        if (when <= now - res) return timeout;  /* due before the last tick */
+    }
+    rounded = (when + res - 1) / res * res;
+    if (rounded <= now) return timeout;
+    buf->QuadPart = timeout->QuadPart < 0 ? timeout->QuadPart - (rounded - when)
+                                          : timeout->QuadPart + (rounded - when);
+    return buf;
+}
+
 #ifdef __linux__
 
 #define USE_FUTEX
@@ -2196,6 +2255,7 @@ NTSTATUS WINAPI NtCreateTimer2( HANDLE *handle, void *reserved, const OBJECT_ATT
     {
         req->access   = access;
         req->manual   = !!(attributes & EX_TIMER_NOTIFICATION);
+        req->high_res = !!(attributes & EX_TIMER_HIGH_RESOLUTION);
         wine_server_add_data( req, objattr, len );
         ret = wine_server_call( req );
         *handle = wine_server_ptr_handle( reply->handle );
@@ -2248,6 +2308,7 @@ NTSTATUS WINAPI NtSetTimer( HANDLE handle, const LARGE_INTEGER *when, PTIMER_APC
     {
         req->handle   = wine_server_obj_handle( handle );
         req->period   = period;
+        req->resolution = get_timer_resolution();
         req->expire   = when->QuadPart;
         req->callback = wine_server_client_ptr( callback );
         req->arg      = wine_server_client_ptr( arg );
@@ -2339,6 +2400,7 @@ NTSTATUS WINAPI NtWaitForMultipleObjects( DWORD count, const HANDLE *handles, WA
 {
     union select_op select_op;
     UINT i, flags = SELECT_INTERRUPTIBLE;
+    LARGE_INTEGER rounded;
     unsigned int ret;
 
     if (!count || count > MAXIMUM_WAIT_OBJECTS) return STATUS_INVALID_PARAMETER_1;
@@ -2357,6 +2419,7 @@ NTSTATUS WINAPI NtWaitForMultipleObjects( DWORD count, const HANDLE *handles, WA
         if (is_pseudo_handle( handles[i] )) return STATUS_INVALID_HANDLE;
     }
 
+    timeout = round_timeout( timeout, &rounded );
     if ((ret = inproc_wait( count, handles, type, alertable, timeout )) != STATUS_NOT_IMPLEMENTED)
     {
         TRACE( "-> %#x\n", ret );
@@ -2379,10 +2442,12 @@ NTSTATUS WINAPI NtWaitForSingleObject( HANDLE handle, BOOLEAN alertable, const L
 {
     union select_op select_op;
     UINT flags = SELECT_INTERRUPTIBLE;
+    LARGE_INTEGER rounded;
     unsigned int ret;
 
     TRACE( "handle %p, alertable %u, timeout %s\n", handle, alertable, debugstr_timeout(timeout) );
 
+    timeout = round_timeout( timeout, &rounded );
     if ((ret = inproc_wait( 1, &handle, WaitAny, alertable, timeout )) != STATUS_NOT_IMPLEMENTED)
     {
         TRACE( "-> %#x\n", ret );
@@ -2406,11 +2471,13 @@ NTSTATUS WINAPI NtSignalAndWaitForSingleObject( HANDLE signal, HANDLE wait,
 {
     union select_op select_op;
     UINT flags = SELECT_INTERRUPTIBLE;
+    LARGE_INTEGER rounded;
     NTSTATUS ret;
 
     TRACE( "signal %p, wait %p, alertable %u, timeout %s\n", signal, wait, alertable, debugstr_timeout(timeout) );
 
     if (!signal) return STATUS_INVALID_HANDLE;
+    timeout = round_timeout( timeout, &rounded );
 
     if ((ret = inproc_signal_and_wait( signal, wait, alertable, timeout )) != STATUS_NOT_IMPLEMENTED)
         return ret;
@@ -2453,6 +2520,9 @@ NTSTATUS WINAPI NtYieldExecution(void)
 NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeout )
 {
     unsigned int status = STATUS_SUCCESS;
+    LARGE_INTEGER rounded;
+
+    timeout = round_timeout( timeout, &rounded );
 
     /* if alertable, we need to query the server */
     if (alertable)
@@ -2582,8 +2652,6 @@ NTSTATUS WINAPI NtQueryTimerResolution( ULONG *min_res, ULONG *max_res, ULONG *c
  */
 NTSTATUS WINAPI NtSetTimerResolution( ULONG res, BOOLEAN set, ULONG *current_res )
 {
-    static BOOL has_request = FALSE;
-
     TRACE( "(%u,%u,%p), semi-stub!\n", res, set, current_res );
 
     /* Wine has no support for anything other that 1 ms and does not keep of
@@ -2594,12 +2662,12 @@ NTSTATUS WINAPI NtSetTimerResolution( ULONG res, BOOLEAN set, ULONG *current_res
      */
     *current_res = 10000;
 
-    /* Just keep track of whether this process requested a specific timer
-     * resolution.
+    /* Keep track of whether this process requested a specific timer
+     * resolution: the waits of processes that didn't are rounded to the clock tick.
      */
-    if (!has_request && !set)
+    if (!timer_resolution_set && !set)
         return STATUS_TIMER_RESOLUTION_NOT_SET;
-    has_request = set;
+    timer_resolution_set = set;
 
     return STATUS_SUCCESS;
 }
@@ -2711,6 +2779,7 @@ NTSTATUS WINAPI NtWaitForKeyedEvent( HANDLE handle, const void *key,
 {
     union select_op select_op;
     UINT flags = SELECT_INTERRUPTIBLE;
+    LARGE_INTEGER rounded;
 
     TRACE( "handle %p, key %p, alertable %u, timeout %s\n", handle, key, alertable, debugstr_timeout(timeout) );
 
@@ -2720,7 +2789,7 @@ NTSTATUS WINAPI NtWaitForKeyedEvent( HANDLE handle, const void *key,
     select_op.keyed_event.op     = SELECT_KEYED_EVENT_WAIT;
     select_op.keyed_event.handle = wine_server_obj_handle( handle );
     select_op.keyed_event.key    = wine_server_client_ptr( key );
-    return server_wait( &select_op, sizeof(select_op.keyed_event), flags, timeout );
+    return server_wait( &select_op, sizeof(select_op.keyed_event), flags, round_timeout( timeout, &rounded ));
 }
 
 
@@ -2732,6 +2801,7 @@ NTSTATUS WINAPI NtReleaseKeyedEvent( HANDLE handle, const void *key,
 {
     union select_op select_op;
     UINT flags = SELECT_INTERRUPTIBLE;
+    LARGE_INTEGER rounded;
 
     TRACE( "handle %p, key %p, alertable %u, timeout %s\n", handle, key, alertable, debugstr_timeout(timeout) );
 
@@ -2741,7 +2811,7 @@ NTSTATUS WINAPI NtReleaseKeyedEvent( HANDLE handle, const void *key,
     select_op.keyed_event.op     = SELECT_KEYED_EVENT_RELEASE;
     select_op.keyed_event.handle = wine_server_obj_handle( handle );
     select_op.keyed_event.key    = wine_server_client_ptr( key );
-    return server_wait( &select_op, sizeof(select_op.keyed_event), flags, timeout );
+    return server_wait( &select_op, sizeof(select_op.keyed_event), flags, round_timeout( timeout, &rounded ));
 }
 
 
@@ -2860,6 +2930,7 @@ NTSTATUS WINAPI NtRemoveIoCompletion( HANDLE handle, ULONG_PTR *key, ULONG_PTR *
                                       IO_STATUS_BLOCK *io, LARGE_INTEGER *timeout )
 {
     HANDLE wait_handle = NULL;
+    LARGE_INTEGER rounded;
     unsigned int status;
 
     TRACE( "(%p, %p, %p, %p, %p)\n", handle, key, value, io, timeout );
@@ -2879,7 +2950,8 @@ NTSTATUS WINAPI NtRemoveIoCompletion( HANDLE handle, ULONG_PTR *key, ULONG_PTR *
     }
     SERVER_END_REQ;
     if (status != STATUS_PENDING) return status;
-    if (!timeout || timeout->QuadPart) status = server_wait_for_object( wait_handle, FALSE, timeout );
+    if (!timeout || timeout->QuadPart)
+        status = server_wait_for_object( wait_handle, FALSE, round_timeout( timeout, &rounded ));
     else                               status = STATUS_TIMEOUT;
     if (status != WAIT_OBJECT_0) return status;
 
@@ -2906,6 +2978,7 @@ NTSTATUS WINAPI NtRemoveIoCompletionEx( HANDLE handle, FILE_IO_COMPLETION_INFORM
                                         ULONG *written, LARGE_INTEGER *timeout, BOOLEAN alertable )
 {
     HANDLE wait_handle = NULL;
+    LARGE_INTEGER rounded;
     unsigned int status;
     ULONG i = 0;
 
@@ -2943,7 +3016,8 @@ NTSTATUS WINAPI NtRemoveIoCompletionEx( HANDLE handle, FILE_IO_COMPLETION_INFORM
         assert( status == STATUS_USER_APC );
         goto done;
     }
-    if (!timeout || timeout->QuadPart) status = server_wait_for_object( wait_handle, alertable, timeout );
+    if (!timeout || timeout->QuadPart)
+        status = server_wait_for_object( wait_handle, alertable, round_timeout( timeout, &rounded ));
     else                               status = STATUS_TIMEOUT;
     if (status != WAIT_OBJECT_0) goto done;
 
@@ -3617,6 +3691,9 @@ static LONGLONG update_timeout( ULONGLONG end )
  */
 NTSTATUS WINAPI NtWaitForAlertByThreadId( const void *address, const LARGE_INTEGER *timeout )
 {
+#if defined(USE_FUTEX) || defined(HAVE_KQUEUE)
+    LARGE_INTEGER rounded;
+#endif
     union tid_alert_entry *entry = get_tid_alert_entry( ULongToHandle(get_thread_data()->tid) );
 
     TRACE( "%p %s\n", address, debugstr_timeout( timeout ) );
@@ -3634,7 +3711,7 @@ NTSTATUS WINAPI NtWaitForAlertByThreadId( const void *address, const LARGE_INTEG
             if (timeout->QuadPart == TIMEOUT_INFINITE)
                 timeout = NULL;
             else
-                end = get_absolute_timeout( timeout );
+                end = get_absolute_timeout( round_timeout( timeout, &rounded ));
         }
 
         while (!InterlockedExchange( futex, 0 ))
@@ -3667,7 +3744,7 @@ NTSTATUS WINAPI NtWaitForAlertByThreadId( const void *address, const LARGE_INTEG
             if (timeout->QuadPart == TIMEOUT_INFINITE)
                 timeout = NULL;
             else
-                end = get_absolute_timeout( timeout );
+                end = get_absolute_timeout( round_timeout( timeout, &rounded ));
         }
 
         do

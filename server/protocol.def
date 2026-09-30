@@ -2237,6 +2237,7 @@ struct process_info
 @REQ(create_timer)
     unsigned int access;        /* wanted access rights */
     int          manual;        /* manual reset */
+    int          high_res;      /* expirations aren't rounded to the timer resolution */
     VARARG(objattr,object_attributes); /* object attributes */
 @REPLY
     obj_handle_t handle;        /* handle to the timer */
@@ -2260,6 +2261,7 @@ struct process_info
     client_ptr_t callback;      /* callback function */
     client_ptr_t arg;           /* callback argument */
     int          period;        /* timer period in ms */
+    unsigned int resolution;    /* round expirations up to this tick (100 ns units), 0 for none */
 @REPLY
     int          signaled;      /* was the timer signaled before this call ? */
 @END

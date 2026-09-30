@@ -235,6 +235,12 @@ If an individual setting is specified in both
 the environment variable and the registry, the former takes precedence.
 .RE
 .TP
+.B WINE_TIMER_RESOLUTION
+Specifies the clock tick, in 100 ns units, that timed waits and timers of a
+process are rounded up to unless it requested a timer resolution with
+\fBtimeBeginPeriod\fR() or \fBNtSetTimerResolution\fR(), as on Windows.
+The default is 156250 (15.625 ms); 0 disables the rounding.
+.TP
 .B DISPLAY
 Specifies the X11 display to use.
 .TP

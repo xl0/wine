@@ -41,6 +41,7 @@ static NTSTATUS (WINAPI *pNtQuerySystemInformation)( SYSTEM_INFORMATION_CLASS cl
 static NTSTATUS (WINAPI *pRtlQueryTimeZoneInformation)( RTL_TIME_ZONE_INFORMATION *);
 static NTSTATUS (WINAPI *pRtlQueryDynamicTimeZoneInformation)( RTL_DYNAMIC_TIME_ZONE_INFORMATION *);
 static BOOL     (WINAPI *pRtlQueryUnbiasedInterruptTime)( ULONGLONG *time );
+static NTSTATUS (WINAPI *pNtCreateTimer2)( HANDLE *, void *, const OBJECT_ATTRIBUTES *, ULONG, ACCESS_MASK );
 
 #if (defined(__i386__) || defined(__x86_64__)) && !defined(__arm64ec__)
 static BOOL     (WINAPI *pRtlQueryPerformanceCounter)(LARGE_INTEGER*);
@@ -339,6 +340,100 @@ static void test_TimerResolution(void)
     ok(cur2 == cur, "expected requested timer resolution %lu, got %lu\n", set, cur2);
 }
 
+/* mean duration of 1 ms NtDelayExecution() calls, or of 1 ms timers */
+static double wait_1ms( HANDLE timer )
+{
+    LARGE_INTEGER timeout = {.QuadPart = -10000}, start, end, freq;
+    int i;
+
+    NtQueryPerformanceCounter( &start, &freq );
+    for (i = 0; i < 8; i++)
+    {
+        if (!timer) NtDelayExecution( FALSE, &timeout );
+        else
+        {
+            NtSetTimer( timer, &timeout, NULL, NULL, FALSE, 0, NULL );
+            NtWaitForSingleObject( timer, FALSE, NULL );
+        }
+    }
+    NtQueryPerformanceCounter( &end, NULL );
+    return (end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart / 8;
+}
+
+static void test_timer_rounding(void)
+{
+    LARGE_INTEGER zero = {{0}}, timeout;
+    HANDLE timer, timer2, handles[2];
+    NTSTATUS status;
+    double ms;
+    ULONG cur;
+
+    /* Since Windows 10 2004, the timed waits and timers of a process that didn't raise its own
+     * timer resolution expire on the 15.625 ms clock tick, whatever other processes requested. */
+    ms = wait_1ms( NULL );
+    ok( ms >= 10.0 || broken( ms < 10.0 ), "NtDelayExecution took %.2f ms\n", ms );
+    status = NtCreateTimer( &timer, TIMER_ALL_ACCESS, NULL, SynchronizationTimer );
+    ok( !status, "got %#lx\n", status );
+    ms = wait_1ms( timer );
+    ok( ms >= 10.0 || broken( ms < 10.0 ), "timer took %.2f ms\n", ms );
+
+    /* very long timeouts are still waited for */
+    status = NtCreateEvent( &handles[0], EVENT_ALL_ACCESS, NULL, NotificationEvent, FALSE );
+    ok( !status, "got %#lx\n", status );
+    handles[1] = timer;
+    timeout.QuadPart = -300000;
+    NtSetTimer( timer, &timeout, NULL, NULL, FALSE, 0, NULL );
+    timeout.QuadPart = (LONGLONG)0x8000000000000000;
+    status = NtWaitForMultipleObjects( 2, handles, WaitAny, FALSE, &timeout );
+    ok( status == 1, "got %#lx\n", status );
+    timeout.QuadPart = -300000;
+    NtSetTimer( timer, &timeout, NULL, NULL, FALSE, 0, NULL );
+    timeout.QuadPart = (LONGLONG)0x8000000000000001;
+    status = NtWaitForMultipleObjects( 2, handles, WaitAny, FALSE, &timeout );
+    ok( status == 1, "got %#lx\n", status );
+    NtClose( handles[0] );
+
+    NtQuerySystemTime( &timeout );
+    timeout.QuadPart -= 10000;
+    status = NtDelayExecution( FALSE, &timeout );
+    ok( !status, "got %#lx\n", status );
+
+    if (!pNtCreateTimer2) win_skip( "NtCreateTimer2 is not available\n" );
+    else
+    {
+        status = pNtCreateTimer2( &timer2, NULL, NULL, 1, TIMER_ALL_ACCESS );
+        ok( status == STATUS_INVALID_PARAMETER_4, "got %#lx\n", status );
+        status = pNtCreateTimer2( &timer2, NULL, NULL, 2, TIMER_ALL_ACCESS );
+        ok( status == STATUS_INVALID_PARAMETER, "got %#lx\n", status );
+        status = pNtCreateTimer2( &timer2, NULL, NULL, 0, TIMER_ALL_ACCESS );
+        ok( !status, "got %#lx\n", status );
+        ms = wait_1ms( timer2 );
+        ok( ms >= 10.0 || broken( ms < 10.0 ), "timer took %.2f ms\n", ms );
+        status = NtWaitForSingleObject( timer2, FALSE, &zero );
+        ok( status == STATUS_TIMEOUT, "got %#lx\n", status );
+        NtClose( timer2 );
+
+        status = pNtCreateTimer2( &timer2, NULL, NULL, EX_TIMER_HIGH_RESOLUTION | EX_TIMER_NOTIFICATION,
+                                  TIMER_ALL_ACCESS );
+        ok( !status, "got %#lx\n", status );
+        ms = wait_1ms( timer2 );
+        ok( ms < 10.0, "high resolution timer took %.2f ms\n", ms );
+        status = NtWaitForSingleObject( timer2, FALSE, &zero );
+        ok( !status, "got %#lx\n", status );
+        NtClose( timer2 );
+    }
+
+    status = NtSetTimerResolution( 10000, TRUE, &cur );
+    ok( !status, "got %#lx\n", status );
+    ms = wait_1ms( NULL );
+    ok( ms < 10.0, "NtDelayExecution took %.2f ms\n", ms );
+    ms = wait_1ms( timer );
+    ok( ms < 10.0, "timer took %.2f ms\n", ms );
+    status = NtSetTimerResolution( 10000, FALSE, &cur );
+    ok( !status, "got %#lx\n", status );
+    NtClose( timer );
+}
+
 static void test_RtlQueryTimeZoneInformation(void)
 {
     RTL_DYNAMIC_TIME_ZONE_INFORMATION tzinfo, tzinfo2;
@@ -541,6 +636,7 @@ START_TEST(time)
     pRtlQueryDynamicTimeZoneInformation =
         (void *)GetProcAddress(mod, "RtlQueryDynamicTimeZoneInformation");
     pRtlQueryUnbiasedInterruptTime = (void *)GetProcAddress(mod, "RtlQueryUnbiasedInterruptTime");
+    pNtCreateTimer2 = (void *)GetProcAddress(mod, "NtCreateTimer2");
 #if (defined(__i386__) || defined(__x86_64__)) && !defined(__arm64ec__)
     pRtlQueryPerformanceCounter = (void *)GetProcAddress(mod, "RtlQueryPerformanceCounter");
     pRtlQueryPerformanceFrequency = (void *)GetProcAddress(mod, "RtlQueryPerformanceFrequency");
@@ -562,5 +658,6 @@ START_TEST(time)
     test_RtlQueryPerformanceCounter();
 #endif
     test_TimerResolution();
+    test_timer_rounding();
     test_NtConvertBetweenAuxiliaryCounterAndPerformanceCounter();
 }

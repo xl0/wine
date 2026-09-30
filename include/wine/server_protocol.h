@@ -2842,8 +2842,8 @@ struct create_timer_request
     struct request_header __header;
     unsigned int access;
     int          manual;
+    int          high_res;
     /* VARARG(objattr,object_attributes); */
-    char __pad_20[4];
 };
 struct create_timer_reply
 {
@@ -2878,7 +2878,7 @@ struct set_timer_request
     client_ptr_t callback;
     client_ptr_t arg;
     int          period;
-    char __pad_44[4];
+    unsigned int resolution;
 };
 struct set_timer_reply
 {
@@ -7284,6 +7284,6 @@ union generic_reply
     struct dcomp_get_shared_visual_info_reply dcomp_get_shared_visual_info_reply;
 };
 
-#define SERVER_PROTOCOL_VERSION 967
+#define SERVER_PROTOCOL_VERSION 968
 
 #endif /* __WINE_WINE_SERVER_PROTOCOL_H */
