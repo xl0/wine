@@ -448,9 +448,8 @@ static void put_property( Display *display, Window win, Atom prop, Atom type, in
 
 static void selection_sleep(void)
 {
-    LARGE_INTEGER timeout;
-    timeout.QuadPart = (ULONGLONG)SELECTION_WAIT * -10000;
-    NtDelayExecution( FALSE, &timeout );
+    /* polling the X server, not rounded to the timer resolution like NtDelayExecution() */
+    usleep( SELECTION_WAIT * 1000 );
 }
 
 /**************************************************************************
