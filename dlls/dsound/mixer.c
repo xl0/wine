@@ -33,6 +33,7 @@
 
 #include "windef.h"
 #include "winbase.h"
+#include "winternl.h"
 #include "mmsystem.h"
 #include "wingdi.h"
 #include "mmreg.h"
@@ -1159,10 +1160,13 @@ static void DSOUND_PerformMix(DirectSoundDevice *device)
 
 DWORD CALLBACK DSOUND_mixthread(void *p)
 {
+	static const BOOLEAN high_res = TRUE;
 	DirectSoundDevice *dev = p;
 
 	TRACE("(%p)\n", dev);
 	SetThreadDescription(GetCurrentThread(), L"wine_dsound_mixer");
+	/* this is the audio engine's job on Windows, not bound to the timer resolution */
+	NtSetInformationThread(GetCurrentThread(), ThreadWineHighResolutionTimers, &high_res, sizeof(high_res));
         _controlfp_s(NULL, _DN_FLUSH, _MCW_DN);
 
         for (;;)

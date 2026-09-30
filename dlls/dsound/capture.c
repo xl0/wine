@@ -31,6 +31,7 @@
 
 #include "windef.h"
 #include "winbase.h"
+#include "winternl.h"
 #include "winuser.h"
 #include "mmsystem.h"
 #include "mmddk.h"
@@ -935,12 +936,15 @@ static HRESULT DSOUND_capture_data(DirectSoundCaptureDevice *device)
 
 static DWORD WINAPI DSOUND_capture_thread(void *user)
 {
+    static const BOOLEAN high_res = TRUE;
     IDirectSoundCaptureBufferImpl *buffer = user;
     HRESULT hr;
     DWORD ret, wait_ms;
     REFERENCE_TIME period;
 
     SetThreadDescription(GetCurrentThread(), L"wine_dsound_capture");
+    /* this is the audio engine's job on Windows, not bound to the timer resolution */
+    NtSetInformationThread(GetCurrentThread(), ThreadWineHighResolutionTimers, &high_res, sizeof(high_res));
 
     hr = IAudioClient_GetDevicePeriod(buffer->device->client, &period, NULL);
     if(FAILED(hr)){
