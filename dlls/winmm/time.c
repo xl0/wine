@@ -25,6 +25,7 @@
 
 #include "windef.h"
 #include "winbase.h"
+#include "winternl.h"
 #include "mmsystem.h"
 
 #include "winemm.h"
@@ -177,10 +178,13 @@ static int TIME_MMSysTimeCallback(void)
  */
 static DWORD CALLBACK TIME_MMSysTimeThread(LPVOID arg)
 {
+    static const BOOLEAN high_res = TRUE;
     int sleep_time;
     BOOL ret;
 
     TRACE("Starting main winmm thread\n");
+    /* multimedia timers keep their period on Windows whatever the timer resolution */
+    NtSetInformationThread(GetCurrentThread(), ThreadWineHighResolutionTimers, &high_res, sizeof(high_res));
 
     EnterCriticalSection(&WINMM_cs);
     while (1)
