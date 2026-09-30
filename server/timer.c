@@ -98,8 +98,8 @@ static timeout_t get_timer_timeout( struct timer *timer, int next )
     if (!res) return timeout;
     if (timer->when > 0)
     {
-        /* due before the last tick */
-        if (timer->when <= current_time - res || timer->when > TIMEOUT_INFINITE - res) return timeout;
+        /* already due */
+        if (timer->when <= current_time || timer->when > TIMEOUT_INFINITE - res) return timeout;
         when = monotonic_time + timer->when - current_time;
     }
     else

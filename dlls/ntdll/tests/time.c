@@ -437,9 +437,10 @@ static void test_timer_rounding(void)
 /* absolute timeouts don't expire before the system time has reached them */
 static void test_absolute_timeout(void)
 {
-    LARGE_INTEGER timeout, now;
+    LARGE_INTEGER timeout, now, start, end, freq;
     HANDLE event, timer;
     NTSTATUS status;
+    double ms;
     ULONG cur;
     int i;
 
@@ -480,6 +481,25 @@ static void test_absolute_timeout(void)
         ok( now.QuadPart >= timeout.QuadPart, "%d: returned %d us early\n",
             i, (int)((timeout.QuadPart - now.QuadPart) / 10) );
     }
+
+    /* timeouts already due don't wait for the next tick */
+    NtQueryPerformanceCounter( &start, &freq );
+    for (i = 0; i < 8; i++)
+    {
+        NtQuerySystemTime( &timeout );
+        timeout.QuadPart -= 10000;
+        status = NtWaitForSingleObject( event, FALSE, &timeout );
+        ok( status == STATUS_TIMEOUT, "got %#lx\n", status );
+        status = NtDelayExecution( FALSE, &timeout );
+        ok( !status, "got %#lx\n", status );
+        status = NtSetTimer( timer, &timeout, NULL, NULL, FALSE, 0, NULL );
+        ok( !status, "got %#lx\n", status );
+        status = NtWaitForSingleObject( timer, FALSE, NULL );
+        ok( !status, "got %#lx\n", status );
+    }
+    NtQueryPerformanceCounter( &end, NULL );
+    ms = (end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart / 8;
+    ok( ms < 5.0, "due timeouts took %.2f ms\n", ms );
     NtClose( timer );
     NtClose( event );
 }

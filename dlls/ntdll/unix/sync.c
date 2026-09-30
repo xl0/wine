@@ -157,7 +157,7 @@ static const LARGE_INTEGER *round_timeout( const LARGE_INTEGER *timeout, LARGE_I
         if (timeout->QuadPart > LLONG_MAX - res) return timeout;
         NtQuerySystemTime( &system );
         when = now + timeout->QuadPart - system.QuadPart;
-        if (when <= now - res) return timeout;  /* due before the last tick */
+        if (when <= now) return timeout;  /* already due */
     }
     rounded = (when + res - 1) / res * res;
     if (rounded <= now) return timeout;
