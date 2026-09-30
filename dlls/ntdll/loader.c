@@ -549,6 +549,25 @@ static int base_address_compare( const void *key, const RTL_BALANCED_NODE *entry
     return 0;
 }
 
+/*************************************************************************
+ *		update_load_count
+ *
+ * Atomically add delta to a module load count (delta 0 pins the module), unless the module is
+ * already pinned. Fails if the count is min or less: lookups that don't hold the loader lock
+ * must not bring a module back to life once its count dropped to 0, nor drop it to 0 themselves.
+ */
+static BOOL update_load_count( LDR_DATA_TABLE_ENTRY *mod, SHORT delta, SHORT min )
+{
+    SHORT count;
+
+    do
+    {
+        if ((count = mod->LoadCount) == -1) return TRUE;
+        if (count <= min) return FALSE;
+    } while (InterlockedCompareExchange16( &mod->LoadCount, delta ? count + delta : -1, count ) != count);
+    return TRUE;
+}
+
 /* compute basename hash */
 static ULONG hash_basename( const UNICODE_STRING *basename )
 {
@@ -886,7 +905,7 @@ static BOOL add_module_dependency_after( LDR_DDAG_NODE *from, LDR_DDAG_NODE *to,
         /* Dependency already exists; consume the module reference stolen from the caller */
         WINE_MODREF *wm = CONTAINING_RECORD( to->Modules.Flink, WINE_MODREF, ldr.NodeModuleLink );
         assert( wm->ldr.LoadCount != 1 );
-        if (wm->ldr.LoadCount != -1) wm->ldr.LoadCount--;
+        update_load_count( &wm->ldr, -1, 0 );
         return TRUE;
     }
 
@@ -976,7 +995,7 @@ static FARPROC find_forwarded_export( HMODULE module, const char *forward, LPCWS
     if (wm->ldr.DdagNode != node_ntdll && wm->ldr.DdagNode != node_kernel32)
     {
         /* Prepare for the callee stealing the reference */
-        if (!wm_loaded && wm->ldr.LoadCount != -1) wm->ldr.LoadCount++;
+        if (!wm_loaded) update_load_count( &wm->ldr, 1, -1 );
         add_module_dependency( importer->ldr.DdagNode, wm->ldr.DdagNode );
         if (is_dynamic && wm_loaded && process_attach( wm->ldr.DdagNode, NULL ) != STATUS_SUCCESS)
         {
@@ -2829,7 +2848,7 @@ static NTSTATUS load_native_dll( LPCWSTR load_path, const UNICODE_STRING *nt_nam
 
     if ((*pwm = find_existing_module( module )))  /* already loaded */
     {
-        if ((*pwm)->ldr.LoadCount != -1) (*pwm)->ldr.LoadCount++;
+        update_load_count( &(*pwm)->ldr, 1, -1 );
         TRACE( "found %s for %s at %p, count=%d\n",
                debugstr_us(&(*pwm)->ldr.FullDllName), debugstr_us(nt_name),
                (*pwm)->ldr.DllBase, (*pwm)->ldr.LoadCount);
@@ -2870,7 +2889,7 @@ static NTSTATUS load_so_dll( LPCWSTR load_path, const UNICODE_STRING *nt_name,
     {
         TRACE( "Found %s at %p for builtin %s\n",
                debugstr_w(wm->ldr.FullDllName.Buffer), wm->ldr.DllBase, debugstr_us(nt_name) );
-        if (wm->ldr.LoadCount != -1) wm->ldr.LoadCount++;
+        update_load_count( &wm->ldr, 1, -1 );
     }
     else
     {
@@ -3369,7 +3388,7 @@ static NTSTATUS load_dll( const WCHAR *load_path, const WCHAR *libname, DWORD fl
 
     if (*pwm)  /* found already loaded module */
     {
-        if ((*pwm)->ldr.LoadCount != -1) (*pwm)->ldr.LoadCount++;
+        update_load_count( &(*pwm)->ldr, 1, -1 );
 
         TRACE("Found %s for %s at %p, count=%d\n",
               debugstr_w((*pwm)->ldr.FullDllName.Buffer), debugstr_w(libname),
@@ -3617,10 +3636,7 @@ NTSTATUS WINAPI LdrAddRefDll( ULONG flags, HMODULE module )
 
     if ((wm = get_modref( module )))
     {
-        if (flags & LDR_ADDREF_DLL_PIN)
-            wm->ldr.LoadCount = -1;
-        else
-            if (wm->ldr.LoadCount != -1) wm->ldr.LoadCount++;
+        update_load_count( &wm->ldr, (flags & LDR_ADDREF_DLL_PIN) ? 0 : 1, -1 );
         TRACE( "(%s) ldr.LoadCount: %d\n", debugstr_w(wm->ldr.BaseDllName.Buffer), wm->ldr.LoadCount );
     }
     else ret = STATUS_INVALID_PARAMETER;
@@ -4113,10 +4129,9 @@ static NTSTATUS MODULE_DecRefCount( LDR_DDAG_NODE *node, void *context )
     if ( wm->ldr.Flags & LDR_UNLOAD_IN_PROGRESS )
         return STATUS_SUCCESS;
 
-    if ( wm->ldr.LoadCount <= 0 )
+    if (!update_load_count( &wm->ldr, -1, 0 ))
         return STATUS_SUCCESS;
 
-    --wm->ldr.LoadCount;
     TRACE("(%s) ldr.LoadCount: %d\n", debugstr_w(wm->ldr.BaseDllName.Buffer), wm->ldr.LoadCount );
 
     if ( wm->ldr.LoadCount == 0 )
