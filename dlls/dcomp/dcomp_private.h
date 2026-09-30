@@ -33,6 +33,10 @@ struct composition_device
     HANDLE thread;
     BOOL exit_thread;
     BOOL thread_exited;
+    unsigned int composed_serial; /* commit_serial at the last composition */
+    LONG damage_serial;           /* damage_serial at the last composition */
+    unsigned int damage_passes;   /* passes left to compose after damage */
+    DWORD full_time;              /* tick count of the last composition of all targets */
     int version;
     LONG ref;
 };
@@ -71,6 +75,7 @@ struct composition_target
     IDXGISwapChain1 *swapchain;
     UINT width, height;
     HANDLE shared_visual_handle;
+    HHOOK getmsg_hook, callwndret_hook;
     struct list entry;
     LONG ref;
 };
@@ -94,6 +99,9 @@ struct composition_visual
     BOOL is_root;
     BOOL is_child;
     HANDLE shared_visual_handle;
+    UINT present_count; /* swapchain content present count at the last composition */
+    struct composition_visual *shared_root; /* root behind shared_visual_handle, as of shared_root_serial */
+    unsigned int shared_root_serial;
     int version;
     LONG ref;
 };
@@ -142,6 +150,7 @@ static inline struct composition_visual *impl_from_IDCompositionVisualUnknown(ID
 
 void dcomp_lock(void);
 void dcomp_unlock(void);
+void dcomp_target_damaged(void);
 HRESULT create_surface(struct composition_surface_factory *factory, UINT width, UINT height,
         DXGI_FORMAT pixel_format, DXGI_ALPHA_MODE alpha_mode, IDCompositionSurface **dcomp_surface);
 HRESULT create_surface_factory(struct composition_device *device, IUnknown *rendering_device, IDCompositionSurfaceFactory **factory);

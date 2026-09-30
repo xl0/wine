@@ -48,6 +48,16 @@ static CRITICAL_SECTION_DEBUG dcomp_debug =
       0, 0, { (DWORD_PTR)(__FILE__ ": dcomp_cs") }
 };
 static CRITICAL_SECTION dcomp_cs = { &dcomp_debug, -1, 0, 0, 0, 0 };
+/* Bumped by every Commit(), protected by dcomp_cs. Global rather than per device: visuals from
+ * shared handles put other devices' trees into a device's composition. */
+static unsigned int commit_serial;
+/* Bumped when a target window was repainted, moved or shown (target.c hooks). */
+static LONG damage_serial;
+
+void dcomp_target_damaged(void)
+{
+    InterlockedIncrement(&damage_serial);
+}
 
 void dcomp_lock(void)
 {
@@ -625,6 +635,8 @@ static void do_composite_dxgi_surface(struct composition_target *target,
     dst_dc = GetDCEx(target->hwnd, 0, style);
     GdiAlphaBlend(dst_dc, 0, 0, size.width, size.height, src_dc, 0, 0, size.width, size.height, blend_func);
     ReleaseDC(target->hwnd, dst_dc);
+    /* Flush the window surface: checking the queue does it, without marking the process idle. */
+    GetQueueStatus(0);
 
     ID2D1GdiInteropRenderTarget_ReleaseDC(visual->interop, NULL);
     ID2D1DeviceContext_SetTarget(visual->device_context, old_target);
@@ -677,18 +689,25 @@ static struct composition_visual * shared_visual_target_get_root(HANDLE shared_v
     return visual;
 }
 
+/* The root only changes visibly with a Commit(): look it up again after each one. */
+static struct composition_visual *get_shared_root(struct composition_visual *visual)
+{
+    if (!visual->shared_root || visual->shared_root_serial != commit_serial)
+    {
+        visual->shared_root = shared_visual_target_get_root(visual->shared_visual_handle);
+        visual->shared_root_serial = commit_serial;
+    }
+    return visual->shared_root;
+}
+
 static HRESULT do_composite(struct composition_target *target, struct composition_visual *visual)
 {
-    struct composition_visual *child_visual;
+    struct composition_visual *child_visual, *root;
     IDXGISurface *dxgi_surface;
     HRESULT hr;
 
-    if (visual->shared_visual_handle)
-    {
-        struct composition_visual *root = shared_visual_target_get_root(visual->shared_visual_handle);
-        if (root)
-            do_composite(target, root);
-    }
+    if (visual->shared_visual_handle && (root = get_shared_root(visual)))
+        do_composite(target, root);
 
     /* Render content */
     if (visual->content)
@@ -770,12 +789,49 @@ static HRESULT do_composite(struct composition_target *target, struct compositio
 }
 
 
+/* Period of the safety-net composition of all targets, ms. */
+#define COMPOSE_ALL_PERIOD 1000
+
+/* Whether a swapchain used as content in the visual tree presented since the last check. */
+static BOOL visual_tree_presented(struct composition_visual *visual)
+{
+    struct composition_visual *child_visual, *root;
+    IDXGISwapChain1 *swapchain;
+    BOOL presented = FALSE;
+    UINT count;
+
+    if (visual->shared_visual_handle && (root = get_shared_root(visual)))
+        presented = visual_tree_presented(root);
+
+    if (visual->content && IsEqualGUID(&visual->content_iid, &IID_IDXGISwapChain1)
+            && SUCCEEDED(IUnknown_QueryInterface(visual->content, &IID_IDXGISwapChain1, (void **)&swapchain)))
+    {
+        if (SUCCEEDED(IDXGISwapChain1_GetLastPresentCount(swapchain, &count)) && count != visual->present_count)
+        {
+            visual->present_count = count;
+            presented = TRUE;
+        }
+        IDXGISwapChain1_Release(swapchain);
+    }
+
+    LIST_FOR_EACH_ENTRY(child_visual, &visual->child_visuals, struct composition_visual, entry)
+    {
+        if (visual_tree_presented(child_visual))
+            presented = TRUE;
+    }
+
+    return presented;
+}
+
 static DWORD WINAPI composite_thread_proc(void *iface)
 {
     struct composition_device *device = impl_from_IDCompositionDevice(iface);
     unsigned int count, frequency, refresh_period;
     struct composition_target *target;
     struct composition_visual *visual;
+    BOOL compose_all;
+    DWORD now;
+    LONG damage;
     HDC hdc;
 
     /* TODO: Implement and use D3DKMTWaitForVerticalBlankEvent() */
@@ -792,6 +848,20 @@ static DWORD WINAPI composite_thread_proc(void *iface)
         dcomp_lock();
 
         count = 0;
+        now = GetTickCount();
+        /* A repaint of the target window may still be going on: compose again in the next pass. */
+        if ((damage = ReadNoFence(&damage_serial)) != device->damage_serial)
+            device->damage_passes = 2;
+        device->damage_serial = damage;
+        /* Wine has no DWM keeping the composed image: recompose now and then for losses nothing
+         * tells us about (e.g. exposes of offscreen client surfaces by X windows). */
+        compose_all = device->composed_serial != commit_serial || device->damage_passes
+                || now - device->full_time >= COMPOSE_ALL_PERIOD;
+        if (compose_all)
+            device->full_time = now;
+        if (device->damage_passes)
+            device->damage_passes--;
+        device->composed_serial = commit_serial;
         LIST_FOR_EACH_ENTRY(target, &device->targets, struct composition_target, entry)
         {
             if (!target->root)
@@ -805,8 +875,13 @@ static DWORD WINAPI composite_thread_proc(void *iface)
             if (target->shared_visual_handle)
                 continue;
 
+            /* Like DWM, compose again only after a commit, a new frame in a swapchain or damage to
+             * the target window. Polled every refresh period; an event from Present() would avoid
+             * that. */
             visual = impl_from_IDCompositionVisual(target->root);
-            if (SUCCEEDED(do_composite(target, visual)))
+            if (!visual_tree_presented(visual) && !compose_all)
+                count++;
+            else if (SUCCEEDED(do_composite(target, visual)))
                 count++;
         }
 
@@ -838,6 +913,7 @@ static HRESULT STDMETHODCALLTYPE device_Commit(IDCompositionDevice *iface)
 
     dcomp_lock();
 
+    commit_serial++;
     if (!device->thread || device->thread_exited)
     {
         if (device->thread)

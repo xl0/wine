@@ -30,6 +30,33 @@ WINE_DEFAULT_DEBUG_CHANNEL(dcomp);
 static const WCHAR *wine_window_topmost_composed = L"wine_window_topmost_composed";
 static const WCHAR *wine_window_non_topmost_composed = L"wine_window_non_topmost_composed";
 
+/* The composed image lives in the target window itself: repainting, moving or showing the window
+ * overwrites it or needs it again. Watch the window's thread for that. */
+static void check_target_damage(HWND hwnd)
+{
+    if (GetPropW(hwnd, wine_window_topmost_composed) || GetPropW(hwnd, wine_window_non_topmost_composed))
+        dcomp_target_damaged();
+}
+
+static LRESULT CALLBACK target_getmsg_proc(int code, WPARAM wparam, LPARAM lparam)
+{
+    const MSG *msg = (const MSG *)lparam;
+
+    if (code == HC_ACTION && msg->message == WM_PAINT)
+        check_target_damage(msg->hwnd);
+    return CallNextHookEx(0, code, wparam, lparam);
+}
+
+static LRESULT CALLBACK target_callwndret_proc(int code, WPARAM wparam, LPARAM lparam)
+{
+    const CWPRETSTRUCT *cwp = (const CWPRETSTRUCT *)lparam;
+
+    if (code == HC_ACTION && (cwp->message == WM_ERASEBKGND || cwp->message == WM_NCPAINT
+            || cwp->message == WM_WINDOWPOSCHANGED || cwp->message == WM_SHOWWINDOW))
+        check_target_damage(cwp->hwnd);
+    return CallNextHookEx(0, code, wparam, lparam);
+}
+
 static HRESULT STDMETHODCALLTYPE target_QueryInterface(IDCompositionTarget *iface, REFIID iid, void **out)
 {
     TRACE("iface %p, iid %s, out %p!\n", iface, debugstr_guid(iid), out);
@@ -69,6 +96,10 @@ static ULONG STDMETHODCALLTYPE target_Release(IDCompositionTarget *iface)
     {
         prop = target->topmost ? wine_window_topmost_composed : wine_window_non_topmost_composed;
         RemovePropW(target->hwnd, prop);
+        if (target->getmsg_hook)
+            UnhookWindowsHookEx(target->getmsg_hook);
+        if (target->callwndret_hook)
+            UnhookWindowsHookEx(target->callwndret_hook);
 
         dcomp_lock();
         list_remove(&target->entry);
@@ -159,12 +190,12 @@ HRESULT create_target(struct composition_device *device, HWND hwnd, BOOL topmost
 {
     struct composition_target *target;
     const WCHAR *prop;
-    DWORD pid = 0;
+    DWORD pid = 0, tid;
 
     if (!hwnd || hwnd == GetDesktopWindow() || !new_target)
         return E_INVALIDARG;
 
-    GetWindowThreadProcessId(hwnd, &pid);
+    tid = GetWindowThreadProcessId(hwnd, &pid);
     if (pid != GetCurrentProcessId())
         return E_ACCESSDENIED;
 
@@ -189,6 +220,8 @@ HRESULT create_target(struct composition_device *device, HWND hwnd, BOOL topmost
 
     prop = target->topmost ? wine_window_topmost_composed : wine_window_non_topmost_composed;
     SetPropW(target->hwnd, prop, (HANDLE)1);
+    target->getmsg_hook = SetWindowsHookExW(WH_GETMESSAGE, target_getmsg_proc, NULL, tid);
+    target->callwndret_hook = SetWindowsHookExW(WH_CALLWNDPROCRET, target_callwndret_proc, NULL, tid);
     return S_OK;
 }
 
