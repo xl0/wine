@@ -411,7 +411,9 @@ RPC_STATUS RpcAssoc_GetClientConnection(RpcAssoc *assoc,
     if (status != RPC_S_OK)
         return status;
 
+    /* RPCRT4_ReleaseConnection() uncounts it, also on failure below */
     NewConnection->assoc = assoc;
+    InterlockedIncrement(&assoc->connection_cnt);
     status = RPCRT4_OpenClientConnection(NewConnection);
     if (status != RPC_S_OK)
     {
@@ -425,8 +427,6 @@ RPC_STATUS RpcAssoc_GetClientConnection(RpcAssoc *assoc,
         RPCRT4_ReleaseConnection(NewConnection);
         return status;
     }
-
-    InterlockedIncrement(&assoc->connection_cnt);
 
     TRACE("return new connection %p for association %p\n", *Connection, assoc);
     *Connection = NewConnection;
