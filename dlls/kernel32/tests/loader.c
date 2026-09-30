@@ -3262,6 +3262,46 @@ static void lookup_create_thread(void)
     CloseHandle( thread );
 }
 
+static BOOL WINAPI exit_dll_entry( HINSTANCE inst, DWORD reason, void *reserved )
+{
+    void *base;
+
+    if (reason == DLL_PROCESS_DETACH)
+    {
+        GetModuleHandleA( "kernel32.dll" );
+        pRtlPcToFileHeader( exit_dll_entry, &base );
+        LoadLibraryA( new_dll );
+    }
+    return TRUE;
+}
+
+static DWORD WINAPI exit_spin_thread( void *arg )
+{
+    void *base;
+
+    for (;;) pRtlPcToFileHeader( exit_spin_thread, &base );
+    return 0;
+}
+
+/* child: process exit while other threads look up modules, with loader calls in a detach handler */
+static void child_lookups_exit(void)
+{
+    unsigned int i;
+
+    pRtlPcToFileHeader = (void *)GetProcAddress( GetModuleHandleA( "ntdll.dll" ), "RtlPcToFileHeader" );
+    create_entry_point_dll( new_dll, plain_dll_entry );
+    create_entry_point_dll( blocking_dll, exit_dll_entry );
+    /* the files go away when the process exits */
+    CreateFileA( new_dll, DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                 OPEN_EXISTING, FILE_FLAG_DELETE_ON_CLOSE, NULL );
+    CreateFileA( blocking_dll, DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                 OPEN_EXISTING, FILE_FLAG_DELETE_ON_CLOSE, NULL );
+    if (!LoadLibraryA( blocking_dll )) ExitProcess( 1 );
+    for (i = 0; i < 8; i++) CreateThread( NULL, 0, exit_spin_thread, NULL, 0, NULL );
+    Sleep( 100 );
+    ExitProcess( 0x55 );
+}
+
 static DWORD WINAPI lookup_thread( void *arg )
 {
     void (*func)(void) = arg;
@@ -3301,16 +3341,19 @@ static void test_lookups_during_dllmain(void)
         { "GetModuleHandle initializing", lookup_handle_initializing, FALSE, TRUE },
         { "GetModuleHandleEx addref", lookup_handle_addref, FALSE, TRUE },
         { "GetModuleHandleEx pin", lookup_handle_pin, FALSE, TRUE },
-        { "GetModuleHandleEx address", lookup_handle_address, FALSE, TRUE },
-        { "GetModuleFileName", lookup_filename, FALSE, TRUE },
+        { "GetModuleHandleEx address", lookup_handle_address },
+        { "GetModuleFileName", lookup_filename },
         { "GetProcAddress", lookup_proc, FALSE, TRUE },
         { "GetProcAddress forward", lookup_proc_forward, FALSE, TRUE },
         { "GetProcAddress missing", lookup_proc_missing, FALSE, TRUE },
         { "GetProcAddress initializing", lookup_proc_initializing, TRUE },
-        { "RtlPcToFileHeader", lookup_pc, FALSE, TRUE },
-        { "RtlPcToFileHeader initializing", lookup_pc_initializing, FALSE, TRUE },
+        { "RtlPcToFileHeader", lookup_pc },
+        { "RtlPcToFileHeader initializing", lookup_pc_initializing },
         { "CreateThread", lookup_create_thread, TRUE },
     };
+    STARTUPINFOA si = { sizeof(si) };
+    PROCESS_INFORMATION pi;
+    char cmdline[MAX_PATH * 2], **argv;
     HANDLE thread_a, thread_b;
     unsigned int i;
     DWORD ret;
@@ -3362,6 +3405,18 @@ static void test_lookups_during_dllmain(void)
     DeleteFileA( plain_dll );
     DeleteFileA( new_dll );
     DeleteFileA( blocking_dll );
+
+    winetest_get_mainargs( &argv );
+    sprintf( cmdline, "\"%s\" loader lookups_exit", argv[0] );
+    ret = CreateProcessA( argv[0], cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi );
+    ok( ret, "CreateProcess failed, error %lu\n", GetLastError() );
+    ret = WaitForSingleObject( pi.hProcess, 10000 );
+    ok( !ret, "child hangs on exit\n" );
+    if (ret) TerminateProcess( pi.hProcess, 0 );
+    GetExitCodeProcess( pi.hProcess, &ret );
+    ok( ret == 0x55, "got exit code %#lx\n", ret );
+    CloseHandle( pi.hThread );
+    CloseHandle( pi.hProcess );
 }
 
 #else
@@ -3369,6 +3424,10 @@ static void test_lookups_during_dllmain(void)
 static void test_lookups_during_dllmain(void)
 {
     skip( "not supported on this platform\n" );
+}
+
+static void child_lookups_exit(void)
+{
 }
 
 #endif
@@ -5288,6 +5347,11 @@ START_TEST(loader)
         *child_failures = -1;
 
     argc = winetest_get_mainargs(&argv);
+    if (argc == 3 && !strcmp( argv[2], "lookups_exit" ))
+    {
+        child_lookups_exit();
+        return;
+    }
     if (argc > 4)
     {
         test_dll_phase = atoi(argv[4]);

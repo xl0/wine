@@ -154,6 +154,32 @@ static RTL_CRITICAL_SECTION_DEBUG critsect_debug =
 };
 static RTL_CRITICAL_SECTION loader_section = { &critsect_debug, -1, 0, 0, 0, 0 };
 
+/* Protects the load and memory order lists, the hash table, the base address tree and the
+ * dependency lists, so that lookups of loaded modules don't have to wait for the loader lock
+ * while another thread runs a DllMain. They are only modified with the loader lock held and
+ * this lock held exclusively, so they can be read with either lock held (shared is enough).
+ * LDR_PROCESS_ATTACHED is set with this lock held exclusively too. The loader lock must never
+ * be taken while holding this lock, and nothing that may wait for it or raise an exception may
+ * run while it is held. Lookups under either lock also set cached_modref, so read it only once.
+ * Load counts are also changed by lookups, see update_load_count(). */
+static RTL_SRWLOCK ldr_data_lock = RTL_SRWLOCK_INIT;
+
+/* On process exit, the other threads are killed and may have died holding ldr_data_lock (or
+ * the futex bucket its wakeups go through); from then on only the exiting thread runs. */
+static void lock_ldr_data( BOOL exclusive )
+{
+    if (process_detaching) return;
+    if (exclusive) RtlAcquireSRWLockExclusive( &ldr_data_lock );
+    else RtlAcquireSRWLockShared( &ldr_data_lock );
+}
+
+static void unlock_ldr_data( BOOL exclusive )
+{
+    if (process_detaching) return;
+    if (exclusive) RtlReleaseSRWLockExclusive( &ldr_data_lock );
+    else RtlReleaseSRWLockShared( &ldr_data_lock );
+}
+
 static CRITICAL_SECTION dlldir_section;
 static CRITICAL_SECTION_DEBUG dlldir_critsect_debug =
 {
@@ -595,10 +621,11 @@ static void build_sysdir_nt_name( const WCHAR *name, UNICODE_STRING *nt_name )
  */
 static WINE_MODREF *get_modref( HMODULE hmod )
 {
+    WINE_MODREF *cached = cached_modref;
     PLDR_DATA_TABLE_ENTRY mod;
     RTL_BALANCED_NODE *node;
 
-    if (cached_modref && cached_modref->ldr.DllBase == hmod) return cached_modref;
+    if (cached && cached->ldr.DllBase == hmod) return cached;
 
     if (!(node = rtl_rb_tree_get( &base_address_index_tree, hmod, base_address_compare ))) return NULL;
     mod = CONTAINING_RECORD(node, LDR_DATA_TABLE_ENTRY, BaseAddressIndexNode);
@@ -614,14 +641,15 @@ static WINE_MODREF *get_modref( HMODULE hmod )
  */
 static WINE_MODREF *find_basename_module( LPCWSTR name )
 {
+    WINE_MODREF *cached = cached_modref;
     PLIST_ENTRY mark, entry;
     UNICODE_STRING name_str;
 
     RtlInitUnicodeString( &name_str, name );
 
-    if (cached_modref && !(cached_modref->ldr.Flags & LDR_REDIRECTED)
-        && RtlEqualUnicodeString( &name_str, &cached_modref->ldr.BaseDllName, TRUE ))
-        return cached_modref;
+    if (cached && !(cached->ldr.Flags & LDR_REDIRECTED)
+        && RtlEqualUnicodeString( &name_str, &cached->ldr.BaseDllName, TRUE ))
+        return cached;
 
     mark = &hash_table[hash_basename( &name_str )];
     for (entry = mark->Flink; entry != mark; entry = entry->Flink)
@@ -630,8 +658,8 @@ static WINE_MODREF *find_basename_module( LPCWSTR name )
         if (!mod->system && !(mod->ldr.Flags & LDR_REDIRECTED)
             && RtlEqualUnicodeString( &name_str, &mod->ldr.BaseDllName, TRUE ))
         {
-            cached_modref = CONTAINING_RECORD(mod, WINE_MODREF, ldr);
-            return cached_modref;
+            cached_modref = cached = CONTAINING_RECORD(mod, WINE_MODREF, ldr);
+            return cached;
         }
     }
     return NULL;
@@ -646,6 +674,7 @@ static WINE_MODREF *find_basename_module( LPCWSTR name )
  */
 static WINE_MODREF *find_fullname_module( const UNICODE_STRING *nt_name )
 {
+    WINE_MODREF *cached = cached_modref;
     PLIST_ENTRY mark, entry;
     UNICODE_STRING name = *nt_name;
 
@@ -653,8 +682,8 @@ static WINE_MODREF *find_fullname_module( const UNICODE_STRING *nt_name )
     name.Length -= 4 * sizeof(WCHAR);  /* for \??\ prefix */
     name.Buffer += 4;
 
-    if (cached_modref && RtlEqualUnicodeString( &name, &cached_modref->ldr.FullDllName, TRUE ))
-        return cached_modref;
+    if (cached && RtlEqualUnicodeString( &name, &cached->ldr.FullDllName, TRUE ))
+        return cached;
 
     mark = &NtCurrentTeb()->Peb->LdrData->InLoadOrderModuleList;
     for (entry = mark->Flink; entry != mark; entry = entry->Flink)
@@ -662,8 +691,8 @@ static WINE_MODREF *find_fullname_module( const UNICODE_STRING *nt_name )
         LDR_DATA_TABLE_ENTRY *mod = CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
         if (RtlEqualUnicodeString( &name, &mod->FullDllName, TRUE ))
         {
-            cached_modref = CONTAINING_RECORD(mod, WINE_MODREF, ldr);
-            return cached_modref;
+            cached_modref = cached = CONTAINING_RECORD(mod, WINE_MODREF, ldr);
+            return cached;
         }
     }
     return NULL;
@@ -678,9 +707,10 @@ static WINE_MODREF *find_fullname_module( const UNICODE_STRING *nt_name )
  */
 static WINE_MODREF *find_fileid_module( const struct file_id *id )
 {
+    WINE_MODREF *cached = cached_modref;
     LIST_ENTRY *mark, *entry;
 
-    if (cached_modref && !memcmp( &cached_modref->id, id, sizeof(*id) )) return cached_modref;
+    if (cached && !memcmp( &cached->id, id, sizeof(*id) )) return cached;
 
     mark = &NtCurrentTeb()->Peb->LdrData->InLoadOrderModuleList;
     for (entry = mark->Flink; entry != mark; entry = entry->Flink)
@@ -912,9 +942,11 @@ static BOOL add_module_dependency_after( LDR_DDAG_NODE *from, LDR_DDAG_NODE *to,
     if (!(dep = RtlAllocateHeap( GetProcessHeap(), 0, sizeof(*dep) ))) return FALSE;
 
     dep->dependency_from = from;
-    insert_single_list_after( &from->Dependencies, dep_after, &dep->dependency_to_entry );
     dep->dependency_to = to;
+    lock_ldr_data( TRUE );
+    insert_single_list_after( &from->Dependencies, dep_after, &dep->dependency_to_entry );
     insert_single_list_after( &to->IncomingDependencies, NULL, &dep->dependency_from_entry );
+    unlock_ldr_data( TRUE );
 
     return TRUE;
 }
@@ -932,8 +964,10 @@ static BOOL add_module_dependency( LDR_DDAG_NODE *from, LDR_DDAG_NODE *to )
  */
 static void remove_module_dependency( LDR_DEPENDENCY *dep )
 {
+    lock_ldr_data( TRUE );
     remove_single_list_entry( &dep->dependency_to->IncomingDependencies, &dep->dependency_from_entry );
     remove_single_list_entry( &dep->dependency_from->Dependencies, &dep->dependency_to_entry );
+    unlock_ldr_data( TRUE );
     RtlFreeHeap( GetProcessHeap(), 0, dep );
 }
 
@@ -1604,6 +1638,7 @@ static WINE_MODREF *alloc_module( HMODULE hModule, const UNICODE_STRING *nt_name
             wm->ldr.EntryPoint = (char *)hModule + nt->OptionalHeader.AddressOfEntryPoint;
     }
 
+    lock_ldr_data( TRUE );
     InsertTailList(&NtCurrentTeb()->Peb->LdrData->InLoadOrderModuleList,
                    &wm->ldr.InLoadOrderLinks);
     InsertTailList(&NtCurrentTeb()->Peb->LdrData->InMemoryOrderModuleList,
@@ -1611,6 +1646,7 @@ static WINE_MODREF *alloc_module( HMODULE hModule, const UNICODE_STRING *nt_name
     InsertTailList(&hash_table[hash_basename( &wm->ldr.BaseDllName )], &wm->ldr.HashLinks);
     if (rtl_rb_tree_put( &base_address_index_tree, wm->ldr.DllBase, &wm->ldr.BaseAddressIndexNode, base_address_compare ))
         ERR( "rtl_rb_tree_put failed.\n" );
+    unlock_ldr_data( TRUE );
     /* wait until init is called for inserting into InInitializationOrderModuleList */
 
     if (!(nt->OptionalHeader.DllCharacteristics & IMAGE_DLLCHARACTERISTICS_NX_COMPAT))
@@ -1821,7 +1857,10 @@ static NTSTATUS process_attach( LDR_DDAG_NODE *node, LPVOID lpReserved )
         status = MODULE_InitDLL( wm, DLL_PROCESS_ATTACH, lpReserved );
         if (status == STATUS_SUCCESS)
         {
+            /* publish the initialized module to lookups that don't take the loader lock */
+            lock_ldr_data( TRUE );
             wm->ldr.Flags |= LDR_PROCESS_ATTACHED;
+            unlock_ldr_data( TRUE );
         }
         else
         {
@@ -1941,15 +1980,15 @@ static int module_address_search_compare( const void *key, const RTL_BALANCED_NO
 
 /******************************************************************
  *              LdrFindEntryForAddress (NTDLL.@)
- *
- * The loader_section must be locked while calling this function
  */
 NTSTATUS WINAPI LdrFindEntryForAddress( const void *addr, PLDR_DATA_TABLE_ENTRY *pmod )
 {
     RTL_BALANCED_NODE *node;
 
-    if (!(node = rtl_rb_tree_get( &base_address_index_tree, addr, module_address_search_compare )))
-        return STATUS_NO_MORE_ENTRIES;
+    lock_ldr_data( FALSE );
+    node = rtl_rb_tree_get( &base_address_index_tree, addr, module_address_search_compare );
+    unlock_ldr_data( FALSE );
+    if (!node) return STATUS_NO_MORE_ENTRIES;
     *pmod = CONTAINING_RECORD(node, LDR_DATA_TABLE_ENTRY, BaseAddressIndexNode);
     return STATUS_SUCCESS;
 }
@@ -2328,10 +2367,13 @@ static NTSTATUS build_module( LPCWSTR load_path, const UNICODE_STRING *nt_name, 
         if (status != STATUS_SUCCESS)
         {
             /* the module has only be inserted in the load & memory order lists */
+            lock_ldr_data( TRUE );
             RemoveEntryList(&wm->ldr.InLoadOrderLinks);
             RemoveEntryList(&wm->ldr.InMemoryOrderLinks);
             RemoveEntryList(&wm->ldr.HashLinks);
             RtlRbRemoveNode( &base_address_index_tree, &wm->ldr.BaseAddressIndexNode );
+            if (cached_modref == wm) cached_modref = NULL;
+            unlock_ldr_data( TRUE );
 
             /* FIXME: there are several more dangling references
              * left. Including dlls loaded by this dll before the
@@ -3531,6 +3573,7 @@ NTSTATUS WINAPI DECLSPEC_HOTPATCH LdrLoadDll(LPCWSTR search_path, DWORD *load_fl
  */
 NTSTATUS WINAPI LdrGetDllFullName( HMODULE module, UNICODE_STRING *name )
 {
+    UNICODE_STRING fullname = { 0 };
     WINE_MODREF *wm;
     NTSTATUS status;
 
@@ -3538,16 +3581,18 @@ NTSTATUS WINAPI LdrGetDllFullName( HMODULE module, UNICODE_STRING *name )
 
     if (!module) module = NtCurrentTeb()->Peb->ImageBaseAddress;
 
-    RtlEnterCriticalSection( &loader_section );
-    wm = get_modref( module );
-    if (wm)
-    {
-        RtlCopyUnicodeString( name, &wm->ldr.FullDllName );
-        if (name->MaximumLength < wm->ldr.FullDllName.Length + sizeof(WCHAR)) status = STATUS_BUFFER_TOO_SMALL;
-        else status = STATUS_SUCCESS;
-    } else status = STATUS_DLL_NOT_FOUND;
-    RtlLeaveCriticalSection( &loader_section );
+    /* copy to the caller's buffer without the lock: it may fault */
+    lock_ldr_data( FALSE );
+    if (!(wm = get_modref( module ))) status = STATUS_DLL_NOT_FOUND;
+    else status = RtlDuplicateUnicodeString( 0, &wm->ldr.FullDllName, &fullname );
+    unlock_ldr_data( FALSE );
 
+    if (!status)
+    {
+        RtlCopyUnicodeString( name, &fullname );
+        if (name->MaximumLength < fullname.Length + sizeof(WCHAR)) status = STATUS_BUFFER_TOO_SMALL;
+        RtlFreeUnicodeString( &fullname );
+    }
     return status;
 }
 
@@ -4040,10 +4085,13 @@ static void free_modref( WINE_MODREF *wm )
     SINGLE_LIST_ENTRY *entry;
     LDR_DEPENDENCY *dep;
 
+    lock_ldr_data( TRUE );
     RemoveEntryList(&wm->ldr.InLoadOrderLinks);
     RemoveEntryList(&wm->ldr.InMemoryOrderLinks);
     RemoveEntryList(&wm->ldr.HashLinks);
     RtlRbRemoveNode( &base_address_index_tree, &wm->ldr.BaseAddressIndexNode );
+    if (cached_modref == wm) cached_modref = NULL;
+    unlock_ldr_data( TRUE );
     if (wm->ldr.InInitializationOrderLinks.Flink)
         RemoveEntryList(&wm->ldr.InInitializationOrderLinks);
 
@@ -4074,7 +4122,6 @@ static void free_modref( WINE_MODREF *wm )
     free_tls_slot( &wm->ldr );
     RtlReleaseActivationContext( wm->ldr.ActivationContext );
     NtUnmapViewOfSection( NtCurrentProcess(), wm->ldr.DllBase );
-    if (cached_modref == wm) cached_modref = NULL;
     RtlFreeUnicodeString( &wm->ldr.FullDllName );
     RtlFreeHeap( GetProcessHeap(), 0, wm );
 }
@@ -4703,12 +4750,13 @@ PVOID WINAPI RtlAddressInSectionTable( const IMAGE_NT_HEADERS *nt, HMODULE modul
  */
 PVOID WINAPI RtlPcToFileHeader( PVOID pc, PVOID *address )
 {
-    LDR_DATA_TABLE_ENTRY *module;
+    RTL_BALANCED_NODE *node;
     PVOID ret = NULL;
 
-    RtlEnterCriticalSection( &loader_section );
-    if (!LdrFindEntryForAddress( pc, &module )) ret = module->DllBase;
-    RtlLeaveCriticalSection( &loader_section );
+    lock_ldr_data( FALSE );
+    if ((node = rtl_rb_tree_get( &base_address_index_tree, pc, module_address_search_compare )))
+        ret = CONTAINING_RECORD(node, LDR_DATA_TABLE_ENTRY, BaseAddressIndexNode)->DllBase;
+    unlock_ldr_data( FALSE );
     *address = ret;
     return ret;
 }
