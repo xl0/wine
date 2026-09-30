@@ -6764,6 +6764,70 @@ static void test_AddMandatoryAce(void)
     CloseHandle(handle);
 }
 
+static void test_SetNamedSecurityInfo_label(void)
+{
+    static SID low_level = {SID_REVISION, 1, {SECURITY_MANDATORY_LABEL_AUTHORITY},
+                            {SECURITY_MANDATORY_LOW_RID}};
+    char path[MAX_PATH], buffer_acl[256];
+    ACL *acl = (ACL *)buffer_acl, *sacl, *dacl;
+    SYSTEM_MANDATORY_LABEL_ACE *ace;
+    PSECURITY_DESCRIPTOR sd;
+    HANDLE file;
+    DWORD err;
+    HKEY key;
+    BOOL ret;
+
+    InitializeAcl(acl, sizeof(buffer_acl), ACL_REVISION);
+    ret = pAddMandatoryAce(acl, ACL_REVISION, OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+                           SYSTEM_MANDATORY_LABEL_NO_WRITE_UP, &low_level);
+    ok(ret, "AddMandatoryAce failed with error %lu\n", GetLastError());
+
+    GetTempPathA(MAX_PATH, path);
+    strcat(path, "wine_label_test");
+    ret = CreateDirectoryA(path, NULL);
+    ok(ret, "CreateDirectory failed with error %lu\n", GetLastError());
+    err = SetNamedSecurityInfoA(path, SE_FILE_OBJECT, LABEL_SECURITY_INFORMATION, NULL, NULL, NULL, acl);
+    ok(!err, "SetNamedSecurityInfo failed with error %lu\n", err);
+    err = GetNamedSecurityInfoA(path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, NULL, NULL, &dacl, NULL, &sd);
+    ok(!err, "GetNamedSecurityInfo failed with error %lu\n", err);
+    err = SetNamedSecurityInfoA(path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION,
+                                NULL, NULL, dacl, acl);
+    ok(!err, "SetNamedSecurityInfo failed with error %lu\n", err);
+    LocalFree(sd);
+
+    strcat(path, "\\file");
+    file = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, 0, NULL);
+    ok(file != INVALID_HANDLE_VALUE, "CreateFile failed with error %lu\n", GetLastError());
+    CloseHandle(file);
+    err = SetNamedSecurityInfoA(path, SE_FILE_OBJECT, LABEL_SECURITY_INFORMATION, NULL, NULL, NULL, acl);
+    ok(!err, "SetNamedSecurityInfo failed with error %lu\n", err);
+    DeleteFileA(path);
+    *strrchr(path, '\\') = 0;
+    RemoveDirectoryA(path);
+
+    err = RegCreateKeyA(HKEY_CURRENT_USER, "Software\\Wine\\wine_label_test", &key);
+    ok(!err, "RegCreateKey failed with error %lu\n", err);
+    err = SetNamedSecurityInfoA((char *)"CURRENT_USER\\Software\\Wine\\wine_label_test", SE_REGISTRY_KEY,
+                                LABEL_SECURITY_INFORMATION, NULL, NULL, NULL, acl);
+    ok(!err, "SetNamedSecurityInfo failed with error %lu\n", err);
+    sacl = NULL;
+    err = GetSecurityInfo(key, SE_REGISTRY_KEY, LABEL_SECURITY_INFORMATION, NULL, NULL, NULL, &sacl, &sd);
+    ok(!err, "GetSecurityInfo failed with error %lu\n", err);
+    ok(sacl && sacl->AceCount == 1, "got sacl %p\n", sacl);
+    if (sacl && sacl->AceCount == 1)
+    {
+        ret = GetAce(sacl, 0, (void **)&ace);
+        ok(ret, "GetAce failed with error %lu\n", GetLastError());
+        ok(ace->Header.AceType == SYSTEM_MANDATORY_LABEL_ACE_TYPE, "got type %#x\n", ace->Header.AceType);
+        ok(ace->Header.AceFlags == (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE), "got flags %#x\n", ace->Header.AceFlags);
+        ok(ace->Mask == SYSTEM_MANDATORY_LABEL_NO_WRITE_UP, "got mask %#lx\n", ace->Mask);
+        ok(EqualSid(&ace->SidStart, &low_level), "got wrong sid\n");
+    }
+    LocalFree(sd);
+    RegDeleteKeyA(key, "");
+    RegCloseKey(key);
+}
+
 static void test_system_security_access(void)
 {
     static const WCHAR testkeyW[] = L"SOFTWARE\\Wine\\SACLtest";
@@ -8849,6 +8913,7 @@ START_TEST(security)
     test_AdjustTokenPrivileges();
     test_AddAce();
     test_AddMandatoryAce();
+    test_SetNamedSecurityInfo_label();
     test_system_security_access();
     test_GetSidIdentifierAuthority();
     test_pseudo_tokens();

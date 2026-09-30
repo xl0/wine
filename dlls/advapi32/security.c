@@ -2413,7 +2413,7 @@ DWORD WINAPI SetNamedSecurityInfoW(LPWSTR pObjectName,
 
     if (!pObjectName) return ERROR_INVALID_PARAMETER;
 
-    if (SecurityInfo & (OWNER_SECURITY_INFORMATION|GROUP_SECURITY_INFORMATION))
+    if (SecurityInfo & (OWNER_SECURITY_INFORMATION|GROUP_SECURITY_INFORMATION|LABEL_SECURITY_INFORMATION))
         access |= WRITE_OWNER;
     if (SecurityInfo & DACL_SECURITY_INFORMATION)
         access |= WRITE_DAC;
@@ -3073,7 +3073,7 @@ DWORD WINAPI SetSecurityInfo(HANDLE handle, SE_OBJECT_TYPE ObjectType,
 
         SetSecurityDescriptorDacl(&sd, TRUE, dacl, FALSE);
     }
-    if (SecurityInfo & SACL_SECURITY_INFORMATION)
+    if (SecurityInfo & (SACL_SECURITY_INFORMATION|LABEL_SECURITY_INFORMATION))
         SetSecurityDescriptorSacl(&sd, TRUE, pSacl, FALSE);
 
     switch (ObjectType)
