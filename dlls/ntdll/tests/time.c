@@ -434,6 +434,56 @@ static void test_timer_rounding(void)
     NtClose( timer );
 }
 
+/* absolute timeouts don't expire before the system time has reached them */
+static void test_absolute_timeout(void)
+{
+    LARGE_INTEGER timeout, now;
+    HANDLE event, timer;
+    NTSTATUS status;
+    ULONG cur;
+    int i;
+
+    status = NtCreateEvent( &event, EVENT_ALL_ACCESS, NULL, NotificationEvent, FALSE );
+    ok( !status, "got %#lx\n", status );
+    status = NtCreateTimer( &timer, TIMER_ALL_ACCESS, NULL, SynchronizationTimer );
+    ok( !status, "got %#lx\n", status );
+    /* 0.5 to 2 ms ahead, with a raised timer resolution, then with the default one */
+    status = NtSetTimerResolution( 10000, TRUE, &cur );
+    ok( !status, "got %#lx\n", status );
+    for (i = 0; i < 60; i++)
+    {
+        if (i == 30)
+        {
+            status = NtSetTimerResolution( 10000, FALSE, &cur );
+            ok( !status, "got %#lx\n", status );
+        }
+        NtQuerySystemTime( &timeout );
+        timeout.QuadPart += (i % 4 + 1) * 5000;
+        switch (i % 3)
+        {
+        case 0:
+            status = NtWaitForSingleObject( event, FALSE, &timeout );
+            ok( status == STATUS_TIMEOUT, "got %#lx\n", status );
+            break;
+        case 1:
+            status = NtDelayExecution( FALSE, &timeout );
+            ok( !status, "got %#lx\n", status );
+            break;
+        case 2:
+            status = NtSetTimer( timer, &timeout, NULL, NULL, FALSE, 0, NULL );
+            ok( !status, "got %#lx\n", status );
+            status = NtWaitForSingleObject( timer, FALSE, NULL );
+            ok( !status, "got %#lx\n", status );
+            break;
+        }
+        NtQuerySystemTime( &now );
+        ok( now.QuadPart >= timeout.QuadPart, "%d: returned %d us early\n",
+            i, (int)((timeout.QuadPart - now.QuadPart) / 10) );
+    }
+    NtClose( timer );
+    NtClose( event );
+}
+
 static void test_RtlQueryTimeZoneInformation(void)
 {
     RTL_DYNAMIC_TIME_ZONE_INFORMATION tzinfo, tzinfo2;
@@ -659,5 +709,6 @@ START_TEST(time)
 #endif
     test_TimerResolution();
     test_timer_rounding();
+    test_absolute_timeout();
     test_NtConvertBetweenAuxiliaryCounterAndPerformanceCounter();
 }
