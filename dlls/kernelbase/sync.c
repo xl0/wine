@@ -877,8 +877,12 @@ HANDLE WINAPI DECLSPEC_HOTPATCH CreateWaitableTimerExW( SECURITY_ATTRIBUTES *sa,
 
     get_create_object_attributes( &attr, &nameW, sa, name );
 
-    status = NtCreateTimer( &handle, access, &attr,
-                 (flags & CREATE_WAITABLE_TIMER_MANUAL_RESET) ? NotificationTimer : SynchronizationTimer );
+    if (flags & CREATE_WAITABLE_TIMER_HIGH_RESOLUTION)
+        status = NtCreateTimer2( &handle, NULL, &attr, EX_TIMER_HIGH_RESOLUTION |
+                                 ((flags & CREATE_WAITABLE_TIMER_MANUAL_RESET) ? EX_TIMER_NOTIFICATION : 0), access );
+    else
+        status = NtCreateTimer( &handle, access, &attr,
+                     (flags & CREATE_WAITABLE_TIMER_MANUAL_RESET) ? NotificationTimer : SynchronizationTimer );
     if (status == STATUS_OBJECT_NAME_EXISTS)
         SetLastError( ERROR_ALREADY_EXISTS );
     else
