@@ -210,7 +210,7 @@ NTSTATUS WINAPI wow64_NtCreateLowBoxToken( UINT *args )
     NTSTATUS status;
     ULONG i;
 
-    if (count)
+    if (count && capabilities32 && count <= 4096)  /* larger counts are rejected by NtCreateLowBoxToken */
     {
         capabilities = Wow64AllocateTemp( count * sizeof(*capabilities) );
         for (i = 0; i < count; i++)
@@ -508,6 +508,7 @@ NTSTATUS WINAPI wow64_NtQueryInformationToken( UINT *args )
 
     case TokenGroups:  /* TOKEN_GROUPS */
     case TokenLogonSid:   /* TOKEN_GROUPS */
+    case TokenCapabilities:  /* TOKEN_GROUPS */
     {
         TOKEN_GROUPS32 *groups32 = info;
         TOKEN_GROUPS *groups;

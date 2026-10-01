@@ -3584,6 +3584,19 @@ enum caret_state
     obj_handle_t  new_handle; /* duplicated handle */
 @END
 
+/* Create a primary lowbox (app container) token from a token */
+@REQ(create_lowbox_token)
+    obj_handle_t  handle;          /* handle to the source token */
+    unsigned int  access;          /* access rights to the new token */
+    unsigned int  capability_count; /* number of capabilities */
+    VARARG(objattr,object_attributes); /* object attributes */
+    /* VARARG(package,sid); */
+    /* VARARG(capabilities,uints,capability_count); */
+    /* VARARG(capability_sids,sids); */
+@REPLY
+    obj_handle_t  new_handle;      /* handle to the new token */
+@END
+
 @REQ(filter_token)
     obj_handle_t  handle;          /* handle to the token to duplicate */
     unsigned int  flags;           /* flags */
@@ -3617,6 +3630,7 @@ enum caret_state
 @REQ(get_token_groups)
     obj_handle_t    handle;       /* handle to the token */
     unsigned int    attr_mask;    /* mask for wanted attributes */
+    int             capabilities; /* return the capabilities instead of the groups */
 @REPLY
     data_size_t     attr_len;     /* length needed to store attrs */
     data_size_t     sid_len;      /* length needed to store sids */
@@ -3931,6 +3945,7 @@ struct handle_info
     int            is_elevated;   /* is the token elevated as per GetTokenInformation(TokenElevation) */
     int            group_count;   /* the number of groups the token is a member of */
     int            privilege_count; /* the number of privileges the token has */
+    int            is_appcontainer; /* is the token a lowbox (app container) token? */
 @END
 
 

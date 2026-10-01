@@ -117,17 +117,17 @@ static void check_lowbox_token_(unsigned int line, HANDLE token, ACCESS_MASK acc
     value = 0xdeadbeef;
     ret = GetTokenInformation(token, TokenIsAppContainer, &value, sizeof(value), &size);
     ok_(__FILE__, line)(ret, "got error %lu.\n", GetLastError());
-    todo_wine ok_(__FILE__, line)(value == 1, "got %lu.\n", value);
+    ok_(__FILE__, line)(value == 1, "got %lu.\n", value);
 
     ret = GetTokenInformation(token, TokenAppContainerSid, buffer, sizeof(buffer), &size);
     ok_(__FILE__, line)(ret, "got error %lu.\n", GetLastError());
-    todo_wine ok_(__FILE__, line)(container->TokenAppContainer && EqualSid(container->TokenAppContainer, package_sid),
-                                  "wrong app container SID.\n");
+    ok_(__FILE__, line)(container->TokenAppContainer && EqualSid(container->TokenAppContainer, package_sid),
+                        "wrong app container SID.\n");
 
     ret = GetTokenInformation(token, TokenIntegrityLevel, buffer, sizeof(buffer), &size);
     ok_(__FILE__, line)(ret, "got error %lu.\n", GetLastError());
-    todo_wine ok_(__FILE__, line)(*GetSidSubAuthority(label->Label.Sid, 0) == SECURITY_MANDATORY_LOW_RID,
-                                  "got integrity %#lx.\n", *GetSidSubAuthority(label->Label.Sid, 0));
+    ok_(__FILE__, line)(*GetSidSubAuthority(label->Label.Sid, 0) == SECURITY_MANDATORY_LOW_RID,
+                        "got integrity %#lx.\n", *GetSidSubAuthority(label->Label.Sid, 0));
 }
 
 static void test_CreateAppContainerToken(void)
@@ -136,8 +136,11 @@ static void test_CreateAppContainerToken(void)
     HANDLE process_token, token, query_token, impersonation_token;
     SID_AND_ATTRIBUTES capability;
     SECURITY_CAPABILITIES caps;
-    PSID package_sid, capability_sid;
+    static BYTE bad_revision_sid[] = {2, 2, 0, 0, 0, 0, 0, 15, 3, 0, 0, 0, 1, 0, 0, 0};
+    TOKEN_APPCONTAINER_INFORMATION *container, no_container;
+    PSID package_sid, capability_sid, short_capability_sid;
     NTSTATUS status;
+    DWORD size;
     BOOL ret;
 
     if (!pCreateAppContainerToken)
@@ -151,6 +154,8 @@ static void test_CreateAppContainerToken(void)
     AllocateAndInitializeSid(&package_authority, SECURITY_BUILTIN_CAPABILITY_RID_COUNT,
                              SECURITY_CAPABILITY_BASE_RID, 1 /* internetClient */, 0, 0, 0, 0, 0, 0,
                              &capability_sid);
+    AllocateAndInitializeSid(&package_authority, 1, SECURITY_CAPABILITY_BASE_RID, 0, 0, 0, 0, 0, 0, 0,
+                             &short_capability_sid);
     capability.Sid = capability_sid;
     capability.Attributes = SE_GROUP_ENABLED;
 
@@ -161,7 +166,51 @@ static void test_CreateAppContainerToken(void)
     ok(!status, "got %#lx.\n", status);
     check_lowbox_token(token, TOKEN_ALL_ACCESS, package_sid);
 
+    status = pNtCreateLowBoxToken(&query_token, token, TOKEN_ALL_ACCESS, NULL, package_sid, 0, NULL, 0, NULL);
+    ok(status == STATUS_ACCESS_DENIED, "got %#lx.\n", status);
+    capability.Sid = package_sid;
+    status = pNtCreateLowBoxToken(&query_token, process_token, TOKEN_ALL_ACCESS, NULL, package_sid, 1, &capability, 0, NULL);
+    ok(status == STATUS_INVALID_PARAMETER, "got %#lx.\n", status);
+    capability.Sid = short_capability_sid;
+    status = pNtCreateLowBoxToken(&query_token, process_token, TOKEN_ALL_ACCESS, NULL, package_sid, 1, &capability, 0, NULL);
+    ok(status == STATUS_INVALID_PARAMETER, "got %#lx.\n", status);
+    capability.Sid = bad_revision_sid;
+    status = pNtCreateLowBoxToken(&query_token, process_token, TOKEN_ALL_ACCESS, NULL, package_sid, 1, &capability, 0, NULL);
+    ok(status == STATUS_INVALID_SID, "got %#lx.\n", status);
+    capability.Sid = NULL;
+    status = pNtCreateLowBoxToken(&query_token, process_token, TOKEN_ALL_ACCESS, NULL, package_sid, 1, &capability, 0, NULL);
+    ok(status == STATUS_ACCESS_VIOLATION, "got %#lx.\n", status);
+    capability.Sid = capability_sid;
+    status = pNtCreateLowBoxToken(&query_token, process_token, TOKEN_ALL_ACCESS, NULL, package_sid, 1, NULL, 0, NULL);
+    ok(status == STATUS_INVALID_PARAMETER_MIX, "got %#lx.\n", status);
+
+    /* size queries */
+    ret = GetTokenInformation(token, TokenAppContainerSid, NULL, 0, &size);
+    ok(!ret && GetLastError() == ERROR_INSUFFICIENT_BUFFER, "got ret %d, error %lu.\n", ret, GetLastError());
+    ok(size == sizeof(TOKEN_APPCONTAINER_INFORMATION) + GetLengthSid(package_sid), "got size %lu.\n", size);
+    container = malloc(size);
+    ret = GetTokenInformation(token, TokenAppContainerSid, container, size - 1, &size);
+    ok(!ret && GetLastError() == ERROR_INSUFFICIENT_BUFFER, "got ret %d, error %lu.\n", ret, GetLastError());
+    ret = GetTokenInformation(token, TokenAppContainerSid, container, size, &size);
+    ok(ret, "got error %lu.\n", GetLastError());
+    ok(container->TokenAppContainer && EqualSid(container->TokenAppContainer, package_sid), "wrong SID.\n");
+    free(container);
+    ret = GetTokenInformation(process_token, TokenAppContainerSid, NULL, 0, &size);
+    ok(!ret && GetLastError() == ERROR_INSUFFICIENT_BUFFER, "got ret %d, error %lu.\n", ret, GetLastError());
+    ok(size == sizeof(TOKEN_APPCONTAINER_INFORMATION), "got size %lu.\n", size);
+    ret = GetTokenInformation(process_token, TokenAppContainerSid, &no_container, sizeof(no_container), &size);
+    ok(ret, "got error %lu.\n", GetLastError());
+    ok(!no_container.TokenAppContainer, "got %p.\n", no_container.TokenAppContainer);
     CloseHandle(token);
+
+    /* access 0 means the access of the source handle */
+    ret = OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY, &query_token);
+    ok(ret, "got error %lu.\n", GetLastError());
+    status = pNtCreateLowBoxToken(&token, query_token, 0, NULL, package_sid, 0, NULL, 0, NULL);
+    ok(!status, "got %#lx.\n", status);
+    check_lowbox_token(token, TOKEN_DUPLICATE | TOKEN_QUERY, package_sid);
+    CloseHandle(token);
+    CloseHandle(query_token);
 
     status = pNtCreateLowBoxToken(&query_token, process_token, TOKEN_QUERY, NULL, package_sid, 0, NULL, 0, NULL);
     ok(!status, "got %#lx.\n", status);
@@ -211,6 +260,7 @@ static void test_CreateAppContainerToken(void)
     CloseHandle(process_token);
     FreeSid(package_sid);
     FreeSid(capability_sid);
+    FreeSid(short_capability_sid);
 }
 
 static void test_AppContainerRegisterSid(void)

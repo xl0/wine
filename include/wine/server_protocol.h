@@ -4974,6 +4974,25 @@ struct duplicate_token_reply
     char __pad_12[4];
 };
 
+
+struct create_lowbox_token_request
+{
+    struct request_header __header;
+    obj_handle_t  handle;
+    unsigned int  access;
+    unsigned int  capability_count;
+    /* VARARG(objattr,object_attributes); */
+
+
+
+};
+struct create_lowbox_token_reply
+{
+    struct reply_header __header;
+    obj_handle_t  new_handle;
+    char __pad_12[4];
+};
+
 struct filter_token_request
 {
     struct request_header __header;
@@ -5029,7 +5048,7 @@ struct get_token_groups_request
     struct request_header __header;
     obj_handle_t    handle;
     unsigned int    attr_mask;
-    char __pad_20[4];
+    int             capabilities;
 };
 struct get_token_groups_reply
 {
@@ -5556,7 +5575,7 @@ struct get_token_info_reply
     int            is_elevated;
     int            group_count;
     int            privilege_count;
-    char __pad_52[4];
+    int            is_appcontainer;
 };
 
 
@@ -6559,6 +6578,7 @@ enum request
     REQ_get_token_privileges,
     REQ_check_token_privileges,
     REQ_duplicate_token,
+    REQ_create_lowbox_token,
     REQ_filter_token,
     REQ_access_check,
     REQ_get_token_sid,
@@ -6879,6 +6899,7 @@ union generic_request
     struct get_token_privileges_request get_token_privileges_request;
     struct check_token_privileges_request check_token_privileges_request;
     struct duplicate_token_request duplicate_token_request;
+    struct create_lowbox_token_request create_lowbox_token_request;
     struct filter_token_request filter_token_request;
     struct access_check_request access_check_request;
     struct get_token_sid_request get_token_sid_request;
@@ -7197,6 +7218,7 @@ union generic_reply
     struct get_token_privileges_reply get_token_privileges_reply;
     struct check_token_privileges_reply check_token_privileges_reply;
     struct duplicate_token_reply duplicate_token_reply;
+    struct create_lowbox_token_reply create_lowbox_token_reply;
     struct filter_token_reply filter_token_reply;
     struct access_check_reply access_check_reply;
     struct get_token_sid_reply get_token_sid_reply;
@@ -7284,6 +7306,6 @@ union generic_reply
     struct dcomp_get_shared_visual_info_reply dcomp_get_shared_visual_info_reply;
 };
 
-#define SERVER_PROTOCOL_VERSION 968
+#define SERVER_PROTOCOL_VERSION 969
 
 #endif /* __WINE_WINE_SERVER_PROTOCOL_H */

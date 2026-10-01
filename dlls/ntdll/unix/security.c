@@ -356,7 +356,7 @@ NTSTATUS WINAPI NtQueryInformationToken( HANDLE token, TOKEN_INFORMATION_CLASS c
         0,    /* TokenLogonSid */
         sizeof(DWORD), /* TokenIsAppContainer */
         0,    /* TokenCapabilities */
-        sizeof(TOKEN_APPCONTAINER_INFORMATION) + sizeof(SID), /* TokenAppContainerSid */
+        0,    /* TokenAppContainerSid */
         0,    /* TokenAppContainerNumber */
         0,    /* TokenUserClaimAttributes*/
         0,    /* TokenDeviceClaimAttributes */
@@ -413,6 +413,7 @@ NTSTATUS WINAPI NtQueryInformationToken( HANDLE token, TOKEN_INFORMATION_CLASS c
 
     case TokenGroups:
     case TokenLogonSid:
+    case TokenCapabilities:
     {
         /* reply buffer is always shorter than output one */
         void *buffer = malloc( length );
@@ -423,6 +424,7 @@ NTSTATUS WINAPI NtQueryInformationToken( HANDLE token, TOKEN_INFORMATION_CLASS c
         {
             req->handle = wine_server_obj_handle( token );
             req->attr_mask = (class == TokenLogonSid) ? SE_GROUP_LOGON_ID : 0;
+            req->capabilities = (class == TokenCapabilities);
             wine_server_set_reply( req, buffer, length );
             status = wine_server_call( req );
 
@@ -619,18 +621,24 @@ NTSTATUS WINAPI NtQueryInformationToken( HANDLE token, TOKEN_INFORMATION_CLASS c
         break;
 
     case TokenIntegrityLevel:
+        SERVER_START_REQ( get_token_info )
         {
-            /* report always "S-1-16-12288" (high mandatory level) for now */
+            /* report "S-1-16-12288" (high mandatory level), or low for lowbox tokens */
             static const SID high_level = {SID_REVISION, 1, {SECURITY_MANDATORY_LABEL_AUTHORITY},
                                                             {SECURITY_MANDATORY_HIGH_RID}};
-
             TOKEN_MANDATORY_LABEL *tml = info;
-            PSID psid = tml + 1;
+            SID *psid = (SID *)(tml + 1);
 
-            tml->Label.Sid = psid;
-            tml->Label.Attributes = SE_GROUP_INTEGRITY | SE_GROUP_INTEGRITY_ENABLED;
-            memcpy( psid, &high_level, sizeof(SID) );
+            req->handle = wine_server_obj_handle( token );
+            if (!(status = wine_server_call( req )))
+            {
+                tml->Label.Sid = psid;
+                tml->Label.Attributes = SE_GROUP_INTEGRITY | SE_GROUP_INTEGRITY_ENABLED;
+                memcpy( psid, &high_level, sizeof(SID) );
+                if (reply->is_appcontainer) psid->SubAuthority[0] = SECURITY_MANDATORY_LOW_RID;
+            }
         }
+        SERVER_END_REQ;
         break;
 
     case TokenUIAccess:
@@ -639,19 +647,31 @@ NTSTATUS WINAPI NtQueryInformationToken( HANDLE token, TOKEN_INFORMATION_CLASS c
         break;
 
     case TokenAppContainerSid:
+        SERVER_START_REQ( get_token_sid )
         {
             TOKEN_APPCONTAINER_INFORMATION *container = info;
-            FIXME("QueryInformationToken( ..., TokenAppContainerSid, ...) semi-stub\n");
-            container->TokenAppContainer = NULL;
+            PSID sid = container + 1;
+            DWORD sid_len = length < sizeof(*container) ? 0 : length - sizeof(*container);
+
+            req->handle = wine_server_obj_handle( token );
+            req->which_sid = class;
+            wine_server_set_reply( req, sid, sid_len );
+            status = wine_server_call( req );
+            if (retlen) *retlen = reply->sid_len + sizeof(*container);
+            if (!status && length < sizeof(*container)) status = STATUS_BUFFER_TOO_SMALL;
+            if (!status) container->TokenAppContainer = reply->sid_len ? sid : NULL;
         }
+        SERVER_END_REQ;
         break;
 
     case TokenIsAppContainer:
+        SERVER_START_REQ( get_token_info )
         {
-            TRACE("TokenIsAppContainer semi-stub\n");
-            *(DWORD *)info = 0;
-            break;
+            req->handle = wine_server_obj_handle( token );
+            if (!(status = wine_server_call( req ))) *(DWORD *)info = reply->is_appcontainer;
         }
+        SERVER_END_REQ;
+        break;
 
     case TokenLinkedToken:
         SERVER_START_REQ( create_linked_token )
@@ -751,17 +771,80 @@ NTSTATUS WINAPI NtCreateLowBoxToken( HANDLE *token_handle, HANDLE token, ACCESS_
                                      SID_AND_ATTRIBUTES *capabilities, ULONG handle_count, HANDLE *handle )
 {
     static const SID_IDENTIFIER_AUTHORITY package_authority = {SECURITY_APP_PACKAGE_AUTHORITY};
+    OBJECT_ATTRIBUTES default_attr;
+    struct object_attributes *objattr;
+    data_size_t objattr_size, size;
+    unsigned int status, i, *attrs;
+    BYTE *data, *p;
 
-    FIXME("(%p, %p, %x, %p, %p, %u, %p, %u, %p): semi-stub\n",
-          token_handle, token, access, attr, sid, count, capabilities, handle_count, handle );
+    TRACE( "(%p, %p, %x, %p, %p, %u, %p, %u, %p)\n",
+           token_handle, token, access, attr, sid, count, capabilities, handle_count, handle );
+    if (handle_count) FIXME( "ignoring %u handles\n", handle_count );
 
     if (!sid || memcmp( &sid->IdentifierAuthority, &package_authority, sizeof(package_authority) ) ||
         sid->SubAuthorityCount != SECURITY_APP_PACKAGE_RID_COUNT ||
         sid->SubAuthority[0] != SECURITY_APP_PACKAGE_BASE_RID)
         return STATUS_INVALID_PARAMETER;
 
-    /* the app container and its capabilities are not stored, the lowbox token is a primary copy of the token */
-    return NtDuplicateToken( token, access, attr, FALSE, TokenPrimary, token_handle );
+    if (count > 4096) return STATUS_INVALID_PARAMETER;  /* limit found on Windows */
+    if (count && !capabilities) return STATUS_INVALID_PARAMETER_MIX;
+
+    size = offsetof( SID, SubAuthority[sid->SubAuthorityCount] ) + count * sizeof(*attrs);
+    for (i = 0; i < count; i++)
+    {
+        SID *cap = capabilities[i].Sid;
+
+        if (!cap) return STATUS_ACCESS_VIOLATION;
+        if (cap->Revision != SID_REVISION || cap->SubAuthorityCount > SID_MAX_SUB_AUTHORITIES)
+            return STATUS_INVALID_SID;
+        if (memcmp( &cap->IdentifierAuthority, &package_authority, sizeof(package_authority) ) ||
+            cap->SubAuthorityCount < 2 || cap->SubAuthority[0] != SECURITY_CAPABILITY_BASE_RID)
+            return STATUS_INVALID_PARAMETER;
+        size += offsetof( SID, SubAuthority[cap->SubAuthorityCount] );
+    }
+
+    /* the server expects the SIDs after the object attributes */
+    if (!attr)
+    {
+        InitializeObjectAttributes( &default_attr, NULL, 0, NULL, NULL );
+        attr = &default_attr;
+    }
+    if ((status = wine_server_alloc_object_attributes( attr, &objattr, &objattr_size ))) return status;
+    if (!(data = malloc( size )))
+    {
+        free( objattr );
+        return STATUS_NO_MEMORY;
+    }
+
+    /* package SID, capability attributes, capability SIDs */
+    p = data;
+    memcpy( p, sid, offsetof( SID, SubAuthority[sid->SubAuthorityCount] ));
+    p += offsetof( SID, SubAuthority[sid->SubAuthorityCount] );
+    attrs = (unsigned int *)p;
+    p += count * sizeof(*attrs);
+    for (i = 0; i < count; i++)
+    {
+        SID *cap = capabilities[i].Sid;
+
+        attrs[i] = capabilities[i].Attributes;
+        memcpy( p, cap, offsetof( SID, SubAuthority[cap->SubAuthorityCount] ));
+        p += offsetof( SID, SubAuthority[cap->SubAuthorityCount] );
+    }
+
+    SERVER_START_REQ( create_lowbox_token )
+    {
+        req->handle = wine_server_obj_handle( token );
+        req->access = access;
+        req->capability_count = count;
+        wine_server_add_data( req, objattr, objattr_size );
+        wine_server_add_data( req, data, size );
+        if (!(status = wine_server_call( req ))) *token_handle = wine_server_ptr_handle( reply->new_handle );
+    }
+    SERVER_END_REQ;
+
+    free( data );
+    free( objattr );
+    return status;
 }
 
 

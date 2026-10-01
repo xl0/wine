@@ -2693,6 +2693,19 @@ static void dump_duplicate_token_reply( const struct duplicate_token_reply *req 
     fprintf( stderr, " new_handle=%04x", req->new_handle );
 }
 
+static void dump_create_lowbox_token_request( const struct create_lowbox_token_request *req )
+{
+    fprintf( stderr, " handle=%04x", req->handle );
+    fprintf( stderr, ", access=%08x", req->access );
+    fprintf( stderr, ", capability_count=%08x", req->capability_count );
+    dump_varargs_object_attributes( ", objattr=", cur_size );
+}
+
+static void dump_create_lowbox_token_reply( const struct create_lowbox_token_reply *req )
+{
+    fprintf( stderr, " new_handle=%04x", req->new_handle );
+}
+
 static void dump_filter_token_request( const struct filter_token_request *req )
 {
     fprintf( stderr, " handle=%04x", req->handle );
@@ -2739,6 +2752,7 @@ static void dump_get_token_groups_request( const struct get_token_groups_request
 {
     fprintf( stderr, " handle=%04x", req->handle );
     fprintf( stderr, ", attr_mask=%08x", req->attr_mask );
+    fprintf( stderr, ", capabilities=%d", req->capabilities );
 }
 
 static void dump_get_token_groups_reply( const struct get_token_groups_reply *req )
@@ -3095,6 +3109,7 @@ static void dump_get_token_info_reply( const struct get_token_info_reply *req )
     fprintf( stderr, ", is_elevated=%d", req->is_elevated );
     fprintf( stderr, ", group_count=%d", req->group_count );
     fprintf( stderr, ", privilege_count=%d", req->privilege_count );
+    fprintf( stderr, ", is_appcontainer=%d", req->is_appcontainer );
 }
 
 static void dump_create_linked_token_request( const struct create_linked_token_request *req )
@@ -3817,6 +3832,7 @@ static const dump_func req_dumpers[REQ_NB_REQUESTS] =
     (dump_func)dump_get_token_privileges_request,
     (dump_func)dump_check_token_privileges_request,
     (dump_func)dump_duplicate_token_request,
+    (dump_func)dump_create_lowbox_token_request,
     (dump_func)dump_filter_token_request,
     (dump_func)dump_access_check_request,
     (dump_func)dump_get_token_sid_request,
@@ -4134,6 +4150,7 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] =
     (dump_func)dump_get_token_privileges_reply,
     (dump_func)dump_check_token_privileges_reply,
     (dump_func)dump_duplicate_token_reply,
+    (dump_func)dump_create_lowbox_token_reply,
     (dump_func)dump_filter_token_reply,
     (dump_func)dump_access_check_reply,
     (dump_func)dump_get_token_sid_reply,
@@ -4451,6 +4468,7 @@ static const char * const req_names[REQ_NB_REQUESTS] =
     "get_token_privileges",
     "check_token_privileges",
     "duplicate_token",
+    "create_lowbox_token",
     "filter_token",
     "access_check",
     "get_token_sid",

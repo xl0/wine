@@ -62,6 +62,7 @@ const struct luid SeUndockPrivilege               = { 25, 0 };
 const struct luid SeManageVolumePrivilege         = { 28, 0 };
 const struct luid SeImpersonatePrivilege          = { 29, 0 };
 const struct luid SeCreateGlobalPrivilege         = { 30, 0 };
+const struct luid SeIncreaseWorkingSetPrivilege   = { 33, 0 };
 
 struct sid_attrs
 {
@@ -115,6 +116,8 @@ struct token
     int            impersonation_level; /* impersonation level this token is capable of if non-primary token */
     int            elevation;       /* elevation type */
     struct list    kernel_object;   /* list of kernel object pointers */
+    struct sid    *appcontainer;    /* package SID of a lowbox token, NULL otherwise */
+    struct list    capabilities;    /* capabilities of a lowbox token (struct group) */
 };
 
 struct privilege
@@ -447,7 +450,28 @@ static void token_destroy( struct object *obj )
         free( group );
     }
 
+    LIST_FOR_EACH_SAFE( cursor, cursor_next, &token->capabilities )
+    {
+        struct group *group = LIST_ENTRY( cursor, struct group, entry );
+        list_remove( &group->entry );
+        free( group );
+    }
+
+    free( token->appcontainer );
     free( token->default_dacl );
+}
+
+static struct group *group_add( struct list *list, const struct sid *sid, unsigned int attrs )
+{
+    struct group *group = mem_alloc( offsetof( struct group, sid.sub_auth[sid->sub_count] ));
+
+    if (group)
+    {
+        group->attrs = attrs;
+        copy_sid( &group->sid, sid );
+        list_add_tail( list, &group->entry );
+    }
+    return group;
 }
 
 /* creates a new token.
@@ -477,6 +501,8 @@ static struct token *create_token( unsigned int primary, unsigned int session_id
         list_init( &token->privileges );
         list_init( &token->groups );
         list_init( &token->kernel_object );
+        list_init( &token->capabilities );
+        token->appcontainer = NULL;
         token->primary = primary;
         token->session_id = session_id;
         /* primary tokens don't have impersonation levels */
@@ -626,6 +652,23 @@ struct token *token_duplicate( struct token *src_token, unsigned primary,
         {
             release_object( token );
             return NULL;
+        }
+    }
+
+    if (src_token->appcontainer)
+    {
+        if (!(token->appcontainer = memdup( src_token->appcontainer, sid_len( src_token->appcontainer ))))
+        {
+            release_object( token );
+            return NULL;
+        }
+        LIST_FOR_EACH_ENTRY( group, &src_token->capabilities, struct group, entry )
+        {
+            if (!group_add( &token->capabilities, &group->sid, group->attrs ))
+            {
+                release_object( token );
+                return NULL;
+            }
         }
     }
 
@@ -1340,6 +1383,66 @@ DECL_HANDLER(duplicate_token)
     if (params.root) release_object( params.root );
 }
 
+/* creates a primary lowbox (app container) token from a token */
+DECL_HANDLER(create_lowbox_token)
+{
+    struct token *src_token, *token;
+    struct privilege *privilege, *next;
+    struct object_params params;
+    const struct sid *package, *sid;
+    const unsigned int *attrs;
+    data_size_t size;
+    unsigned int i;
+
+    if (!get_req_object_attributes( &params )) return;
+    if (params.root) release_object( params.root );  /* unused */
+
+    package = get_req_data_after_objattr( &params, &size );
+    if (!package || !sid_valid_size( package, size ) ||
+        (size - sid_len( package )) / sizeof(*attrs) < req->capability_count)
+    {
+        set_error( STATUS_INVALID_PARAMETER );
+        return;
+    }
+    size -= sid_len( package ) + req->capability_count * sizeof(*attrs);
+    attrs = (const unsigned int *)((const char *)package + sid_len( package ));
+    sid = (const struct sid *)(attrs + req->capability_count);
+    if (get_sid_count( sid, size ) < req->capability_count)
+    {
+        set_error( STATUS_INVALID_PARAMETER );
+        return;
+    }
+
+    if (!(src_token = (struct token *)get_handle_obj( current->process, req->handle, TOKEN_DUPLICATE, &token_ops )))
+        return;
+
+    if (src_token->appcontainer) set_error( STATUS_ACCESS_DENIED );
+    else if ((token = token_duplicate( src_token, TRUE, 0, params.sd, NULL, 0, NULL, 0 )))
+    {
+        /* lowbox tokens only keep these privileges */
+        LIST_FOR_EACH_ENTRY_SAFE( privilege, next, &token->privileges, struct privilege, entry )
+        {
+            if (!is_equal_luid( privilege->luid, SeChangeNotifyPrivilege ) &&
+                !is_equal_luid( privilege->luid, SeIncreaseWorkingSetPrivilege ))
+                privilege_remove( privilege );
+        }
+
+        token->appcontainer = memdup( package, sid_len( package ));
+        for (i = 0; token->appcontainer && i < req->capability_count; i++)
+        {
+            if (!group_add( &token->capabilities, sid, attrs[i] )) break;
+            sid = (const struct sid *)((const char *)sid + sid_len( sid ));
+        }
+        if (token->appcontainer && i == req->capability_count)
+        {
+            unsigned int access = req->access ? req->access : get_handle_access( current->process, req->handle );
+            reply->new_handle = alloc_handle_no_access_check( current->process, token, access, params.attr );
+        }
+        release_object( token );
+    }
+    release_object( src_token );
+}
+
 /* creates a restricted version of a token */
 DECL_HANDLER(filter_token)
 {
@@ -1470,6 +1573,9 @@ DECL_HANDLER(get_token_sid)
         case TokenOwner:
             sid = token->owner;
             break;
+        case TokenAppContainerSid:
+            sid = token->appcontainer;
+            break;
         default:
             set_error( STATUS_INVALID_PARAMETER );
             break;
@@ -1492,10 +1598,11 @@ DECL_HANDLER(get_token_groups)
 
     if ((token = (struct token *)get_handle_obj( current->process, req->handle, TOKEN_QUERY, &token_ops )))
     {
+        const struct list *groups = req->capabilities ? &token->capabilities : &token->groups;
         unsigned int group_count = 0;
         const struct group *group;
 
-        LIST_FOR_EACH_ENTRY( group, &token->groups, const struct group, entry )
+        LIST_FOR_EACH_ENTRY( group, groups, const struct group, entry )
         {
             if (req->attr_mask && !(group->attrs & req->attr_mask)) continue;
             group_count++;
@@ -1510,7 +1617,7 @@ DECL_HANDLER(get_token_groups)
 
             if (attr_ptr)
             {
-                LIST_FOR_EACH_ENTRY( group, &token->groups, const struct group, entry )
+                LIST_FOR_EACH_ENTRY( group, groups, const struct group, entry )
                 {
                     if (req->attr_mask && !(group->attrs & req->attr_mask)) continue;
                     sid = copy_sid( sid, &group->sid );
@@ -1545,6 +1652,7 @@ DECL_HANDLER(get_token_info)
             reply->is_elevated = token->elevation == TokenElevationTypeFull;
         reply->group_count = list_count( &token->groups );
         reply->privilege_count = list_count( &token->privileges );
+        reply->is_appcontainer = token->appcontainer != NULL;
         release_object( token );
     }
 }
