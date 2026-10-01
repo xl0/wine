@@ -123,6 +123,9 @@ struct message_state
     HWND target_hwnd;
     DWORD target_tid;
     struct dispatch_params params;
+    LONG refs; /* the caller's (until FreeBuffer) and the in-flight call's */
+    BOOL orphaned; /* the caller stopped waiting (call cancelled), the call owns msg */
+    RPCOLEMESSAGE msg; /* the call's copy of the caller's message, params.msg points here */
 };
 
 typedef struct
@@ -1166,6 +1169,34 @@ static void release_call_event(HANDLE event)
     else tlsdata->call_event = event;
 }
 
+static void release_message_state(struct message_state *message_state)
+{
+    RPC_MESSAGE *msg = (RPC_MESSAGE *)&message_state->msg;
+
+    if (InterlockedDecrement(&message_state->refs)) return;
+
+    if (message_state->orphaned)
+    {
+        if (message_state->params.bypass_rpcrt) free(msg->Buffer);
+        else I_RpcFreeBuffer(msg);
+        free(msg->RpcInterfaceInformation);
+    }
+    if (message_state->params.handle) CloseHandle(message_state->params.handle);
+    if (message_state->params.actctx) ReleaseActCtx(message_state->params.actctx);
+    if (message_state->params.stub) IRpcStubBuffer_Release(message_state->params.stub);
+    if (message_state->params.chan) IRpcChannelBuffer_Release(message_state->params.chan);
+    free(message_state);
+}
+
+/* the call has completed: wake the caller and drop the call's reference */
+static void client_call_done(struct dispatch_params *params)
+{
+    struct message_state *message_state = CONTAINING_RECORD(params, struct message_state, params);
+
+    SetEvent(params->handle);
+    release_message_state(message_state);
+}
+
 static HRESULT WINAPI ClientRpcChannelBuffer_GetBuffer(LPRPCCHANNELBUFFER iface, RPCOLEMESSAGE* olemsg, REFIID riid)
 {
     ClientRpcChannelBuffer *This = (ClientRpcChannelBuffer *)iface;
@@ -1216,6 +1247,8 @@ static HRESULT WINAPI ClientRpcChannelBuffer_GetBuffer(LPRPCCHANNELBUFFER iface,
     message_state->target_hwnd = NULL;
     message_state->target_tid = 0;
     memset(&message_state->params, 0, sizeof(message_state->params));
+    message_state->refs = 1;
+    message_state->orphaned = FALSE;
 
     extensions_size = ChannelHooks_ClientGetSize(&message_state->channel_hook_info,
         &channel_hook_data, &channel_hook_count, &extension_count);
@@ -1336,7 +1369,7 @@ static DWORD WINAPI rpc_sendreceive_thread(LPVOID param)
 
     TRACE("completed with status %#lx\n", data->status);
 
-    SetEvent(data->handle);
+    client_call_done(data);
 
     return 0;
 }
@@ -1425,6 +1458,12 @@ static HRESULT WINAPI ClientRpcChannelBuffer_SendReceive(LPRPCCHANNELBUFFER ifac
     msg->Buffer = (char *)msg->Buffer - message_state->prefix_data_len;
     msg->BufferLength += message_state->prefix_data_len;
 
+    /* The call works on its own copy of the message: a call cancelled by the
+     * message filter completes after the caller has returned. */
+    message_state->msg = *olemsg;
+    message_state->params.msg = &message_state->msg;
+    InterlockedIncrement(&message_state->refs);
+
     /* Note: this is an optimization in the Microsoft OLE runtime that we need
      * to copy, as shown by the test_no_couninitialize_client test. without
      * short-circuiting the RPC runtime in the case below, the test will
@@ -1432,10 +1471,9 @@ static HRESULT WINAPI ClientRpcChannelBuffer_SendReceive(LPRPCCHANNELBUFFER ifac
      * a thread to process the RPC when this function is called indirectly
      * from DllMain */
 
-    message_state->params.msg = olemsg;
     if (message_state->params.bypass_rpcrt)
     {
-        msg->ProcNum &= ~RPC_FLAGS_VALID_BIT;
+        message_state->msg.iMethod &= ~RPC_FLAGS_VALID_BIT;
 
         /* in-process calls run in the caller's activation context */
         GetCurrentActCtx(&message_state->params.actctx);
@@ -1483,27 +1521,33 @@ static HRESULT WINAPI ClientRpcChannelBuffer_SendReceive(LPRPCCHANNELBUFFER ifac
             hr = S_OK;
     }
 
-    if (hr == S_OK)
+    if (hr != S_OK)
+        InterlockedDecrement(&message_state->refs); /* not queued */
+    else if (WaitForSingleObject(message_state->params.handle, 0))
     {
-        if (WaitForSingleObject(message_state->params.handle, 0))
-        {
-            tlsdata->pending_call_count_client++;
-            hr = CoWaitForMultipleHandles(0, INFINITE, 1, &message_state->params.handle, &index);
-            tlsdata->pending_call_count_client--;
-            /* A call cancelled by the message filter still runs and signals the event when it
-             * completes: don't reuse it for the next call, and don't close it either, the
-             * handle value could be reused by then. */
-            if (hr != S_OK) message_state->params.handle = NULL;
-        }
+        tlsdata->pending_call_count_client++;
+        hr = CoWaitForMultipleHandles(0, INFINITE, 1, &message_state->params.handle, &index);
+        tlsdata->pending_call_count_client--;
+        /* a call cancelled by the message filter still runs: it owns the message and the event now */
+        message_state->orphaned = hr != S_OK;
     }
-    if (message_state->params.handle) release_call_event(message_state->params.handle);
-    if (message_state->params.actctx) ReleaseActCtx(message_state->params.actctx);
 
-    /* for WM shortcut, faults are returned in params->hr */
-    if (hr == S_OK)
-        hrFault = message_state->params.hr;
-
-    status = message_state->params.status;
+    if (message_state->orphaned)
+    {
+        msg->Buffer = NULL;
+        msg->BufferLength = 0;
+        status = RPC_S_OK;
+    }
+    else
+    {
+        release_call_event(message_state->params.handle);
+        message_state->params.handle = NULL;
+        *olemsg = message_state->msg;
+        /* for WM shortcut, faults are returned in params->hr */
+        if (hr == S_OK)
+            hrFault = message_state->params.hr;
+        status = message_state->params.status;
+    }
 
     orpcthat.flags = ORPCF_NULL;
     orpcthat.extensions = NULL;
@@ -1602,22 +1646,23 @@ static HRESULT WINAPI ClientRpcChannelBuffer_FreeBuffer(LPRPCCHANNELBUFFER iface
     msg->Buffer = (char *)msg->Buffer - message_state->prefix_data_len;
     msg->BufferLength += message_state->prefix_data_len;
 
-    if (message_state->params.bypass_rpcrt)
-    {
-        free(msg->Buffer);
+    /* an orphaned call frees its own copy of the message */
+    if (message_state->orphaned)
         status = RPC_S_OK;
-    }
     else
-        status = I_RpcFreeBuffer(msg);
-
-    free(msg->RpcInterfaceInformation);
+    {
+        if (message_state->params.bypass_rpcrt)
+        {
+            free(msg->Buffer);
+            status = RPC_S_OK;
+        }
+        else
+            status = I_RpcFreeBuffer(msg);
+        free(msg->RpcInterfaceInformation);
+    }
     msg->RpcInterfaceInformation = NULL;
 
-    if (message_state->params.stub)
-        IRpcStubBuffer_Release(message_state->params.stub);
-    if (message_state->params.chan)
-        IRpcChannelBuffer_Release(message_state->params.chan);
-    free(message_state);
+    release_message_state(message_state);
 
     TRACE("-- %ld\n", status);
 
@@ -2043,7 +2088,9 @@ exit_reset_state:
 
 exit:
     free(message_state);
-    if (params->handle) SetEvent(params->handle);
+    /* bypass_rpcrt is only set for calls from a client channel of this process */
+    if (params->bypass_rpcrt) client_call_done(params);
+    else if (params->handle) SetEvent(params->handle);
 }
 
 static void __RPC_STUB dispatch_rpc(RPC_MESSAGE *msg)
