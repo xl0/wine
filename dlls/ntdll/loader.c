@@ -144,6 +144,11 @@ typedef struct _wine_modref
 
 static UINT tls_module_count = 32;     /* number of modules with TLS directory */
 static IMAGE_TLS_DIRECTORY *tls_dirs;  /* array of TLS directories */
+/* Threads with a TLS block array, protected by the loader lock. Threads terminated without
+ * LdrShutdownThread (TerminateThread) stay listed until their TEB is reused, so later loads of
+ * DLLs with TLS keep allocating data for them. */
+static TEB **tls_threads;
+static UINT tls_thread_count, tls_thread_capacity;
 
 static RTL_CRITICAL_SECTION loader_section;
 static RTL_CRITICAL_SECTION_DEBUG critsect_debug =
@@ -1392,8 +1397,7 @@ static BOOL alloc_tls_slot( LDR_DATA_TABLE_ENTRY *mod )
     const IMAGE_TLS_DIRECTORY *dir;
     ULONG i, size;
     void *new_ptr;
-    UINT old_module_count = tls_module_count;
-    HANDLE thread = NULL, next;
+    UINT j, old_module_count = tls_module_count;
 
     if (!(dir = RtlImageDirectoryEntryToData( mod->DllBase, TRUE, IMAGE_DIRECTORY_ENTRY_TLS, &size )))
         return FALSE;
@@ -1424,36 +1428,30 @@ static BOOL alloc_tls_slot( LDR_DATA_TABLE_ENTRY *mod )
     }
 
     /* allocate the data block in all running threads */
-    while (!NtGetNextThread( GetCurrentProcess(), thread, THREAD_QUERY_LIMITED_INFORMATION, 0, 0, &next ))
+    for (j = 0; j < tls_thread_count; j++)
     {
-        THREAD_BASIC_INFORMATION tbi;
-        TEB *teb;
+        TEB *teb = tls_threads[j];
+        /* A thread terminated without LdrShutdownThread keeps its entry: its TEB stays mapped and
+         * its TLS array is leaked, so updating them is harmless, but a new thread may reuse and
+         * clear the TEB at any time. Read the array pointer once and only replace it if unchanged. */
+        void **ptrs = ReadPointerAcquire( (void **)&teb->ThreadLocalStoragePointer );
 
-        if (thread) NtClose( thread );
-        thread = next;
-        if (NtQueryInformationThread( thread, ThreadBasicInformation, &tbi, sizeof(tbi), NULL ) || !tbi.TebBaseAddress)
-        {
-            ERR( "NtQueryInformationThread failed.\n" );
-            continue;
-        }
-        teb = tbi.TebBaseAddress;
-        if (!teb->ThreadLocalStoragePointer)
-        {
-            /* Thread is not initialized by loader yet or already teared down. */
-            TRACE( "thread %04lx NULL tls block.\n", HandleToULong(tbi.ClientId.UniqueThread) );
-            continue;
-        }
+        if (!ptrs) continue;
 
         if (old_module_count < tls_module_count)
         {
-            void **old = teb->ThreadLocalStoragePointer;
             void **new = RtlAllocateHeap( GetProcessHeap(), HEAP_ZERO_MEMORY, tls_module_count * sizeof(*new));
 
             if (!new) return FALSE;
-            if (old) memcpy( new, old, old_module_count * sizeof(*new) );
-            teb->ThreadLocalStoragePointer = new;
-            TRACE( "thread %04lx tls block %p -> %p\n", HandleToULong(teb->ClientId.UniqueThread), old, new );
+            memcpy( new, ptrs, old_module_count * sizeof(*new) );
+            if (InterlockedCompareExchangePointer( (void **)&teb->ThreadLocalStoragePointer, new, ptrs ) != ptrs)
+            {
+                RtlFreeHeap( GetProcessHeap(), 0, new );
+                continue;
+            }
+            TRACE( "thread %04lx tls block %p -> %p\n", HandleToULong(teb->ClientId.UniqueThread), ptrs, new );
             /* FIXME: can't free old block here, should be freed at thread exit */
+            ptrs = new;
         }
 
         if (!(new_ptr = RtlAllocateHeap( GetProcessHeap(), 0, size + dir->SizeOfZeroFill ))) return -1;
@@ -1463,10 +1461,8 @@ static BOOL alloc_tls_slot( LDR_DATA_TABLE_ENTRY *mod )
         TRACE( "thread %04lx slot %lu: %lu/%lu bytes at %p\n",
                HandleToULong(teb->ClientId.UniqueThread), i, size, dir->SizeOfZeroFill, new_ptr );
 
-        RtlFreeHeap( GetProcessHeap(), 0,
-                     InterlockedExchangePointer( (void **)teb->ThreadLocalStoragePointer + i, new_ptr ));
+        RtlFreeHeap( GetProcessHeap(), 0, InterlockedExchangePointer( ptrs + i, new_ptr ));
     }
-    if (thread) NtClose( thread );
 
     *(DWORD *)dir->AddressOfIndex = i;
     tls_dirs[i] = *dir;
@@ -1672,8 +1668,24 @@ static WINE_MODREF *alloc_module( HMODULE hModule, const UNICODE_STRING *nt_name
  */
 static NTSTATUS alloc_thread_tls(void)
 {
+    TEB *teb = NtCurrentTeb();
     void **pointers;
     UINT i, size;
+
+    /* the TEB of a thread that was terminated without LdrShutdownThread may be listed already */
+    for (i = 0; i < tls_thread_count; i++) if (tls_threads[i] == teb) break;
+    if (i == tls_thread_count && tls_thread_count == tls_thread_capacity)
+    {
+        UINT new_capacity = max( 64, tls_thread_capacity * 2 );
+        TEB **new_threads = tls_threads
+            ? RtlReAllocateHeap( GetProcessHeap(), 0, tls_threads, new_capacity * sizeof(*new_threads) )
+            : RtlAllocateHeap( GetProcessHeap(), 0, new_capacity * sizeof(*new_threads) );
+
+        if (!new_threads) return STATUS_NO_MEMORY;
+        tls_threads = new_threads;
+        tls_thread_capacity = new_capacity;
+    }
+    if (i == tls_thread_count) tls_threads[tls_thread_count++] = teb;
 
     if (!(pointers = RtlAllocateHeap( GetProcessHeap(), HEAP_ZERO_MEMORY,
                                       tls_module_count * sizeof(*pointers) )))
@@ -1698,7 +1710,7 @@ static NTSTATUS alloc_thread_tls(void)
 
         TRACE( "slot %u: %u/%lu bytes at %p\n", i, size, dir->SizeOfZeroFill, pointers[i] );
     }
-    NtCurrentTeb()->ThreadLocalStoragePointer = pointers;
+    teb->ThreadLocalStoragePointer = pointers;
     return STATUS_SUCCESS;
 }
 
@@ -4103,6 +4115,12 @@ void WINAPI LdrShutdownThread(void)
         NtCurrentTeb()->ThreadLocalStoragePointer = NULL;
         for (i = 0; i < tls_module_count; i++) RtlFreeHeap( GetProcessHeap(), 0, pointers[i] );
         RtlFreeHeap( GetProcessHeap(), 0, pointers );
+    }
+    for (i = 0; i < tls_thread_count; i++)
+    {
+        if (tls_threads[i] != NtCurrentTeb()) continue;
+        tls_threads[i] = tls_threads[--tls_thread_count];
+        break;
     }
     RtlProcessFlsData( NtCurrentTeb()->FlsSlots, 2 );
     NtCurrentTeb()->FlsSlots = NULL;

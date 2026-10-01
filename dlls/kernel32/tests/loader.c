@@ -2251,6 +2251,21 @@ static DWORD WINAPI tls_thread_fn(void* tlsidx_v)
     return 0;
 }
 
+static int tls_existing_index;
+static HANDLE tls_existing_ready;
+
+static DWORD WINAPI tls_existing_thread_fn(void *event)
+{
+    const char *str;
+
+    SetEvent( tls_existing_ready );
+    WaitForSingleObject( event, INFINITE );
+    if (tls_existing_index < 0) return 0;
+    str = ((char **)NtCurrentTeb()->ThreadLocalStoragePointer)[tls_existing_index];
+    ok( str && !strcmp( str, "hello world" ), "wrong tls data %s at %p\n", debugstr_a(str), str );
+    return 0;
+}
+
 static void test_import_resolution(void)
 {
     WCHAR temp_path[MAX_PATH];
@@ -2259,7 +2274,7 @@ static void test_import_resolution(void)
     void *expect, *tmp;
     char *str;
     SIZE_T size;
-    HANDLE hfile, mapping;
+    HANDLE hfile, mapping, event, thread;
     HMODULE mod, mod2;
     NTSTATUS status;
     LARGE_INTEGER offset;
@@ -2415,8 +2430,19 @@ static void test_import_resolution(void)
         switch (test)
         {
         case 0:  /* normal load */
+            event = CreateEventW( NULL, TRUE, FALSE, NULL );
+            tls_existing_ready = CreateEventW( NULL, TRUE, FALSE, NULL );
+            thread = CreateThread( NULL, 0, tls_existing_thread_fn, event, 0, NULL );
+            WaitForSingleObject( tls_existing_ready, INFINITE );
+            CloseHandle( tls_existing_ready );
             mod = LoadLibraryW( dll_name );
             ok( mod != NULL, "failed to load err %lu\n", GetLastError() );
+            /* threads that existed before the load get the module's TLS data too */
+            tls_existing_index = mod ? ((struct imports *)((char *)mod + page_size))->tls_index : -1;
+            SetEvent( event );
+            WaitForSingleObject( thread, INFINITE );
+            CloseHandle( thread );
+            CloseHandle( event );
             if (!mod) break;
             ptr = (struct imports *)((char *)mod + page_size);
             expect = GetProcAddress( GetModuleHandleA( data.module ), data.function.name );
