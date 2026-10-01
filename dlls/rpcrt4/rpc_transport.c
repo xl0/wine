@@ -65,7 +65,7 @@ typedef struct _RpcConnection_np
     HANDLE listen_event;
     char *listen_pipe;
     IO_STATUS_BLOCK io_status;
-    HANDLE event_cache;
+    HANDLE event_cache[2]; /* a server thread may write while the listener reads */
     BOOL read_closed;
 } RpcConnection_np;
 
@@ -77,13 +77,20 @@ static RpcConnection *rpcrt4_conn_np_alloc(void)
 
 static HANDLE get_np_event(RpcConnection_np *connection)
 {
-    HANDLE event = InterlockedExchangePointer(&connection->event_cache, NULL);
-    return event ? event : CreateEventW(NULL, TRUE, FALSE, NULL);
+    HANDLE event;
+    unsigned int i;
+
+    for (i = 0; i < ARRAY_SIZE(connection->event_cache); i++)
+        if ((event = InterlockedExchangePointer(&connection->event_cache[i], NULL))) return event;
+    return CreateEventW(NULL, TRUE, FALSE, NULL);
 }
 
 static void release_np_event(RpcConnection_np *connection, HANDLE event)
 {
-    event = InterlockedExchangePointer(&connection->event_cache, event);
+    unsigned int i;
+
+    for (i = 0; event && i < ARRAY_SIZE(connection->event_cache); i++)
+        event = InterlockedExchangePointer(&connection->event_cache[i], event);
     if (event)
         CloseHandle(event);
 }
@@ -428,6 +435,7 @@ static int rpcrt4_conn_np_write(RpcConnection *conn, const void *buffer, unsigne
 static int rpcrt4_conn_np_close(RpcConnection *conn)
 {
     RpcConnection_np *connection = (RpcConnection_np *) conn;
+    unsigned int i;
     if (connection->pipe)
     {
         FlushFileBuffers(connection->pipe);
@@ -439,10 +447,10 @@ static int rpcrt4_conn_np_close(RpcConnection *conn)
         CloseHandle(connection->listen_event);
         connection->listen_event = 0;
     }
-    if (connection->event_cache)
+    for (i = 0; i < ARRAY_SIZE(connection->event_cache); i++)
     {
-        CloseHandle(connection->event_cache);
-        connection->event_cache = 0;
+        if (connection->event_cache[i]) CloseHandle(connection->event_cache[i]);
+        connection->event_cache[i] = 0;
     }
     return 0;
 }
