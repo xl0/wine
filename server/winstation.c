@@ -422,8 +422,10 @@ static void remove_desktop_user( struct desktop *desktop, struct thread *thread 
     assert( desktop->users > 0 );
     desktop->users--;
 
-    /* if we have one remaining user, it has to be the manager of the desktop window */
-    if ((process = get_top_window_owner( desktop )) && desktop->users == process->running_threads && !desktop->close_timeout)
+    /* if we have one remaining user, it has to be the manager of the desktop window,
+     * a terminating thread is still counted as running until it is removed from its process */
+    if ((process = get_top_window_owner( desktop )) && !desktop->close_timeout &&
+        desktop->users == process->running_threads - (thread->process == process && thread->state == TERMINATED))
         desktop->close_timeout = add_timeout_user( -TICKS_PER_SEC, close_desktop_timeout, desktop );
 }
 
