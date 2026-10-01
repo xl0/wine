@@ -2082,7 +2082,7 @@ static void __RPC_STUB dispatch_rpc(RPC_MESSAGE *msg)
      * apartment (i.e. the one that pumps messages to the window) */
     if (!apt->multi_threaded)
     {
-        params->handle = CreateEventW(NULL, FALSE, FALSE, NULL);
+        params->handle = get_call_event();
 
         TRACE("Calling apartment thread %#lx...\n", apt->tid);
 
@@ -2090,7 +2090,7 @@ static void __RPC_STUB dispatch_rpc(RPC_MESSAGE *msg)
             WaitForSingleObject(params->handle, INFINITE);
         else
             ERR("PostMessage failed with error %lu\n", GetLastError());
-        CloseHandle(params->handle);
+        release_call_event(params->handle);
     }
     else
         rpc_execute_mta_call(params);
