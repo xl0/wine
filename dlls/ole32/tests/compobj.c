@@ -1068,7 +1068,7 @@ static DWORD WINAPI MessageFilter_MessagePending(
   DWORD dwPendingType)
 {
     trace("MessagePending\n");
-    todo_wine ok(0, "unexpected call\n");
+    ok(0, "unexpected call\n");
     return PENDINGMSG_WAITNOPROCESS;
 }
 

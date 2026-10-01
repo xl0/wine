@@ -4606,6 +4606,212 @@ static void test_local_server(void)
     CloseHandle(quit_event);
 }
 
+/* A call cancelled by the message filter: the server gets it, the caller returns right away. */
+struct cancel_data
+{
+    LONG calls, finished;
+    DWORD client_tid;
+    DWORD size;
+    BYTE objref[1024];
+};
+
+static struct cancel_data *cancel_data;
+static HANDLE cancel_mapping, cancel_release;
+
+static HRESULT WINAPI SlowPersist_QueryInterface(IPersist *iface, REFIID riid, void **ppv)
+{
+    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IPersist))
+    {
+        *ppv = iface;
+        return S_OK;
+    }
+    *ppv = NULL;
+    return E_NOINTERFACE;
+}
+
+static ULONG WINAPI SlowPersist_AddRef(IPersist *iface)
+{
+    return 2;
+}
+
+static ULONG WINAPI SlowPersist_Release(IPersist *iface)
+{
+    return 1;
+}
+
+/* the n-th call returns CLSID {n}, the first one only when cancel_release is set */
+static HRESULT WINAPI SlowPersist_GetClassID(IPersist *iface, CLSID *clsid)
+{
+    LONG n = InterlockedIncrement(&cancel_data->calls);
+
+    if (n == 1)
+    {
+        PostThreadMessageA(cancel_data->client_tid, WM_USER, 0, 0);
+        WaitForSingleObject(cancel_release, 10000);
+    }
+    memset(clsid, 0, sizeof(*clsid));
+    clsid->Data1 = n;
+    InterlockedIncrement(&cancel_data->finished);
+    return S_OK;
+}
+
+static const IPersistVtbl SlowPersistVtbl =
+{
+    SlowPersist_QueryInterface,
+    SlowPersist_AddRef,
+    SlowPersist_Release,
+    SlowPersist_GetClassID
+};
+
+static IPersist SlowPersist = { &SlowPersistVtbl };
+
+static void open_cancel_data(void)
+{
+    cancel_mapping = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, sizeof(*cancel_data),
+                                        "Wine COM Test Cancel Data");
+    cancel_data = MapViewOfFile(cancel_mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(*cancel_data));
+    cancel_release = CreateEventA(NULL, TRUE, FALSE, "Wine COM Test Cancel Release");
+}
+
+/* hosts SlowPersist in an STA or the MTA (of this or a child process) until the quit event */
+static DWORD CALLBACK cancel_server_proc(void *arg)
+{
+    HANDLE ready = CreateEventA(NULL, FALSE, FALSE, "Wine COM Test Cancel Ready");
+    HANDLE quit = CreateEventA(NULL, FALSE, FALSE, "Wine COM Test Cancel Quit");
+    BOOL sta = !strcmp(arg, "sta");
+    HGLOBAL hglobal;
+    IStream *stream;
+    HRESULT hr;
+    MSG msg;
+
+    CoInitializeEx(NULL, sta ? COINIT_APARTMENTTHREADED : COINIT_MULTITHREADED);
+    hr = CreateStreamOnHGlobal(NULL, TRUE, &stream);
+    ok_ole_success(hr, CreateStreamOnHGlobal);
+    hr = CoMarshalInterface(stream, &IID_IPersist, (IUnknown *)&SlowPersist, MSHCTX_LOCAL, NULL, MSHLFLAGS_NORMAL);
+    ok_ole_success(hr, CoMarshalInterface);
+    GetHGlobalFromStream(stream, &hglobal);
+    cancel_data->size = GlobalSize(hglobal);
+    ok(cancel_data->size <= sizeof(cancel_data->objref), "got size %lu\n", cancel_data->size);
+    memcpy(cancel_data->objref, GlobalLock(hglobal), cancel_data->size);
+    GlobalUnlock(hglobal);
+    SetEvent(ready);
+
+    if (sta)
+    {
+        while (MsgWaitForMultipleObjects(1, &quit, FALSE, INFINITE, QS_ALLINPUT) == WAIT_OBJECT_0 + 1)
+            while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) DispatchMessageA(&msg);
+    }
+    else WaitForSingleObject(quit, INFINITE);
+
+    IStream_Release(stream);
+    CoUninitialize();
+    CloseHandle(ready);
+    CloseHandle(quit);
+    return 0;
+}
+
+static DWORD WINAPI CancelFilter_MessagePending(IMessageFilter *iface, HTASK callee, DWORD tick, DWORD type)
+{
+    MSG msg;
+
+    /* cancel on the message posted by the server in the first call */
+    if (cancel_data->calls == 1 && PeekMessageA(&msg, NULL, WM_USER, WM_USER, PM_NOREMOVE))
+        return PENDINGMSG_CANCELCALL;
+    return PENDINGMSG_WAITDEFPROCESS;
+}
+
+static const IMessageFilterVtbl CancelFilter_Vtbl =
+{
+    MessageFilter_QueryInterface,
+    MessageFilter_AddRef,
+    MessageFilter_Release,
+    MessageFilter_HandleInComingCall,
+    MessageFilter_RetryRejectedCall,
+    CancelFilter_MessagePending
+};
+
+static IMessageFilter CancelFilter = { &CancelFilter_Vtbl };
+
+static void test_cancel_call(const char *server)
+{
+    PROCESS_INFORMATION pi = {0};
+    IMessageFilter *prev_filter;
+    HANDLE ready, quit, thread = NULL;
+    IStream *stream;
+    IPersist *proxy;
+    CLSID clsid;
+    DWORD start;
+    HRESULT hr;
+    MSG msg;
+
+    winetest_push_context("%s", server);
+
+    open_cancel_data();
+    memset(cancel_data, 0, sizeof(*cancel_data));
+    cancel_data->client_tid = GetCurrentThreadId();
+    ResetEvent(cancel_release);
+    ready = CreateEventA(NULL, FALSE, FALSE, "Wine COM Test Cancel Ready");
+    quit = CreateEventA(NULL, FALSE, FALSE, "Wine COM Test Cancel Quit");
+
+    if (!strncmp(server, "process ", 8))
+    {
+        char arg[32];
+        sprintf(arg, "-cancel %s", server + 8);
+        create_target_process(arg, &pi);
+    }
+    else thread = CreateThread(NULL, 0, cancel_server_proc, (void *)server, 0, NULL);
+    ok(!WaitForSingleObject(ready, 10000), "wait timed out\n");
+
+    hr = CreateStreamOnHGlobal(NULL, TRUE, &stream);
+    ok_ole_success(hr, CreateStreamOnHGlobal);
+    IStream_Write(stream, cancel_data->objref, cancel_data->size, NULL);
+    IStream_Seek(stream, ullZero, STREAM_SEEK_SET, NULL);
+    hr = CoUnmarshalInterface(stream, &IID_IPersist, (void **)&proxy);
+    ok_ole_success(hr, CoUnmarshalInterface);
+    IStream_Release(stream);
+
+    hr = CoRegisterMessageFilter(&CancelFilter, &prev_filter);
+    ok_ole_success(hr, CoRegisterMessageFilter);
+    while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) DispatchMessageA(&msg);
+
+    hr = IPersist_GetClassID(proxy, &clsid);
+    ok(hr == RPC_E_CALL_CANCELED, "got %#lx\n", hr);
+    ok(cancel_data->calls == 1, "got %ld calls\n", cancel_data->calls);
+    ok(!cancel_data->finished, "call finished\n");
+    /* the message that made the filter cancel the call is still queued */
+    ok(PeekMessageA(&msg, NULL, WM_USER, WM_USER, PM_REMOVE), "no message\n");
+
+    /* the next call gets its own reply, while the first one completes */
+    SetEvent(cancel_release);
+    hr = IPersist_GetClassID(proxy, &clsid);
+    ok(hr == S_OK, "got %#lx\n", hr);
+    ok(clsid.Data1 == 2, "got %#lx\n", clsid.Data1);
+
+    start = GetTickCount();
+    while (cancel_data->finished < 2 && GetTickCount() - start < 10000) Sleep(10);
+    ok(cancel_data->finished == 2, "got %ld finished calls\n", cancel_data->finished);
+    hr = IPersist_GetClassID(proxy, &clsid);
+    ok(hr == S_OK, "got %#lx\n", hr);
+    ok(clsid.Data1 == 3, "got %#lx\n", clsid.Data1);
+
+    hr = CoRegisterMessageFilter(prev_filter, NULL);
+    ok_ole_success(hr, CoRegisterMessageFilter);
+    IPersist_Release(proxy);
+    SetEvent(quit);
+    if (thread)
+    {
+        ok(!WaitForSingleObject(thread, 10000), "wait timed out\n");
+        CloseHandle(thread);
+    }
+    else wait_child_process(&pi);
+    CloseHandle(ready);
+    CloseHandle(quit);
+    CloseHandle(cancel_release);
+    UnmapViewOfFile(cancel_data);
+    CloseHandle(cancel_mapping);
+    winetest_pop_context();
+}
+
 struct git_params
 {
 	DWORD cookie;
@@ -5264,6 +5470,12 @@ START_TEST(marshal)
 
         return;
     }
+    if (argc > 3 && !strcmp(argv[2], "-cancel"))
+    {
+        open_cancel_data();
+        cancel_server_proc(argv[3]);
+        return;
+    }
 
     register_test_window();
 
@@ -5315,6 +5527,10 @@ START_TEST(marshal)
     test_hresult_marshaling();
     test_proxy_used_in_wrong_thread();
     test_message_filter();
+    test_cancel_call("sta");
+    test_cancel_call("mta");
+    test_cancel_call("process sta");
+    test_cancel_call("process mta");
     test_bad_marshal_stream();
     test_proxy_interfaces();
     test_proxy_rpc_options();

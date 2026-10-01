@@ -2059,9 +2059,9 @@ HRESULT WINAPI CoWaitForMultipleHandles(DWORD flags, DWORD timeout, ULONG handle
                 int msg_count = 0;
                 MSG msg;
 
-                /* call message filter */
+                /* call message filter, only while an outgoing call is pending */
 
-                if (apt->filter)
+                if (apt->filter && tlsdata->pending_call_count_client)
                 {
                     PENDINGTYPE pendingtype = tlsdata->pending_call_count_server ? PENDINGTYPE_NESTED : PENDINGTYPE_TOPLEVEL;
                     DWORD be_handled = IMessageFilter_MessagePending(apt->filter, 0 /* FIXME */, now - start_time, pendingtype);
@@ -2083,6 +2083,8 @@ HRESULT WINAPI CoWaitForMultipleHandles(DWORD flags, DWORD timeout, ULONG handle
                          * from the 16-bit world. */
                         break;
                     }
+                    /* the call returns right away, the pending messages stay queued */
+                    if (hr == RPC_E_CALL_CANCELED) break;
                 }
 
                 if (!apt->win)
