@@ -6351,10 +6351,24 @@ static void test_ClipCursor( char **argv )
     if (!EqualRect( &rect, &virtual_rect )) ok_ret( 1, ClipCursor( NULL ) );
 }
 
+static DWORD WINAPI set_cursor_pos_desktop_thread( void *arg )
+{
+    HDESK old_desktop = GetThreadDesktop( GetCurrentThreadId() );
+
+    ok_ret( 1, SetThreadDesktop( arg ) );
+    GetDesktopWindow();
+    /* fails on Windows, moves the shared host cursor on Wine */
+    SetCursorPos( 600, 400 );
+    ok_ret( 1, SetThreadDesktop( old_desktop ) );
+    return 0;
+}
+
 static void test_SetCursorPos(void)
 {
     RECT clip_rect = {50, 50, 51, 51};
     POINT pos, expect_pos = {50, 50};
+    HANDLE thread;
+    HDESK desktop;
 
     ok_ret( 0, GetCursorPos( NULL ) );
     todo_wine ok_ret( ERROR_NOACCESS, GetLastError() );
@@ -6394,6 +6408,7 @@ static void test_SetCursorPos(void)
     expect_pos.x = expect_pos.y = 50;
     ok_ret( 1, SetCursorPos( 49, 51 ) );
     ok_ret( 1, ClipCursor( &clip_rect ) );
+    Sleep( 150 ); /* the clipped position is still reported after a while */
     ok_ret( 1, GetCursorPos( &pos ) );
     ok_point( expect_pos, pos );
     ok_ret( 1, SetCursorPos( 49, 49 ) );
@@ -6490,6 +6505,22 @@ static void test_SetCursorPos(void)
     ok_point( expect_pos, pos );
 
     ok_ret( 1, ClipCursor( NULL ) );
+
+    /* the cursor stays in the clip rect when moved from another desktop */
+    SetRect( &clip_rect, 100, 100, 200, 200 );
+    ok_ret( 1, SetCursorPos( 150, 150 ) );
+    ok_ret( 1, ClipCursor( &clip_rect ) );
+    desktop = CreateDesktopA( "WineTest Desktop 2", NULL, NULL, 0, DESKTOP_ALL_ACCESS, NULL );
+    ok_ne( NULL, desktop, HDESK, "%p" );
+    thread = CreateThread( NULL, 0, set_cursor_pos_desktop_thread, desktop, 0, NULL );
+    ok_ne( NULL, thread, HANDLE, "%p" );
+    ok_ret( 0, WaitForSingleObject( thread, 5000 ) );
+    ok_ret( 1, CloseHandle( thread ) );
+    Sleep( 150 );
+    ok_ret( 1, GetCursorPos( &pos ) );
+    ok( PtInRect( &clip_rect, pos ), "got pos (%ld,%ld)\n", pos.x, pos.y );
+    ok_ret( 1, ClipCursor( NULL ) );
+    ok_ret( 1, CloseDesktop( desktop ) );
 }
 
 static HANDLE ll_keyboard_event;

@@ -844,7 +844,7 @@ BOOL WINAPI NtUserGetCursorPos( POINT *pt )
     BOOL ret = TRUE;
     DWORD last_change = 0;
     NTSTATUS status;
-    RECT rect;
+    RECT rect, clip;
 
     if (!pt) return FALSE;
 
@@ -853,12 +853,21 @@ BOOL WINAPI NtUserGetCursorPos( POINT *pt )
         pt->x = desktop_shm->cursor.x;
         pt->y = desktop_shm->cursor.y;
         last_change = desktop_shm->cursor.last_change;
+        clip.left = desktop_shm->cursor.clip.left;
+        clip.top = desktop_shm->cursor.clip.top;
+        clip.right = desktop_shm->cursor.clip.right;
+        clip.bottom = desktop_shm->cursor.clip.bottom;
     }
     if (status) return FALSE;
 
     /* query new position from graphics driver if we haven't updated recently */
-    if (NtGetTickCount() - last_change > 100) ret = user_driver->pGetCursorPos( pt );
-    if (!ret) return FALSE;
+    if (NtGetTickCount() - last_change > 100)
+    {
+        if (!(ret = user_driver->pGetCursorPos( pt ))) return FALSE;
+        /* the host cursor may be outside of the clip rect, clamp it like the server does */
+        pt->x = max( min( pt->x, clip.right - 1 ), clip.left );
+        pt->y = max( min( pt->y, clip.bottom - 1 ), clip.top );
+    }
 
     SetRect( &rect, pt->x, pt->y, pt->x, pt->y );
     rect = map_rect_raw_to_virt( rect, get_thread_dpi() );
@@ -2898,6 +2907,7 @@ BOOL WINAPI NtUserGetClipCursor( RECT *rect )
 BOOL WINAPI NtUserClipCursor( const RECT *rect )
 {
     struct ratio dpi = get_thread_dpi();
+    INT prev_x, prev_y, new_x, new_y;
     RECT new_rect;
     BOOL ret;
 
@@ -2925,10 +2935,18 @@ BOOL WINAPI NtUserClipCursor( const RECT *rect )
         }
         else req->flags = SET_CURSOR_NOCLIP;
 
-        ret = !wine_server_call( req );
+        if ((ret = !wine_server_call( req )))
+        {
+            prev_x = reply->prev_x;
+            prev_y = reply->prev_y;
+            new_x  = reply->new_x;
+            new_y  = reply->new_y;
+        }
     }
     SERVER_END_REQ;
 
+    /* the clip rect may have moved the cursor */
+    if (ret && (prev_x != new_x || prev_y != new_y)) user_driver->pSetCursorPos( new_x, new_y );
     return ret;
 }
 
