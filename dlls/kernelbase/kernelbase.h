@@ -39,6 +39,8 @@ extern void init_locale( HMODULE module );
 extern void init_console(void);
 extern BOOL is_console_handle( HANDLE );
 extern NTSTATUS create_app_container_token( HANDLE token, const SECURITY_CAPABILITIES *caps, HANDLE *ret );
+extern HRESULT WINAPI AppContainerLookupMoniker( PSID sid, WCHAR **moniker );
+extern void WINAPI AppContainerFreeMemory( void *ptr );
 
 extern const WCHAR windows_dir[];
 extern const WCHAR system_dir[];

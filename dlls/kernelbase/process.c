@@ -356,6 +356,69 @@ static NTSTATUS create_nt_process( HANDLE token, HANDLE debug, SECURITY_ATTRIBUT
 
 
 /***********************************************************************
+ *           set_app_container_env
+ *
+ * Point LOCALAPPDATA, TEMP and TMP of an app container process to its package folder.
+ */
+static NTSTATUS set_app_container_env( RTL_USER_PROCESS_PARAMETERS *params, PSID sid, WCHAR **ret )
+{
+    UNICODE_STRING nameW, valueW;
+    WCHAR *moniker, *path, *env;
+    NTSTATUS status;
+    SIZE_T len;
+
+    if (FAILED( AppContainerLookupMoniker( sid, &moniker ))) return STATUS_OBJECT_NAME_NOT_FOUND;
+
+    RtlInitUnicodeString( &nameW, L"LOCALAPPDATA" );
+    valueW.Buffer = NULL;
+    valueW.MaximumLength = 0;
+    status = RtlQueryEnvironmentVariable_U( params->Environment, &nameW, &valueW );
+    if (status && status != STATUS_BUFFER_TOO_SMALL)
+    {
+        AppContainerFreeMemory( moniker );
+        return status;
+    }
+
+    len = valueW.Length / sizeof(WCHAR) + wcslen( moniker ) + ARRAY_SIZE(L"\\Packages\\\\AC\\Temp");
+    path = RtlAllocateHeap( GetProcessHeap(), 0, len * sizeof(WCHAR) );
+    env = RtlAllocateHeap( GetProcessHeap(), 0, params->EnvironmentSize );
+    if (!path || !env)
+    {
+        RtlFreeHeap( GetProcessHeap(), 0, path );
+        RtlFreeHeap( GetProcessHeap(), 0, env );
+        AppContainerFreeMemory( moniker );
+        return STATUS_NO_MEMORY;
+    }
+    memcpy( env, params->Environment, params->EnvironmentSize );
+    valueW.Buffer = path;
+    valueW.MaximumLength = len * sizeof(WCHAR);
+    RtlQueryEnvironmentVariable_U( env, &nameW, &valueW );
+    len -= valueW.Length / sizeof(WCHAR);
+    swprintf( path + valueW.Length / sizeof(WCHAR), len, L"\\Packages\\%s\\AC", moniker );
+    AppContainerFreeMemory( moniker );
+
+    RtlInitUnicodeString( &valueW, path );
+    status = RtlSetEnvironmentVariable( &env, &nameW, &valueW );
+    wcscat( path, L"\\Temp" );
+    RtlInitUnicodeString( &valueW, path );
+    RtlInitUnicodeString( &nameW, L"TEMP" );
+    if (!status) status = RtlSetEnvironmentVariable( &env, &nameW, &valueW );
+    RtlInitUnicodeString( &nameW, L"TMP" );
+    if (!status) status = RtlSetEnvironmentVariable( &env, &nameW, &valueW );
+    RtlFreeHeap( GetProcessHeap(), 0, path );
+    if (status)
+    {
+        RtlFreeHeap( GetProcessHeap(), 0, env );
+        return status;
+    }
+    params->Environment = env;
+    params->EnvironmentSize = RtlSizeHeap( GetProcessHeap(), 0, env );
+    *ret = env;
+    return STATUS_SUCCESS;
+}
+
+
+/***********************************************************************
  *           create_vdm_process
  */
 static NTSTATUS create_vdm_process( HANDLE token, HANDLE debug, SECURITY_ATTRIBUTES *psa,
@@ -513,6 +576,9 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
                                                       PROCESS_INFORMATION *info, HANDLE *new_token )
 {
     const struct proc_thread_attr *handle_list = NULL, *job_list = NULL;
+    const SECURITY_CAPABILITIES *caps = NULL;
+    HANDLE lowbox_token = 0;
+    WCHAR *lowbox_env = NULL;
     WCHAR name[MAX_PATH];
     WCHAR *p, *tidy_cmdline = cmd_line;
     RTL_USER_PROCESS_PARAMETERS *params = NULL;
@@ -630,12 +696,24 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
                         machine = *(USHORT *)attrs->attrs[i].value;
                         TRACE( "PROC_THREAD_ATTRIBUTE_MACHINE %x.\n", machine );
                         break;
+                    case PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES:
+                        caps = attrs->attrs[i].value;
+                        TRACE( "PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES %p, %lu capabilities.\n",
+                               caps->AppContainerSid, caps->CapabilityCount );
+                        break;
                     default:
                         FIXME("Unsupported attribute %#Ix.\n", attrs->attrs[i].attr);
                         break;
                 }
             }
         }
+    }
+
+    if (caps)
+    {
+        if ((status = create_app_container_token( token, caps, &lowbox_token ))) goto done;
+        if ((status = set_app_container_env( params, caps->AppContainerSid, &lowbox_env ))) goto done;
+        token = lowbox_token;
     }
 
     if (inherit) nt_flags |= PROCESS_CREATE_FLAGS_INHERIT_HANDLES;
@@ -686,6 +764,8 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
 
  done:
     RtlDestroyProcessParameters( params );
+    if (lowbox_token) NtClose( lowbox_token );
+    RtlFreeHeap( GetProcessHeap(), 0, lowbox_env );
     if (tidy_cmdline != cmd_line) HeapFree( GetProcessHeap(), 0, tidy_cmdline );
     return set_ntstatus( status );
 }
@@ -1843,6 +1923,9 @@ static inline DWORD validate_proc_thread_attribute( DWORD_PTR attr, SIZE_T size 
         break;
     case PROC_THREAD_ATTRIBUTE_GROUP_AFFINITY:
         if (size != sizeof(GROUP_AFFINITY)) return ERROR_BAD_LENGTH;
+        break;
+    case PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES:
+        if (size != sizeof(SECURITY_CAPABILITIES)) return ERROR_INVALID_PARAMETER;
         break;
     case PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY:
     case PROC_THREAD_ATTRIBUTE_COMPONENT_FILTER:

@@ -34,6 +34,7 @@
 #include "winnls.h"
 #include "winternl.h"
 #include "tlhelp32.h"
+#include "sddl.h"
 
 #include "wine/test.h"
 
@@ -5709,6 +5710,156 @@ static void test_GetProcessInformation(void)
     }
 }
 
+static void test_security_capabilities_child(void)
+{
+    char buffer[256], suffix[64];
+    TOKEN_APPCONTAINER_INFORMATION *container = (TOKEN_APPCONTAINER_INFORMATION *)buffer;
+    TOKEN_MANDATORY_LABEL *label = (TOKEN_MANDATORY_LABEL *)buffer;
+    TOKEN_GROUPS *groups = (TOKEN_GROUPS *)buffer;
+    PSID package_sid, capability_sid;
+    HANDLE token;
+    DWORD size, value;
+    BOOL ret;
+
+    ConvertStringSidToSidA("S-1-15-2-1-2-3-4-5-6-95", &package_sid);
+    ConvertStringSidToSidA("S-1-15-3-1", &capability_sid);
+    ret = OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token);
+    ok(ret, "got error %lu.\n", GetLastError());
+
+    value = 0xdeadbeef;
+    ret = GetTokenInformation(token, TokenIsAppContainer, &value, sizeof(value), &size);
+    ok(ret, "got error %lu.\n", GetLastError());
+    ok(value == 1, "got %lu.\n", value);
+
+    ret = GetTokenInformation(token, TokenAppContainerSid, buffer, sizeof(buffer), &size);
+    ok(ret, "got error %lu.\n", GetLastError());
+    ok(container->TokenAppContainer && EqualSid(container->TokenAppContainer, package_sid), "wrong package SID.\n");
+
+    ret = GetTokenInformation(token, TokenCapabilities, buffer, sizeof(buffer), &size);
+    ok(ret, "got error %lu.\n", GetLastError());
+    ok(groups->GroupCount == 1, "got %lu capabilities.\n", groups->GroupCount);
+    ok(EqualSid(groups->Groups[0].Sid, capability_sid), "wrong capability SID.\n");
+    ok(groups->Groups[0].Attributes == SE_GROUP_ENABLED, "got attributes %#lx.\n", groups->Groups[0].Attributes);
+
+    ret = GetTokenInformation(token, TokenIntegrityLevel, buffer, sizeof(buffer), &size);
+    ok(ret, "got error %lu.\n", GetLastError());
+    ok(*GetSidSubAuthority(label->Label.Sid, 0) == SECURITY_MANDATORY_LOW_RID,
+       "got integrity %#lx.\n", *GetSidSubAuthority(label->Label.Sid, 0));
+
+    strcpy(suffix, "\\Packages\\wine.test.kernel32.seccaps\\AC");
+    size = GetEnvironmentVariableA("LOCALAPPDATA", buffer, sizeof(buffer));
+    ok(size > strlen(suffix) && !strcmp(buffer + size - strlen(suffix), suffix), "got LOCALAPPDATA %s.\n", buffer);
+    strcat(suffix, "\\Temp");
+    size = GetEnvironmentVariableA("TEMP", buffer, sizeof(buffer));
+    ok(size > strlen(suffix) && !strcmp(buffer + size - strlen(suffix), suffix), "got TEMP %s.\n", buffer);
+
+    CloseHandle(token);
+    LocalFree(package_sid);
+    LocalFree(capability_sid);
+}
+
+static void test_security_capabilities_attribute(void)
+{
+    HRESULT (WINAPI *pAppContainerRegisterSid)(PSID, const WCHAR *, const WCHAR *);
+    HRESULT (WINAPI *pAppContainerUnregisterSid)(PSID);
+    char dir[MAX_PATH], exe[MAX_PATH], cmdline[MAX_PATH + 32];
+    SECURITY_ATTRIBUTES sa = {sizeof(sa)};
+    SID_AND_ATTRIBUTES capability;
+    PROCESS_INFORMATION info;
+    SECURITY_CAPABILITIES caps;
+    STARTUPINFOEXA si = {{sizeof(si)}};
+    PSID package_sid, capability_sid;
+    DWORD policy = 0;
+    SIZE_T size;
+    HRESULT hr;
+    BOOL ret;
+
+    pAppContainerRegisterSid = (void *)GetProcAddress(GetModuleHandleA("kernelbase.dll"), "AppContainerRegisterSid");
+    pAppContainerUnregisterSid = (void *)GetProcAddress(GetModuleHandleA("kernelbase.dll"), "AppContainerUnregisterSid");
+    if (!pAppContainerRegisterSid)
+    {
+        win_skip("AppContainerRegisterSid is not available.\n");
+        return;
+    }
+
+    ConvertStringSidToSidA("S-1-15-2-1-2-3-4-5-6-95", &package_sid);
+    ConvertStringSidToSidA("S-1-15-3-1", &capability_sid);
+    capability.Sid = capability_sid;
+    capability.Attributes = SE_GROUP_ENABLED;
+    caps.AppContainerSid = package_sid;
+    caps.Capabilities = &capability;
+    caps.CapabilityCount = 1;
+    caps.Reserved = 0;
+
+    pInitializeProcThreadAttributeList(NULL, 2, 0, &size);
+    si.lpAttributeList = malloc(size);
+    pInitializeProcThreadAttributeList(si.lpAttributeList, 2, 0, &size);
+    ret = pUpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+                                     &caps, sizeof(caps) - 1, NULL, NULL);
+    ok(!ret && GetLastError() == ERROR_INVALID_PARAMETER, "got ret %d, error %lu.\n", ret, GetLastError());
+    ret = pUpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+                                     &caps, sizeof(caps), NULL, NULL);
+    ok(ret, "got error %lu.\n", GetLastError());
+    ret = pUpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
+                                     &policy, sizeof(DWORD64), NULL, NULL);
+    ok(!ret && GetLastError() == ERROR_BAD_LENGTH, "got ret %d, error %lu.\n", ret, GetLastError());
+    ret = pUpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
+                                     &policy, sizeof(policy), NULL, NULL);
+    ok(ret, "got error %lu.\n", GetLastError());
+
+    /* the child image must be readable by the app container */
+    GetTempPathA(MAX_PATH, dir);
+    strcat(dir, "seccaps");
+    ConvertStringSecurityDescriptorToSecurityDescriptorA("D:(A;OICI;FA;;;WD)(A;OICI;FA;;;AC)", SDDL_REVISION_1,
+                                                         &sa.lpSecurityDescriptor, NULL);
+    ret = CreateDirectoryA(dir, &sa);
+    ok(ret || GetLastError() == ERROR_ALREADY_EXISTS, "got error %lu.\n", GetLastError());
+    sprintf(exe, "%s\\process_test.exe", dir);
+    ret = CopyFileA(selfname, exe, FALSE);
+    ok(ret, "got error %lu.\n", GetLastError());
+    sprintf(cmdline, "\"%s\" process seccaps", exe);
+
+    pAppContainerUnregisterSid(package_sid);
+    ret = CreateProcessA(exe, cmdline, NULL, NULL, FALSE, EXTENDED_STARTUPINFO_PRESENT, NULL, NULL,
+                         &si.StartupInfo, &info);
+    ok(!ret && GetLastError() == ERROR_FILE_NOT_FOUND, "got ret %d, error %lu.\n", ret, GetLastError());
+
+    hr = pAppContainerRegisterSid(package_sid, L"wine.test.kernel32.seccaps", L"wine test");
+    ok(hr == S_OK, "got %#lx.\n", hr);
+    ret = CreateProcessA(exe, cmdline, NULL, NULL, FALSE, EXTENDED_STARTUPINFO_PRESENT, NULL, NULL,
+                         &si.StartupInfo, &info);
+    ok(ret, "got error %lu.\n", GetLastError());
+    if (ret) wait_child_process(&info);
+
+    /* LOCALAPPDATA is required */
+    ret = CreateProcessA(exe, cmdline, NULL, NULL, FALSE, EXTENDED_STARTUPINFO_PRESENT, (char *)"A=1\0",
+                         NULL, &si.StartupInfo, &info);
+    ok(!ret && GetLastError() == ERROR_ENVVAR_NOT_FOUND, "got ret %d, error %lu.\n", ret, GetLastError());
+
+    caps.AppContainerSid = capability_sid;
+    ret = CreateProcessA(exe, cmdline, NULL, NULL, FALSE, EXTENDED_STARTUPINFO_PRESENT, NULL, NULL,
+                         &si.StartupInfo, &info);
+    ok(!ret && GetLastError() == ERROR_NOT_APPCONTAINER, "got ret %d, error %lu.\n", ret, GetLastError());
+    caps.AppContainerSid = NULL;
+    ret = CreateProcessA(exe, cmdline, NULL, NULL, FALSE, EXTENDED_STARTUPINFO_PRESENT, NULL, NULL,
+                         &si.StartupInfo, &info);
+    ok(!ret && GetLastError() == ERROR_INVALID_PARAMETER, "got ret %d, error %lu.\n", ret, GetLastError());
+    caps.AppContainerSid = package_sid;
+    capability.Sid = package_sid;
+    ret = CreateProcessA(exe, cmdline, NULL, NULL, FALSE, EXTENDED_STARTUPINFO_PRESENT, NULL, NULL,
+                         &si.StartupInfo, &info);
+    ok(!ret && GetLastError() == ERROR_INVALID_PARAMETER, "got ret %d, error %lu.\n", ret, GetLastError());
+
+    pAppContainerUnregisterSid(package_sid);
+    pDeleteProcThreadAttributeList(si.lpAttributeList);
+    free(si.lpAttributeList);
+    DeleteFileA(exe);
+    RemoveDirectoryA(dir);
+    LocalFree(sa.lpSecurityDescriptor);
+    LocalFree(package_sid);
+    LocalFree(capability_sid);
+}
+
 START_TEST(process)
 {
     HANDLE job, hproc, h, h2;
@@ -5784,6 +5935,11 @@ START_TEST(process)
             test_handle_list_attribute(TRUE, h, h2);
             return;
         }
+        else if (!strcmp(myARGV[2], "seccaps"))
+        {
+            test_security_capabilities_child();
+            return;
+        }
         else if (!strcmp(myARGV[2], "nested_jobs") && myARGC >= 4)
         {
             test_nested_jobs_child(atoi(myARGV[3]));
@@ -5834,6 +5990,7 @@ START_TEST(process)
     test_SuspendProcessNewThread();
     test_parent_process_attribute(0, NULL);
     test_handle_list_attribute(FALSE, NULL, NULL);
+    test_security_capabilities_attribute();
     test_dead_process();
     test_services_exe();
     test_startupinfo();
