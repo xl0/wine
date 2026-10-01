@@ -1490,9 +1490,13 @@ static HRESULT WINAPI ClientRpcChannelBuffer_SendReceive(LPRPCCHANNELBUFFER ifac
             tlsdata->pending_call_count_client++;
             hr = CoWaitForMultipleHandles(0, INFINITE, 1, &message_state->params.handle, &index);
             tlsdata->pending_call_count_client--;
+            /* A call cancelled by the message filter still runs and signals the event when it
+             * completes: don't reuse it for the next call, and don't close it either, the
+             * handle value could be reused by then. */
+            if (hr != S_OK) message_state->params.handle = NULL;
         }
     }
-    release_call_event(message_state->params.handle);
+    if (message_state->params.handle) release_call_event(message_state->params.handle);
     if (message_state->params.actctx) ReleaseActCtx(message_state->params.actctx);
 
     /* for WM shortcut, faults are returned in params->hr */
