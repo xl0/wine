@@ -1021,6 +1021,13 @@ static HRESULT WINAPI ClientIdentity_QueryMultipleInterfaces(IMultiQI *iface, UL
     for (i = 0; i < cMQIs; i++)
     {
         TRACE("iid[%ld] = %s\n", i, debugstr_guid(pMQIs[i].pIID));
+        /* proxies are bound to their apartment and can be marshaled, Windows doesn't ask the server */
+        if (IsEqualIID(pMQIs[i].pIID, &IID_IAgileObject) || IsEqualIID(pMQIs[i].pIID, &IID_INoMarshal))
+        {
+            pMQIs[i].pItf = NULL;
+            pMQIs[i].hr = E_NOINTERFACE;
+            continue;
+        }
         pMQIs[i].hr = proxy_manager_query_local_interface(This, pMQIs[i].pIID, (void **)&pMQIs[i].pItf);
         if (pMQIs[i].hr == S_OK)
             successful_mqis++;

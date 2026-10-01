@@ -3203,6 +3203,14 @@ static void test_proxy_interfaces(void)
     /* IMarshal2 is also supported on NT-based systems, but is pretty much
      * useless as it has no more methods over IMarshal that it inherits from. */
 
+    /* proxies are never agile, and can be marshaled; Windows doesn't ask the object */
+    object_qis = 0;
+    hr = IUnknown_QueryInterface(pProxy, &IID_IAgileObject, (void **)&pOtherUnknown);
+    ok(hr == E_NOINTERFACE, "IAgileObject: got %#lx\n", hr);
+    hr = IUnknown_QueryInterface(pProxy, &IID_INoMarshal, (void **)&pOtherUnknown);
+    ok(hr == E_NOINTERFACE, "INoMarshal: got %#lx\n", hr);
+    ok(!object_qis, "object got %ld QIs\n", object_qis);
+
     IUnknown_Release(pProxy);
 
     ok_no_locks();
