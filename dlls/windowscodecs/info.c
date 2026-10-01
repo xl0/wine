@@ -2238,6 +2238,15 @@ static const struct category categories[] = {
     {0}
 };
 
+/* CLSIDs of each category's components: read on the first enumeration and refreshed only on
+ * WICComponentEnumerateRefresh, like native. Protected by component_info_cache_cs. */
+static struct
+{
+    CLSID *clsids;
+    UINT count;
+    BOOL valid;
+} category_clsids[ARRAY_SIZE(categories)];
+
 static int ComponentInfo_Compare(const void *key, const struct wine_rb_entry *entry)
 {
     ComponentInfo *info = WINE_RB_ENTRY_VALUE(entry, ComponentInfo, entry);
@@ -2342,6 +2351,9 @@ HRESULT CreateComponentInfo(REFCLSID clsid, IWICComponentInfo **ppIInfo)
 void ReleaseComponentInfos(void)
 {
     ComponentInfo *info, *next_info;
+    UINT i;
+
+    for (i = 0; i < ARRAY_SIZE(category_clsids); i++) free(category_clsids[i].clsids);
     WINE_RB_FOR_EACH_ENTRY_DESTRUCTOR(info, next_info, &component_info_cache, ComponentInfo, entry)
         IWICComponentInfo_Release(&info->IWICComponentInfo_iface);
 }
@@ -2564,30 +2576,76 @@ static const IEnumUnknownVtbl ComponentEnumVtbl = {
     ComponentEnum_Clone
 };
 
-HRESULT CreateComponentEnumerator(DWORD componentTypes, DWORD options, IEnumUnknown **ppIEnumUnknown)
+static HRESULT read_category_clsids(const struct category *category)
 {
-    ComponentEnum *This;
-    ComponentEnumItem *item;
-    const struct category *category;
+    UINT idx = category - categories, count = 0, size = 0;
     HKEY clsidkey, catidkey, instancekey;
     WCHAR guidstring[39];
+    CLSID *clsids = NULL, *new_clsids;
     LONG res;
     int i;
-    HRESULT hr=S_OK;
-    CLSID clsid;
-
-    if (options) FIXME("ignoring flags %lx\n", options);
 
     res = RegOpenKeyExW(HKEY_CLASSES_ROOT, L"CLSID", 0, KEY_READ, &clsidkey);
     if (res != ERROR_SUCCESS)
         return HRESULT_FROM_WIN32(res);
 
+    StringFromGUID2(category->catid, guidstring, 39);
+    res = RegOpenKeyExW(clsidkey, guidstring, 0, KEY_READ, &catidkey);
+    if (res == ERROR_SUCCESS)
+    {
+        res = RegOpenKeyExW(catidkey, L"Instance", 0, KEY_READ, &instancekey);
+        if (res == ERROR_SUCCESS)
+        {
+            for (i = 0;; i++)
+            {
+                DWORD guidstring_size = 39;
+                res = RegEnumKeyExW(instancekey, i, guidstring, &guidstring_size, NULL, NULL, NULL, NULL);
+                if (res != ERROR_SUCCESS) break;
+
+                if (count == size)
+                {
+                    size = max(16, size * 2);
+                    if (!(new_clsids = realloc(clsids, size * sizeof(*clsids))))
+                    {
+                        res = ERROR_OUTOFMEMORY;
+                        break;
+                    }
+                    clsids = new_clsids;
+                }
+                if (SUCCEEDED(CLSIDFromString(guidstring, &clsids[count]))) count++;
+            }
+            RegCloseKey(instancekey);
+        }
+        RegCloseKey(catidkey);
+    }
+    RegCloseKey(clsidkey);
+
+    if (res != ERROR_SUCCESS && res != ERROR_NO_MORE_ITEMS)
+    {
+        free(clsids);
+        return HRESULT_FROM_WIN32(res);
+    }
+
+    free(category_clsids[idx].clsids);
+    category_clsids[idx].clsids = clsids;
+    category_clsids[idx].count = count;
+    category_clsids[idx].valid = TRUE;
+    return S_OK;
+}
+
+HRESULT CreateComponentEnumerator(DWORD componentTypes, DWORD options, IEnumUnknown **ppIEnumUnknown)
+{
+    ComponentEnum *This;
+    ComponentEnumItem *item;
+    const struct category *category;
+    UINT i, idx;
+    HRESULT hr=S_OK;
+
+    if (options & ~WICComponentEnumerateRefresh) FIXME("ignoring flags %lx\n", options);
+
     This = malloc(sizeof(ComponentEnum));
     if (!This)
-    {
-        RegCloseKey(clsidkey);
         return E_OUTOFMEMORY;
-    }
 
     This->IEnumUnknown_iface.lpVtbl = &ComponentEnumVtbl;
     This->ref = 1;
@@ -2595,48 +2653,26 @@ HRESULT CreateComponentEnumerator(DWORD componentTypes, DWORD options, IEnumUnkn
     InitializeCriticalSectionEx(&This->lock, 0, RTL_CRITICAL_SECTION_FLAG_FORCE_DEBUG_INFO);
     This->lock.DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": ComponentEnum.lock");
 
+    EnterCriticalSection(&component_info_cache_cs);
     for (category=categories; category->type && hr == S_OK; category++)
     {
         if ((category->type & componentTypes) == 0) continue;
-        StringFromGUID2(category->catid, guidstring, 39);
-        res = RegOpenKeyExW(clsidkey, guidstring, 0, KEY_READ, &catidkey);
-        if (res == ERROR_SUCCESS)
+        idx = category - categories;
+        if (!category_clsids[idx].valid || (options & WICComponentEnumerateRefresh))
+            hr = read_category_clsids(category);
+
+        for (i = 0; SUCCEEDED(hr) && i < category_clsids[idx].count; i++)
         {
-            res = RegOpenKeyExW(catidkey, L"Instance", 0, KEY_READ, &instancekey);
-            if (res == ERROR_SUCCESS)
-            {
-                i=0;
-                for (;;i++)
-                {
-                    DWORD guidstring_size = 39;
-                    res = RegEnumKeyExW(instancekey, i, guidstring, &guidstring_size, NULL, NULL, NULL, NULL);
-                    if (res != ERROR_SUCCESS) break;
+            item = malloc(sizeof(ComponentEnumItem));
+            if (!item) { hr = E_OUTOFMEMORY; break; }
 
-                    item = malloc(sizeof(ComponentEnumItem));
-                    if (!item) { hr = E_OUTOFMEMORY; break; }
-
-                    hr = CLSIDFromString(guidstring, &clsid);
-                    if (SUCCEEDED(hr))
-                    {
-                        hr = CreateComponentInfo(&clsid, (IWICComponentInfo**)&item->unk);
-                        if (SUCCEEDED(hr))
-                            list_add_tail(&This->objects, &item->entry);
-                    }
-
-                    if (FAILED(hr))
-                    {
-                        free(item);
-                        hr = S_OK;
-                    }
-                }
-                RegCloseKey(instancekey);
-            }
-            RegCloseKey(catidkey);
+            if (SUCCEEDED(CreateComponentInfo(&category_clsids[idx].clsids[i], (IWICComponentInfo**)&item->unk)))
+                list_add_tail(&This->objects, &item->entry);
+            else
+                free(item);
         }
-        if (res != ERROR_SUCCESS && res != ERROR_NO_MORE_ITEMS)
-            hr = HRESULT_FROM_WIN32(res);
     }
-    RegCloseKey(clsidkey);
+    LeaveCriticalSection(&component_info_cache_cs);
 
     if (SUCCEEDED(hr))
     {
