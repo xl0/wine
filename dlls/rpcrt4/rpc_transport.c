@@ -67,6 +67,9 @@ typedef struct _RpcConnection_np
     IO_STATUS_BLOCK io_status;
     HANDLE event_cache[2]; /* a server thread may write while the listener reads */
     BOOL read_closed;
+    unsigned int read_pos, read_len;  /* unconsumed part of read_buf */
+    BOOL read_more;                   /* the last read didn't reach the end of its pipe message */
+    char read_buf[RPC_MAX_PACKET_SIZE];
 } RpcConnection_np;
 
 static RpcConnection *rpcrt4_conn_np_alloc(void)
@@ -378,9 +381,8 @@ static RPC_STATUS rpcrt4_ncalrpc_handoff(RpcConnection *old_conn, RpcConnection 
   return status;
 }
 
-static int rpcrt4_conn_np_read(RpcConnection *conn, void *buffer, unsigned int count)
+static int np_read(RpcConnection_np *connection, void *buffer, unsigned int count)
 {
-    RpcConnection_np *connection = (RpcConnection_np *) conn;
     HANDLE event;
     NTSTATUS status;
 
@@ -405,6 +407,37 @@ static int rpcrt4_conn_np_read(RpcConnection *conn, void *buffer, unsigned int c
     }
     release_np_event(connection, event);
     return status && status != STATUS_BUFFER_OVERFLOW ? -1 : connection->io_status.Information;
+}
+
+/* Packets are read in parts (common header, rest of the header, body), each part would be a
+ * separate pipe read: read whole messages into a buffer instead. Like direct reads of the
+ * message-mode pipe, a read only continues into the next pipe message if it starts there. */
+static int rpcrt4_conn_np_read(RpcConnection *conn, void *buffer, unsigned int count)
+{
+    RpcConnection_np *connection = (RpcConnection_np *) conn;
+    BOOL new_message = connection->read_pos == connection->read_len;
+    unsigned int done = 0, len;
+    int ret;
+
+    if (connection->read_closed) return -1;
+    /* waiting for data doesn't consume it: the async notifier waits while a receive may run */
+    if (!count) return new_message ? np_read(connection, NULL, 0) : 0;
+
+    for (;;)
+    {
+        len = min(count - done, connection->read_len - connection->read_pos);
+        memcpy((char *)buffer + done, connection->read_buf + connection->read_pos, len);
+        connection->read_pos += len;
+        done += len;
+        if (done == count || !(new_message || connection->read_more)) return done;
+
+        if ((ret = np_read(connection, connection->read_buf, sizeof(connection->read_buf))) <= 0)
+            return ret < 0 ? ret : done;
+        connection->read_pos = 0;
+        connection->read_len = ret;
+        connection->read_more = connection->io_status.Status == STATUS_BUFFER_OVERFLOW;
+        new_message = FALSE;
+    }
 }
 
 static int rpcrt4_conn_np_write(RpcConnection *conn, const void *buffer, unsigned int count)
