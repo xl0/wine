@@ -619,6 +619,22 @@ exit:
     return ret;
 }
 
+/* create a lowbox token from token (NULL = process token), also used for CreateProcess */
+NTSTATUS create_app_container_token( HANDLE token, const SECURITY_CAPABILITIES *caps, HANDLE *ret )
+{
+    static const SID_IDENTIFIER_AUTHORITY app_package_authority = {SECURITY_APP_PACKAGE_AUTHORITY};
+    SID *sid = caps->AppContainerSid;
+
+    if (sid && (memcmp( &sid->IdentifierAuthority, &app_package_authority, sizeof(app_package_authority) )
+                || sid->SubAuthorityCount != SECURITY_APP_PACKAGE_RID_COUNT
+                || sid->SubAuthority[0] != SECURITY_APP_PACKAGE_BASE_RID))
+        return STATUS_NOT_APPCONTAINER;
+
+    if (!token) token = GetCurrentProcessToken();
+    return NtCreateLowBoxToken( ret, token, TOKEN_ALL_ACCESS, NULL, sid, caps->CapabilityCount,
+                                caps->Capabilities, 0, NULL );
+}
+
 /*************************************************************************
  * CreateAppContainerToken    (kernelbase.@)
  */
@@ -626,9 +642,7 @@ BOOL WINAPI CreateAppContainerToken( HANDLE token, SECURITY_CAPABILITIES *caps, 
 {
     TRACE( "token %p, caps %p, ret %p\n", token, caps, ret );
 
-    if (!token) token = GetCurrentProcessToken();
-    return set_ntstatus( NtCreateLowBoxToken( ret, token, TOKEN_ALL_ACCESS, NULL, caps->AppContainerSid,
-                                              caps->CapabilityCount, caps->Capabilities, 0, NULL ));
+    return set_ntstatus( create_app_container_token( token, caps, ret ));
 }
 
 static LSTATUS open_app_container_mapping( PSID sid, BOOL create, HKEY *key, DWORD *disposition )

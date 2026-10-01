@@ -255,7 +255,7 @@ static void test_CreateAppContainerToken(void)
     SetLastError(0xdeadbeef);
     ret = pCreateAppContainerToken(process_token, &caps, &token);
     ok(!ret, "got ret %d.\n", ret);
-    todo_wine ok(GetLastError() == ERROR_NOT_APPCONTAINER, "got error %lu.\n", GetLastError());
+    ok(GetLastError() == ERROR_NOT_APPCONTAINER, "got error %lu.\n", GetLastError());
 
     CloseHandle(process_token);
     FreeSid(package_sid);

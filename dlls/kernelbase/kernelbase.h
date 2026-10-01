@@ -38,6 +38,7 @@ extern void init_startup_info( RTL_USER_PROCESS_PARAMETERS *params );
 extern void init_locale( HMODULE module );
 extern void init_console(void);
 extern BOOL is_console_handle( HANDLE );
+extern NTSTATUS create_app_container_token( HANDLE token, const SECURITY_CAPABILITIES *caps, HANDLE *ret );
 
 extern const WCHAR windows_dir[];
 extern const WCHAR system_dir[];
