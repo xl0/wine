@@ -842,6 +842,40 @@ static inline void leave_handler( struct thread_data *data, ucontext_t *sigconte
 
 
 /***********************************************************************
+ *           handle_host_thread_signal
+ *
+ * Handle a signal in a thread not created by Wine, e.g. a worker thread of a host
+ * library. Such a thread has neither thread data nor TEB, so no exception can be
+ * raised; let the default action terminate the process, as it would natively.
+ */
+static BOOL handle_host_thread_signal( int signal, siginfo_t *siginfo, ucontext_t *sigcontext )
+{
+    struct sigaction sig_act = { .sa_handler = SIG_DFL };
+
+#ifdef __linux__
+    /* uc_stack is the alternate signal stack, Wine threads always run handlers on theirs */
+    if (sigcontext->uc_stack.ss_sp == get_current_thread_data()->signal_stack) return FALSE;
+#else
+    return FALSE;
+#endif
+
+    if (signal == SIGSEGV && TRAP_sig(sigcontext) == TRAP_x86_PAGEFLT)
+    {
+        EXCEPTION_RECORD rec = { .NumberParameters = 2 };
+
+        rec.ExceptionInformation[0] = (ERROR_sig(sigcontext) >> 1) & 0x09;
+        rec.ExceptionInformation[1] = (ULONG_PTR)siginfo->si_addr;
+        if (!virtual_handle_fault( NULL, &rec, NULL )) return TRUE;  /* e.g. write watch */
+    }
+    ERR_(seh)( "signal %d at %p (addr %p) in a non-Wine thread, terminating\n",
+               signal, (void *)RIP_sig(sigcontext), siginfo->si_addr );
+    sigaction( signal, &sig_act, NULL );
+    raise( signal );  /* delivered when the handler returns */
+    return TRUE;
+}
+
+
+/***********************************************************************
  *           save_context
  *
  * Set the register values from a sigcontext.
@@ -2278,10 +2312,12 @@ static inline BOOL check_invalid_gsbase( struct thread_data *data, ucontext_t *u
 static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
 {
     ucontext_t *sigcontext = _sigcontext;
-    struct thread_data *data = init_handler( sigcontext );
+    struct thread_data *data;
     struct xcontext context;
     EXCEPTION_RECORD rec = { .ExceptionAddress = (void *)RIP_sig(sigcontext) };
 
+    if (handle_host_thread_signal( signal, siginfo, sigcontext )) return;
+    data = init_handler( sigcontext );
     save_context( data, &context, sigcontext );
 
     switch(TRAP_sig(sigcontext))
@@ -2369,9 +2405,12 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
 static void trap_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
 {
     ucontext_t *sigcontext = _sigcontext;
-    struct thread_data *data = init_handler( sigcontext );
+    struct thread_data *data;
     struct xcontext context;
     EXCEPTION_RECORD rec = { .ExceptionAddress = (void *)RIP_sig(sigcontext) };
+
+    if (handle_host_thread_signal( signal, siginfo, sigcontext )) return;
+    data = init_handler( sigcontext );
 
     if (handle_syscall_trap( data, sigcontext, siginfo )) return;
 
@@ -2416,9 +2455,12 @@ static void trap_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
 static void fpe_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
 {
     ucontext_t *sigcontext = _sigcontext;
-    struct thread_data *data = init_handler( sigcontext );
+    struct thread_data *data;
     struct xcontext context;
     EXCEPTION_RECORD rec = { .ExceptionAddress = (void *)RIP_sig(sigcontext) };
+
+    if (handle_host_thread_signal( signal, siginfo, sigcontext )) return;
+    data = init_handler( sigcontext );
 
     save_context( data, &context, sigcontext );
 
@@ -2512,12 +2554,14 @@ static void int_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
 static void abrt_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
 {
     ucontext_t *sigcontext = _sigcontext;
-    struct thread_data *data = init_handler( sigcontext );
+    struct thread_data *data;
     struct xcontext context;
     EXCEPTION_RECORD rec = { .ExceptionCode = EXCEPTION_WINE_ASSERTION,
                              .ExceptionFlags = EXCEPTION_NONCONTINUABLE,
                              .ExceptionAddress = (void *)RIP_sig(sigcontext) };
 
+    if (handle_host_thread_signal( signal, siginfo, sigcontext )) return;
+    data = init_handler( sigcontext );
     save_context( data, &context, sigcontext );
     setup_raise_exception( data, sigcontext, &rec, &context );
 }

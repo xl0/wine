@@ -4686,6 +4686,8 @@ static NTSTATUS grow_thread_stack( struct thread_data *data, char *page, struct 
 
 /***********************************************************************
  *           virtual_handle_fault
+ *
+ * data is NULL for a thread not created by Wine.
  */
 NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec, void *stack )
 {
@@ -4707,10 +4709,10 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec, 
     }
 #endif
 
-    if (!is_inside_signal_stack( data, stack ) && (vprot & VPROT_GUARD))
+    if ((!data || !is_inside_signal_stack( data, stack )) && (vprot & VPROT_GUARD))
     {
         struct thread_stack_info stack_info;
-        if (!is_inside_thread_stack( data, page, &stack_info ))
+        if (!data || !is_inside_thread_stack( data, page, &stack_info ))
         {
             set_page_vprot_bits( page, host_page_size, 0, VPROT_GUARD );
             mprotect_range( page, host_page_size, 0, 0 );
@@ -4722,7 +4724,7 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec, 
     {
         if (vprot & VPROT_WRITEWATCH)
         {
-            if (enable_write_exceptions && is_vprot_exec_write( vprot ) && !data->allow_writes)
+            if (enable_write_exceptions && is_vprot_exec_write( vprot ) && !(data && data->allow_writes))
             {
                 rec->NumberParameters = 3;
                 rec->ExceptionInformation[2] = STATUS_EXECUTABLE_MEMORY_WRITE;
