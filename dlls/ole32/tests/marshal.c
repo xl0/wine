@@ -289,6 +289,8 @@ static const IUnknownVtbl TestCrashUnknown_Vtbl =
 
 static IUnknown TestCrash_Unknown = { &TestCrashUnknown_Vtbl };
 
+static LONG object_qis; /* QIs for interfaces Test_ClassFactory doesn't implement */
+
 static HRESULT WINAPI Test_IClassFactory_QueryInterface(
     LPCLASSFACTORY iface,
     REFIID riid,
@@ -312,6 +314,7 @@ static HRESULT WINAPI Test_IClassFactory_QueryInterface(
         return S_OK;
     }
 
+    InterlockedIncrement(&object_qis);
     *ppvObj = NULL;
     return E_NOINTERFACE;
 }
@@ -3207,6 +3210,66 @@ static void test_proxy_interfaces(void)
     end_host_object(tid, thread);
 }
 
+static void test_proxy_rpc_options(void)
+{
+    IRpcOptions *rpc_options;
+    IUnknown *proxy, *marshal, *unk;
+    IClassFactory *cf;
+    IStream *stream;
+    ULONG_PTR value;
+    HANDLE thread;
+    DWORD tid;
+    HRESULT hr;
+
+    cLocks = 0;
+    hr = CreateStreamOnHGlobal(NULL, TRUE, &stream);
+    ok_ole_success(hr, CreateStreamOnHGlobal);
+    tid = start_host_object(stream, &IID_IClassFactory, (IUnknown *)&Test_ClassFactory, MSHLFLAGS_NORMAL, &thread);
+    IStream_Seek(stream, ullZero, STREAM_SEEK_SET, NULL);
+    hr = CoUnmarshalInterface(stream, &IID_IUnknown, (void **)&proxy);
+    ok_ole_success(hr, CoUnmarshalInterface);
+    IStream_Release(stream);
+
+    object_qis = 0;
+    hr = IUnknown_QueryInterface(proxy, &IID_IRpcOptions, (void **)&rpc_options);
+    ok(hr == S_OK, "got %#lx\n", hr);
+    ok(!object_qis, "object got %ld QIs\n", object_qis);
+    hr = IRpcOptions_QueryInterface(rpc_options, &IID_IUnknown, (void **)&unk);
+    ok(hr == S_OK && unk == proxy, "got %#lx, %p, proxy %p\n", hr, unk, proxy);
+    IUnknown_Release(unk);
+    hr = IUnknown_QueryInterface(proxy, &IID_IClassFactory, (void **)&cf);
+    ok(hr == S_OK, "got %#lx\n", hr);
+    hr = IUnknown_QueryInterface(proxy, &IID_IMarshal, (void **)&marshal);
+    ok(hr == S_OK, "got %#lx\n", hr);
+
+    value = 0xdead;
+    hr = IRpcOptions_Query(rpc_options, (IUnknown *)cf, COMBND_SERVER_LOCALITY, &value);
+    ok(hr == S_OK && value == SERVER_LOCALITY_PROCESS_LOCAL, "got %#lx, %Iu\n", hr, value);
+    /* only interface proxies; IUnknown wasn't unmarshaled from the server */
+    hr = IRpcOptions_Query(rpc_options, proxy, COMBND_SERVER_LOCALITY, &value);
+    ok(hr == E_NOINTERFACE, "got %#lx\n", hr);
+    hr = IRpcOptions_Query(rpc_options, marshal, COMBND_SERVER_LOCALITY, &value);
+    ok(hr == E_NOINTERFACE, "got %#lx\n", hr);
+    hr = IRpcOptions_Query(rpc_options, NULL, COMBND_SERVER_LOCALITY, &value);
+    ok(hr == E_INVALIDARG, "got %#lx\n", hr);
+    hr = IRpcOptions_Query(rpc_options, (IUnknown *)cf, 0, &value);
+    ok(hr == E_INVALIDARG, "got %#lx\n", hr);
+    /* no timeout for servers in the same process */
+    hr = IRpcOptions_Query(rpc_options, (IUnknown *)cf, COMBND_RPCTIMEOUT, &value);
+    ok(hr == E_INVALIDARG, "got %#lx\n", hr);
+    hr = IRpcOptions_Set(rpc_options, (IUnknown *)cf, COMBND_RPCTIMEOUT, RPC_C_BINDING_DEFAULT_TIMEOUT);
+    ok(hr == E_INVALIDARG, "got %#lx\n", hr);
+    hr = IRpcOptions_Set(rpc_options, (IUnknown *)cf, COMBND_SERVER_LOCALITY, SERVER_LOCALITY_PROCESS_LOCAL);
+    ok(hr == E_INVALIDARG, "got %#lx\n", hr);
+
+    IUnknown_Release(marshal);
+    IClassFactory_Release(cf);
+    IRpcOptions_Release(rpc_options);
+    IUnknown_Release(proxy);
+    ok_no_locks();
+    end_host_object(tid, thread);
+}
+
 static ULONG get_handle_count(void)
 {
     SYSTEM_HANDLE_INFORMATION_EX *info;
@@ -5246,6 +5309,7 @@ START_TEST(marshal)
     test_message_filter();
     test_bad_marshal_stream();
     test_proxy_interfaces();
+    test_proxy_rpc_options();
     test_proxy_call_handles();
     test_server_exception();
     test_stubbuffer(&IID_IClassFactory);
