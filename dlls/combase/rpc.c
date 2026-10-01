@@ -1294,10 +1294,18 @@ static HRESULT WINAPI ClientRpcChannelBuffer_GetBuffer(LPRPCCHANNELBUFFER iface,
     else
         status = I_RpcGetBuffer(msg);
 
-    msg->Handle = message_state;
-
-    if (status == RPC_S_OK)
+    if (status != RPC_S_OK)
     {
+        /* the proxy doesn't call FreeBuffer when GetBuffer fails */
+        release_call_event(message_state->params.handle);
+        message_state->params.handle = NULL;
+        release_message_state(message_state);
+        free(cif);
+        msg->RpcInterfaceInformation = NULL;
+    }
+    else
+    {
+        msg->Handle = message_state;
         orpcthis = msg->Buffer;
         msg->Buffer = (char *)msg->Buffer + FIELD_OFFSET(WIRE_ORPCTHIS, extensions);
 

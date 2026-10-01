@@ -4812,6 +4812,55 @@ static void test_cancel_call(const char *server)
     winetest_pop_context();
 }
 
+/* calls to a server process that has exited don't leak handles */
+static void test_dead_server_call_handles(void)
+{
+    PROCESS_INFORMATION pi;
+    ULONG before, after;
+    HANDLE ready, quit;
+    IStream *stream;
+    IPersist *proxy;
+    CLSID clsid;
+    HRESULT hr;
+    int i;
+
+    open_cancel_data();
+    memset(cancel_data, 0, sizeof(*cancel_data));
+    ready = CreateEventA(NULL, FALSE, FALSE, "Wine COM Test Cancel Ready");
+    quit = CreateEventA(NULL, FALSE, FALSE, "Wine COM Test Cancel Quit");
+    create_target_process("-cancel mta", &pi);
+    ok(!WaitForSingleObject(ready, 10000), "wait timed out\n");
+
+    hr = CreateStreamOnHGlobal(NULL, TRUE, &stream);
+    ok_ole_success(hr, CreateStreamOnHGlobal);
+    IStream_Write(stream, cancel_data->objref, cancel_data->size, NULL);
+    IStream_Seek(stream, ullZero, STREAM_SEEK_SET, NULL);
+    hr = CoUnmarshalInterface(stream, &IID_IPersist, (void **)&proxy);
+    ok_ole_success(hr, CoUnmarshalInterface);
+    IStream_Release(stream);
+
+    SetEvent(quit);
+    wait_child_process(&pi);
+
+    hr = IPersist_GetClassID(proxy, &clsid);
+    ok(FAILED(hr), "got %#lx\n", hr);
+    before = get_handle_count();
+    for (i = 0; i < 20; i++)
+    {
+        hr = IPersist_GetClassID(proxy, &clsid);
+        ok(FAILED(hr), "got %#lx\n", hr);
+    }
+    after = get_handle_count();
+    ok((LONG)(after - before) < 10, "handles %lu -> %lu\n", before, after);
+
+    IPersist_Release(proxy);
+    CloseHandle(ready);
+    CloseHandle(quit);
+    CloseHandle(cancel_release);
+    UnmapViewOfFile(cancel_data);
+    CloseHandle(cancel_mapping);
+}
+
 struct git_params
 {
 	DWORD cookie;
@@ -5531,6 +5580,7 @@ START_TEST(marshal)
     test_cancel_call("mta");
     test_cancel_call("process sta");
     test_cancel_call("process mta");
+    test_dead_server_call_handles();
     test_bad_marshal_stream();
     test_proxy_interfaces();
     test_proxy_rpc_options();
