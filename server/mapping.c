@@ -95,6 +95,7 @@ static struct list shared_map_list = LIST_INIT( shared_map_list );
 struct memory_view
 {
     struct list     entry;           /* entry in per-process view list */
+    struct rb_entry tree_entry;      /* entry in per-process view tree */
     struct fd      *fd;              /* fd for mapped file */
     struct ranges  *committed;       /* list of committed ranges in this mapping */
     struct shared_map *shared;       /* temp file for shared PE mapping */
@@ -356,14 +357,37 @@ static int create_temp_file( file_pos_t size )
     return fd;
 }
 
+int compare_view_base( const void *key, const struct rb_entry *entry )
+{
+    const struct memory_view *view = RB_ENTRY_VALUE( entry, const struct memory_view, tree_entry );
+    client_ptr_t base = *(const client_ptr_t *)key;
+
+    if (base < view->base) return -1;
+    return base > view->base;
+}
+
+/* find a memory view overlapping the [addr, addr + size) range; views don't overlap each other */
+static struct memory_view *find_view_in_range( struct process *process, client_ptr_t addr, mem_size_t size )
+{
+    struct rb_entry *ptr = process->view_tree.root;
+
+    while (ptr)
+    {
+        struct memory_view *view = RB_ENTRY_VALUE( ptr, struct memory_view, tree_entry );
+
+        if (view->base >= addr + size) ptr = ptr->left;
+        else if (view->base + view->size <= addr) ptr = ptr->right;
+        else return view;
+    }
+    return NULL;
+}
+
 /* find a memory view from its base address */
 struct memory_view *find_mapped_view( struct process *process, client_ptr_t base )
 {
-    struct memory_view *view;
+    struct rb_entry *ptr = rb_get( &process->view_tree, &base );
 
-    LIST_FOR_EACH_ENTRY( view, &process->views, struct memory_view, entry )
-        if (view->base == base) return view;
-
+    if (ptr) return RB_ENTRY_VALUE( ptr, struct memory_view, tree_entry );
     set_error( STATUS_NOT_MAPPED_VIEW );
     return NULL;
 }
@@ -371,32 +395,19 @@ struct memory_view *find_mapped_view( struct process *process, client_ptr_t base
 /* find a memory view from any address inside it */
 static struct memory_view *find_mapped_addr( struct process *process, client_ptr_t addr )
 {
-    struct memory_view *view;
+    struct memory_view *view = find_view_in_range( process, addr, 1 );
 
-    LIST_FOR_EACH_ENTRY( view, &process->views, struct memory_view, entry )
-        if (addr >= view->base && addr < view->base + view->size) return view;
-
-    set_error( STATUS_NOT_MAPPED_VIEW );
-    return NULL;
+    if (!view) set_error( STATUS_NOT_MAPPED_VIEW );
+    return view;
 }
 
 /* check if an address range is valid for creating a view */
 static int is_valid_view_addr( struct process *process, client_ptr_t addr, mem_size_t size )
 {
-    struct memory_view *view;
-
     if (!size) return 0;
     if (addr & (process->page_size - 1)) return 0;
     if (addr + size < addr) return 0;  /* overflow */
-
-    /* check for overlapping view */
-    LIST_FOR_EACH_ENTRY( view, &process->views, struct memory_view, entry )
-    {
-        if (view->base + view->size <= addr) continue;
-        if (view->base >= addr + size) continue;
-        return 0;
-    }
-    return 1;
+    return !find_view_in_range( process, addr, size );
 }
 
 /* get the main exe memory view */
@@ -434,19 +445,22 @@ static int add_process_view( struct thread *thread, struct memory_view *view )
                 process->imagelen = name.len;
             process->image_info = view->image;
             list_add_head( &process->views, &view->entry );
+            rb_put( &process->view_tree, &view->base, &view->tree_entry );
             return 1;
         }
     }
     list_add_tail( &process->views, &view->entry );
+    rb_put( &process->view_tree, &view->base, &view->tree_entry );
     return 0;
 }
 
-static void free_memory_view( struct memory_view *view )
+static void free_memory_view( struct process *process, struct memory_view *view )
 {
     if (view->fd) release_object( view->fd );
     if (view->committed) release_object( view->committed );
     if (view->shared) release_object( view->shared );
     list_remove( &view->entry );
+    rb_remove( &process->view_tree, &view->tree_entry );
     free( view );
 }
 
@@ -456,7 +470,7 @@ void free_mapped_views( struct process *process )
     struct list *ptr;
 
     while ((ptr = list_head( &process->views )))
-        free_memory_view( LIST_ENTRY( ptr, struct memory_view, entry ));
+        free_memory_view( process, LIST_ENTRY( ptr, struct memory_view, entry ));
 }
 
 /* find the shared PE mapping for a given mapping */
@@ -1739,7 +1753,7 @@ DECL_HANDLER(unmap_view)
 
     if (!view) return;
     generate_dll_event( current, DbgUnloadDllStateChange, view );
-    free_memory_view( view );
+    free_memory_view( current->process, view );
 }
 
 /* get information about a mapped image view */

@@ -648,6 +648,7 @@ struct process *create_process( int fd, struct process *parent, unsigned int fla
     list_init( &process->asyncs );
     list_init( &process->classes );
     list_init( &process->views );
+    rb_init( &process->view_tree, compare_view_base );
 
     process->end_time = 0;
 
