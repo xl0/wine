@@ -833,13 +833,14 @@ HWND get_desktop_window(void)
         static const WCHAR system_dir[] = {'C',':','\\','w','i','n','d','o','w','s','\\',
             's','y','s','t','e','m','3','2','\\',0};
         RTL_USER_PROCESS_PARAMETERS params = { sizeof(params), sizeof(params) };
-        ULONG_PTR attr_buffer[offsetof(PS_ATTRIBUTE_LIST,Attributes[2]) / sizeof(ULONG_PTR)];
+        ULONG_PTR attr_buffer[offsetof(PS_ATTRIBUTE_LIST,Attributes[3]) / sizeof(ULONG_PTR)];
         SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES_INFORMATION machines[8];
         PS_ATTRIBUTE_LIST *ps_attr = (PS_ATTRIBUTE_LIST *)attr_buffer;
         PS_CREATE_INFO create_info;
         WCHAR desktop[MAX_PATH];
         PEB *peb = RtlGetCurrentPeb();
-        HANDLE process = 0, thread;
+        HANDLE process = 0, thread, debug = 0;
+        DWORD_PTR port = 0;
         unsigned int status;
 
         SERVER_START_REQ( set_user_object_info )
@@ -870,13 +871,25 @@ HWND get_desktop_window(void)
 
         NtQuerySystemInformationEx( SystemSupportedProcessorArchitectures, &process, sizeof(process),
                                     machines, sizeof(machines), NULL );
-        ps_attr->TotalLength = sizeof(attr_buffer);
+        ps_attr->TotalLength = offsetof(PS_ATTRIBUTE_LIST,Attributes[2]);
         ps_attr->Attributes[0].Attribute    = PS_ATTRIBUTE_IMAGE_NAME;
         ps_attr->Attributes[0].Size         = sizeof(appnameW) - sizeof(WCHAR);
         ps_attr->Attributes[0].ValuePtr     = (WCHAR *)appnameW;
         ps_attr->Attributes[0].ReturnLength = NULL;
         ps_attr->Attributes[1].Attribute    = PS_ATTRIBUTE_MACHINE_TYPE;
         ps_attr->Attributes[1].Value        = machines[0].Machine;
+
+        /* The desktop process is not the app's child and must not inherit its debugger. Give it
+         * a debug object of its own instead and detach that before it runs. */
+        NtQueryInformationProcess( GetCurrentProcess(), ProcessDebugPort, &port, sizeof(port), NULL );
+        if (port && !NtCreateDebugObject( &debug, DEBUG_ALL_ACCESS, NULL, 0 ))
+        {
+            ps_attr->Attributes[2].Attribute    = PS_ATTRIBUTE_DEBUG_PORT;
+            ps_attr->Attributes[2].Size         = sizeof(debug);
+            ps_attr->Attributes[2].ValuePtr     = debug;
+            ps_attr->Attributes[2].ReturnLength = NULL;
+            ps_attr->TotalLength = sizeof(attr_buffer);
+        }
 
         if (NtCurrentTeb64() && !NtCurrentTeb64()->TlsSlots[WOW64_TLS_FILESYSREDIR])
         {
@@ -892,6 +905,7 @@ HWND get_desktop_window(void)
                                           &create_info, ps_attr );
         if (!status)
         {
+            if (debug) NtRemoveProcessDebug( process, debug );
             NtResumeThread( thread, NULL );
             TRACE_(win)( "started explorer\n" );
             NtUserWaitForInputIdle( process, 10000, FALSE );
@@ -899,6 +913,7 @@ HWND get_desktop_window(void)
             NtClose( process );
         }
         else ERR_(win)( "failed to start explorer %x\n", status );
+        if (debug) NtClose( debug );
 
         SERVER_START_REQ( get_desktop_window )
         {
