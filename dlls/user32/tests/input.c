@@ -3179,6 +3179,7 @@ static void test_rawinput(const char* argv0)
         {
         case 14:
         case 15:
+        case 16:
             DestroyWindow(hwnd);
             hwnd = CreateWindowA("static", "static", WS_VISIBLE | WS_POPUP,
                                  pt.x - 50, pt.y - 50, 100, 100, 0, NULL, NULL, NULL);
@@ -3230,6 +3231,9 @@ static void test_rawinput(const char* argv0)
             ok(ret, "%d: RegisterRawInputDevices failed: %lu\n", i, GetLastError());
         }
 
+        /* the other desktop thread exits after its last test, its window must be
+         * gone before we uncover it, or it may receive the messages directly */
+        if (i == ARRAY_SIZE(rawinput_tests) - 1) WaitForSingleObject(thread, INFINITE);
         DestroyWindow(hwnd);
     }
 
