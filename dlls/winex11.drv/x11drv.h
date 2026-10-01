@@ -435,6 +435,8 @@ struct x11drv_thread_data
     int      xinput2_pointer;      /* XInput2 master pointer device id */
 #endif /* HAVE_X11_EXTENSIONS_XINPUT2_H */
     int      root_window_users;    /* counter for root window XISelectEvents */
+    HWND     size_move_hwnd;       /* window in a WM driven size-move, see wm_size_move_begin */
+    BOOL     net_wm_moveresize;    /* in move_resize_window, waiting for the size-move to end */
 
     struct display_state desired_state;       /* display state tracking the desired / win32 state */
     struct display_state pending_state;       /* display state tracking the pending / requested state */
@@ -635,7 +637,8 @@ enum x11drv_window_messages
     WM_X11DRV_UPDATE_CLIPBOARD = WM_WINE_FIRST_DRIVER_MSG,
     WM_X11DRV_SET_WIN_REGION,
     WM_X11DRV_DELETE_TAB,
-    WM_X11DRV_ADD_TAB
+    WM_X11DRV_ADD_TAB,
+    WM_X11DRV_SIZE_MOVE
 };
 
 /* _NET_WM_STATE properties that we keep track of */
@@ -730,6 +733,7 @@ extern void window_wm_hints_notify( struct x11drv_win_data *data, unsigned long 
 extern void window_mwm_hints_notify( struct x11drv_win_data *data, unsigned long serial, const MwmHints *hints );
 extern void window_wm_normal_hints_notify( struct x11drv_win_data *data, unsigned long serial, const XSizeHints *hints );
 extern void window_configure_notify( struct x11drv_win_data *data, unsigned long serial, const RECT *rect );
+extern UINT window_update_client_config( struct x11drv_win_data *data );
 
 extern void set_net_active_window( HWND hwnd, HWND previous );
 extern Window get_net_active_window( Display *display );
@@ -771,6 +775,8 @@ extern void X11DRV_ActivateWindow( HWND hwnd, HWND previous );
 extern void reapply_cursor_clipping(void);
 extern void ungrab_clipping_window(void);
 extern void move_resize_window( HWND hwnd, int dir, POINT pos );
+extern void wm_size_move_begin( HWND hwnd );
+extern void wm_size_move_check_end(void);
 extern void x11drv_init_keyboard( Display *display );
 extern void x11drv_init_mouse( Display *display );
 extern BOOL X11DRV_ProcessEvents( DWORD mask );

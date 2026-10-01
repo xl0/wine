@@ -720,7 +720,11 @@ static BOOL X11DRV_FocusIn( HWND hwnd, XEvent *xev )
     /* when keyboard grab is released, re-apply the cursor clipping rect */
     was_grabbed = keyboard_grabbed;
     keyboard_grabbed = event->mode == NotifyGrab || event->mode == NotifyWhileGrabbed;
-    if (was_grabbed > keyboard_grabbed) reapply_cursor_clipping();
+    if (was_grabbed > keyboard_grabbed)
+    {
+        reapply_cursor_clipping();
+        wm_size_move_check_end();
+    }
     /* ignore wm specific NotifyUngrab / NotifyGrab events w.r.t focus */
     if (event->mode == NotifyGrab || event->mode == NotifyUngrab) return FALSE;
 
@@ -971,6 +975,7 @@ static BOOL X11DRV_ConfigureNotify( HWND hwnd, XEvent *xev )
     XConfigureEvent *event = &xev->xconfigure;
     SIZE size = {event->width, event->height};
     struct x11drv_win_data *data;
+    BOOL wm_change;
     RECT rect;
     POINT pos = {event->x, event->y};
 
@@ -992,9 +997,11 @@ static BOOL X11DRV_ConfigureNotify( HWND hwnd, XEvent *xev )
     if (size.cx == 1 && size.cy == 1 && IsRectEmpty( &data->rects.window )) size.cx = size.cy = 0;
     SetRect( &rect, pos.x, pos.y, pos.x + size.cx, pos.y + size.cy );
     window_configure_notify( data, event->serial, &rect );
+    wm_change = window_update_client_config( data ) != 0;
 
     release_win_data( data );
 
+    if (wm_change) wm_size_move_begin( hwnd );
     return NtUserPostMessage( hwnd, WM_WINE_WINDOW_STATE_CHANGED, 0, 0 );
 }
 
@@ -1005,6 +1012,7 @@ static BOOL X11DRV_GravityNotify( HWND hwnd, XEvent *xev )
 {
     XGravityEvent *event = &xev->xgravity;
     struct x11drv_win_data *data;
+    BOOL wm_move = FALSE;
     RECT rect;
     POINT pos = {event->x, event->y};
 
@@ -1032,9 +1040,17 @@ static BOOL X11DRV_GravityNotify( HWND hwnd, XEvent *xev )
         OffsetRect( &rect, pos.x - rect.left, pos.y - rect.top );
         window_configure_notify( data, event->serial, &rect );
     }
+    else if (data->managed && data->parent && !event->send_event && !data->configure_serial)
+    {
+        /* the WM moved our frame, some only send the ConfigureNotify at the end of a move */
+        pos = host_window_map_point( data->parent, event->x, event->y );
+        pos = root_to_virtual_screen( pos.x, pos.y );
+        wm_move = pos.x != data->current_state.rect.left || pos.y != data->current_state.rect.top;
+    }
 
     release_win_data( data );
 
+    if (wm_move) wm_size_move_begin( hwnd );
     return NtUserPostMessage( hwnd, WM_WINE_WINDOW_STATE_CHANGED, 0, 0 );
 }
 

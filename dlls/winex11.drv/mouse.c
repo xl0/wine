@@ -1494,11 +1494,92 @@ BOOL X11DRV_ClipCursor( const RECT *clip, BOOL reset )
     return TRUE;
 }
 
+/* the WM grabs the keyboard or follows a held mouse button while it moves or resizes a window */
+static BOOL wm_grab_active( Display *display )
+{
+    Window root, child;
+    unsigned int state;
+    int x, y;
+
+    /* a WM keyboard move targets the focused window; keyboard_grabbed can be stale when the WM
+     * moved the focus elsewhere during its grab */
+    if (keyboard_grabbed && is_current_process_focused()) return TRUE;
+    if (!XQueryPointer( display, root_window, &root, &child, &x, &y, &x, &y, &state )) return FALSE;
+    return !!(state & (Button1Mask | Button2Mask | Button3Mask | Button4Mask | Button5Mask));
+}
+
+/* raw events are delivered whoever grabs the pointer: watch for the button release */
+static void select_raw_button_release( struct x11drv_thread_data *data, BOOL enable )
+{
+#ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
+    if (!xinput2_available) return;
+    if (enable) XISetMask( data->root_mask, XI_RawButtonRelease );
+    else XIClearMask( data->root_mask, XI_RawButtonRelease );
+    pXISelectEvents( data->display, DefaultRootWindow( data->display ), &data->root_events, 1 );
+#endif
+}
+
+/***********************************************************************
+ *           wm_size_move_begin
+ *
+ * The WM changed the window config by itself. If it does so while grabbing the input, it is
+ * an interactive move or resize (e.g. Mod4+drag, keyboard move): give the app the
+ * WM_ENTERSIZEMOVE / WM_EXITSIZEMOVE pair that moves always come with on Windows.
+ * They are posted to stay in order with the WM_WINE_WINDOW_STATE_CHANGED of the changes.
+ */
+void wm_size_move_begin( HWND hwnd )
+{
+    struct x11drv_thread_data *data = x11drv_thread_data();
+    BOOL raw = FALSE;
+
+    if (data->size_move_hwnd || data->net_wm_moveresize) return; /* already in a size-move */
+    if (get_capture_window()) return; /* win32u's move loop or an app driven drag */
+    /* a press that the WM grabbed never reaches us, one we got is the app's business */
+    if ((NtUserGetAsyncKeyState( VK_LBUTTON ) | NtUserGetAsyncKeyState( VK_MBUTTON ) |
+         NtUserGetAsyncKeyState( VK_RBUTTON )) & 0x8000) return;
+#ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
+    raw = xinput2_available;
+#endif
+    if (!raw && !keyboard_grabbed) return; /* we wouldn't see the button release */
+
+    /* select before querying the buttons, so that no release gets lost in between */
+    select_raw_button_release( data, TRUE );
+    if (!wm_grab_active( data->display ))
+    {
+        select_raw_button_release( data, FALSE );
+        return;
+    }
+
+    TRACE( "hwnd %p\n", hwnd );
+    data->size_move_hwnd = hwnd;
+    NtUserPostMessage( hwnd, WM_X11DRV_SIZE_MOVE, TRUE, 0 );
+}
+
+/***********************************************************************
+ *           wm_size_move_check_end
+ *
+ * A WM keyboard grab or a mouse button was released: end the WM size-move if no other is left.
+ */
+void wm_size_move_check_end(void)
+{
+    struct x11drv_thread_data *data = x11drv_thread_data();
+    HWND hwnd;
+
+    if (!data || !(hwnd = data->size_move_hwnd)) return;
+    if (wm_grab_active( data->display )) return;
+
+    TRACE( "hwnd %p done\n", hwnd );
+    data->size_move_hwnd = 0;
+    select_raw_button_release( data, FALSE );
+    NtUserPostMessage( hwnd, WM_X11DRV_SIZE_MOVE, FALSE, 0 );
+}
+
 /***********************************************************************
  *           move_resize_window
  */
 void move_resize_window( HWND hwnd, int dir, POINT pos )
 {
+    struct x11drv_thread_data *data = x11drv_thread_data();
     Display *display = thread_display();
     int button = 0;
     XEvent xev;
@@ -1536,6 +1617,7 @@ void move_resize_window( HWND hwnd, int dir, POINT pos )
     /* (some apps don't like it if we return before the size/move is done) */
 
     if (!button--) return;
+    data->net_wm_moveresize = TRUE;
     send_message( hwnd, WM_ENTERSIZEMOVE, 0, 0 );
 
     for (;;)
@@ -1564,6 +1646,7 @@ void move_resize_window( HWND hwnd, int dir, POINT pos )
     }
 
     TRACE( "hwnd %p/%lx done\n", hwnd, win );
+    data->net_wm_moveresize = FALSE;
     send_message( hwnd, WM_EXITSIZEMOVE, 0, 0 );
 }
 
@@ -1913,8 +1996,11 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
         ret = X11DRV_RawMotion( event );
         break;
     case XI_RawButtonPress:
-    case XI_RawButtonRelease:
         ret = X11DRV_RawButtonEvent( event );
+        break;
+    case XI_RawButtonRelease:
+        /* only selected while the WM moves or resizes a window, see wm_size_move_begin */
+        wm_size_move_check_end();
         break;
     case XI_TouchBegin:
     case XI_TouchUpdate:

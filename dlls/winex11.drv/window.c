@@ -1736,7 +1736,7 @@ static UINT window_update_client_state( struct x11drv_win_data *data )
     return 0;
 }
 
-static UINT window_update_client_config( struct x11drv_win_data *data )
+UINT window_update_client_config( struct x11drv_win_data *data )
 {
     static const UINT fullscreen_mask = (1 << NET_WM_STATE_MAXIMIZED) | (1 << NET_WM_STATE_FULLSCREEN);
     RECT rect, old_rect = data->rects.window, new_rect;
@@ -3559,6 +3559,11 @@ LRESULT X11DRV_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
     case WM_X11DRV_ADD_TAB:
         taskbar_add_tab( hwnd );
         return 0;
+    case WM_X11DRV_SIZE_MOVE:
+        if (wp) return send_message( hwnd, WM_ENTERSIZEMOVE, 0, 0 );
+        /* apply the final config first, the WM may have sent it right after ending its grab */
+        send_message( hwnd, WM_WINE_WINDOW_STATE_CHANGED, 0, 0 );
+        return send_message( hwnd, WM_EXITSIZEMOVE, 0, 0 );
     default:
         FIXME( "got window msg %x hwnd %p wp %lx lp %lx\n", msg, hwnd, (long)wp, lp );
         return 0;
