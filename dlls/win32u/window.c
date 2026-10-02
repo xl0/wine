@@ -2895,8 +2895,12 @@ BOOL WINAPI NtUserUpdateLayeredWindow( HWND hwnd, HDC hdc_dst, const POINT *pts_
             intersect_rect( &rect, &rect, dirty );
             NtGdiPatBlt( hdc, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, BLACKNESS );
         }
-        /* the surface is larger than the window, make what is left of it transparent too */
-        else NtGdiPatBlt( hdc, 0, 0, surface_rect.right - surface_rect.left, surface_rect.bottom - surface_rect.top, BLACKNESS );
+        else
+        {
+            /* the surface is larger than the window, make what is left of it transparent too */
+            NtGdiPatBlt( hdc, 0, 0, surface_rect.right - surface_rect.left, surface_rect.bottom - surface_rect.top, BLACKNESS );
+            surface->alpha_faint = TRUE; /* until the flush finds a visible pixel */
+        }
 
         src_rect = rect;
         if (pts_src) OffsetRect( &src_rect, pts_src->x, pts_src->y );

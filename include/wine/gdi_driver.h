@@ -218,7 +218,7 @@ struct gdi_dc_funcs
 };
 
 /* increment this when you change the DC function table */
-#define WINE_GDI_DRIVER_VERSION 110
+#define WINE_GDI_DRIVER_VERSION 111
 
 #define GDI_PRIORITY_NULL_DRV        0  /* null driver */
 #define GDI_PRIORITY_FONT_DRV      100  /* any font driver */
@@ -316,6 +316,8 @@ struct window_surface
     COLORREF                           color_key;    /* layered window surface color key, invalid if CLR_INVALID */
     UINT                               alpha_bits;   /* layered window global alpha bits, invalid if -1 */
     UINT                               alpha_mask;   /* layered window per-pixel alpha mask, invalid if 0 */
+    BOOL                               alpha_faint;  /* no pixel with a visible alpha was flushed since the last full update */
+    BOOL                               shape_hidden; /* per-pixel alpha surface with nothing to see: the window only takes input */
     HRGN                               shape_region; /* shape of the window surface, unshaped if 0 */
     HBITMAP                            shape_bitmap; /* bitmap for the surface shape (1bpp) */
     HBITMAP                            color_bitmap; /* bitmap for the surface colors */

@@ -208,6 +208,8 @@ static BOOL scaled_surface_flush( struct window_surface *window_surface, const R
                                     window_surface->alpha_bits, window_surface->alpha_mask );
     }
 
+    surface->target_surface->alpha_faint = window_surface->alpha_faint;
+
     window_surface_flush( surface->target_surface );
     return TRUE;
 }
@@ -398,6 +400,20 @@ static BYTE shape_from_alpha_mask( UINT32 *bits, UINT32 alpha_mask, UINT32 alpha
     return ~mask;
 }
 
+/* per-pixel alpha below which a pixel can hardly be seen */
+#define ALPHA_FAINT 0x10
+
+static BOOL is_alpha_faint( const UINT32 *bits, UINT stride, const RECT *rect, UINT32 alpha_mask )
+{
+    UINT32 alpha_min = alpha_mask / 0xff * ALPHA_FAINT;
+    int x, y;
+
+    for (y = rect->top, bits += y * stride; y < rect->bottom; y++, bits += stride)
+        for (x = rect->left; x < rect->right; x++)
+            if ((bits[x] & alpha_mask) >= alpha_min) return FALSE;
+    return TRUE;
+}
+
 static BYTE shape_from_color_key_16( UINT16 *bits, UINT16 color_mask, UINT16 color_key )
 {
     BYTE i, bit, mask = 0;
@@ -422,7 +438,7 @@ static BOOL set_surface_shape( struct window_surface *surface, const RECT *rect,
     void *shape_bits, *old_shape = NULL;
     RECT *shape_rect, tmp_rect;
     WINEREGION *data;
-    BOOL ret, is_new;
+    BOOL ret, is_new, client_surfaces = FALSE;
 
     width = color_info->bmiHeader.biWidth;
     height = abs( color_info->bmiHeader.biHeight );
@@ -514,6 +530,7 @@ static BOOL set_surface_shape( struct window_surface *surface, const RECT *rect,
         if (surface->shape_region) NtGdiCombineRgn( region, region, surface->shape_region, RGN_AND );
         if ((data = GDI_GetObjPtr( region, NTGDI_OBJ_REGION )))
         {
+            client_surfaces = data->numRects > 0;
             for (shape_rect = data->rects; shape_rect < data->rects + data->numRects; shape_rect++)
             {
                 if (!intersect_rect( &tmp_rect, shape_rect, dirty )) continue;
@@ -524,6 +541,10 @@ static BOOL set_surface_shape( struct window_surface *surface, const RECT *rect,
         NtGdiDeleteObjectApp( region );
     }
 
+    if (alpha_mask && surface->alpha_faint && color_info->bmiHeader.biBitCount == 32)
+        surface->alpha_faint = is_alpha_faint( color_bits, color_stride / 4, dirty, alpha_mask );
+    surface->shape_hidden = alpha_mask && surface->alpha_faint && !client_surfaces;
+
     ret = is_new || memcmp( old_shape, shape_bits, shape_info->bmiHeader.biSizeImage );
     free( old_shape );
     return ret;
@@ -531,6 +552,7 @@ static BOOL set_surface_shape( struct window_surface *surface, const RECT *rect,
 
 static BOOL clear_surface_shape( struct window_surface *surface )
 {
+    surface->shape_hidden = FALSE;
     if (!surface->shape_bitmap) return FALSE;
     NtGdiDeleteObjectApp( surface->shape_bitmap );
     surface->shape_bitmap = 0;
