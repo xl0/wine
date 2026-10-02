@@ -4660,6 +4660,23 @@ static void fontcollection_add_replacements(struct dwrite_fontcollection *collec
     RegCloseKey(hkey);
 }
 
+/* Arial is always installed on Windows. WPF uses it as the font of last resort,
+   and terminates the process when it's missing. */
+static void fontcollection_add_default_replacements(struct dwrite_fontcollection *collection)
+{
+    static const WCHAR *replacements[] = { L"Liberation Sans", L"Arimo", L"DejaVu Sans", L"Tahoma" };
+    unsigned int i;
+
+    if (collection_find_family(collection, L"Arial") != ~0u)
+        return;
+
+    for (i = 0; i < ARRAY_SIZE(replacements); ++i)
+    {
+        if (fontcollection_add_replacement(collection, L"Arial", replacements[i]))
+            break;
+    }
+}
+
 HRESULT create_font_collection(IDWriteFactory7 *factory, IDWriteFontFileEnumerator *enumerator, IDWriteFontCollection3 **ret)
 {
     struct fontfile_enum {
@@ -4841,7 +4858,10 @@ HRESULT create_font_collection_from_set(IDWriteFactory7 *factory, IDWriteFontSet
     }
 
     if (set->is_system)
+    {
         fontcollection_add_replacements(collection);
+        fontcollection_add_default_replacements(collection);
+    }
 
     hr = IDWriteFontCollection3_QueryInterface(&collection->IDWriteFontCollection3_iface, riid, ret);
     IDWriteFontCollection3_Release(&collection->IDWriteFontCollection3_iface);

@@ -2513,6 +2513,11 @@ static void test_system_fontcollection(void)
     ok(i != (UINT32)-1, "got %u\n", i);
 
     ret = FALSE;
+    hr = IDWriteFontCollection_FindFamilyName(collection, L"Arial", &i, &ret);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    ok(ret, "got %d\n", ret);
+
+    ret = FALSE;
     i = (UINT32)-1;
     hr = IDWriteFontCollection_FindFamilyName(collection, L"TAHOMA", &i, &ret);
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
