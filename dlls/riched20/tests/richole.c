@@ -3246,6 +3246,19 @@ static void test_ITextFont_range(void)
   hr = ITextRange_GetFont(range, &font);
   ok(hr == S_OK, "got 0x%08lx\n", hr);
 
+  /* nothing was set, nothing is applied */
+  hr = ITextFont_Reset(font, tomApplyNow);
+  ok(hr == S_OK, "got 0x%08lx\n", hr);
+
+  SendMessageA(hwnd, EM_SETSEL, 0, 1);
+  SendMessageA(hwnd, EM_GETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+  ok(cf.yHeight == 360, "got %ld\n", cf.yHeight);
+  ok(cf.dwEffects & CFE_BOLD, "got 0x%08lx\n", cf.dwEffects);
+  SendMessageA(hwnd, EM_SETSEL, 3, 4);
+  SendMessageA(hwnd, EM_GETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+  ok(cf.yHeight == 240, "got %ld\n", cf.yHeight);
+  ok(!(cf.dwEffects & CFE_BOLD), "got 0x%08lx\n", cf.dwEffects);
+
   /* values are in points */
   hr = ITextFont_SetSize(font, 20.0);
   ok(hr == S_OK, "got 0x%08lx\n", hr);

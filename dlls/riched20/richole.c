@@ -224,6 +224,7 @@ typedef struct ITextFontImpl {
     textfont_prop_val props[FONT_PROPID_LAST];
     BOOL get_cache_enabled;
     BOOL set_cache_enabled;
+    DWORD set_mask;      /* properties set since tomApplyLater */
 } ITextFontImpl;
 
 typedef struct ITextParaImpl {
@@ -729,6 +730,7 @@ static HRESULT set_textfont_prop(ITextFontImpl *font, enum textfont_prop_id prop
 
     /* when font is not attached to any range use cache */
     if (!font->range || font->set_cache_enabled) {
+        font->set_mask |= 1u << propid;
         if (propid == FONT_NAME) {
             SysFreeString(font->props[propid].str);
             font->props[propid].str = SysAllocString(value->str);
@@ -2979,7 +2981,8 @@ static void textfont_apply_range_props(ITextFontImpl *font)
 {
     enum textfont_prop_id propid;
     for (propid = FONT_PROPID_FIRST; propid < FONT_PROPID_LAST; propid++)
-        set_textfont_prop(font, propid, &font->props[propid]);
+        if (font->set_mask & (1u << propid)) set_textfont_prop(font, propid, &font->props[propid]);
+    font->set_mask = 0;
 }
 
 static HRESULT WINAPI TextFont_Reset(ITextFont *iface, LONG value)
@@ -3009,8 +3012,11 @@ static HRESULT WINAPI TextFont_Reset(ITextFont *iface, LONG value)
             This->set_cache_enabled = TRUE;
             break;
         case tomApplyNow:
-            This->set_cache_enabled = FALSE;
-            textfont_apply_range_props(This);
+            if (This->set_cache_enabled)
+            {
+                This->set_cache_enabled = FALSE;
+                textfont_apply_range_props(This);
+            }
             break;
         case tomUsePoints:
         case tomUseTwips:
@@ -3497,6 +3503,7 @@ static HRESULT create_textfont(ITextRange *range, const ITextFontImpl *src, ITex
 
     font->ITextFont_iface.lpVtbl = &textfontvtbl;
     font->ref = 1;
+    font->set_mask = 0;
 
     if (src) {
         font->range = NULL;
