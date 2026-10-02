@@ -4081,9 +4081,22 @@ static void test_ScriptString_pSize(HDC hdc)
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
 }
 
-static int CALLBACK enum_any_font_proc(const LOGFONTA *lf, const TEXTMETRICA *tm, DWORD type, LPARAM lparam)
+/* stops at the first scalable font that has the character */
+static INT CALLBACK font_has_char_proc(const LOGFONTA *lf, const TEXTMETRICA *tm, DWORD type, LPARAM lparam)
 {
-    return 0;
+    HFONT hfont, old_hfont;
+    WORD index = 0xffff;
+    HDC hdc;
+
+    if (type != TRUETYPE_FONTTYPE || lf->lfFaceName[0] == '@') return 1;
+    hdc = CreateCompatibleDC(0);
+    hfont = CreateFontIndirectA(lf);
+    old_hfont = SelectObject(hdc, hfont);
+    GetGlyphIndicesW(hdc, (const WCHAR *)lparam, 1, &index, GGI_MARK_NONEXISTING_GLYPHS);
+    SelectObject(hdc, old_hfont);
+    DeleteObject(hfont);
+    DeleteDC(hdc);
+    return index == 0xffff;
 }
 
 static void test_ScriptString_fallback(void)
@@ -4120,7 +4133,7 @@ static void test_ScriptString_fallback(void)
 
     memset(&lf, 0, sizeof(lf));
     lf.lfCharSet = SHIFTJIS_CHARSET;
-    if (EnumFontFamiliesExA(hdc, &lf, enum_any_font_proc, 0, 0))
+    if (EnumFontFamiliesExA(hdc, &lf, font_has_char_proc, (LPARAM)textW, 0))
     {
         skip("no East Asian font\n");
     }

@@ -2022,49 +2022,49 @@ static BOOL pattern_has_lang( FcPattern *pattern, const char *lang )
 }
 #endif
 
-/* get the fonts that fontconfig prefers for the languages, skipping the languages
- * that an earlier font covers */
-static UINT fontconfig_get_language_fonts( const char * const *langs, UINT count,
-                                           WCHAR **files, UINT *indices )
+/* get the font that fontconfig prefers for a language: file, face index and family name,
+ * and the mask of the languages that the font covers */
+static BOOL fontconfig_get_language_font( const char * const *langs, UINT count, UINT lang, WCHAR **file,
+                                          UINT *index, WCHAR family[LF_FACESIZE], DWORD *covered )
 {
-    UINT ret = 0;
+    BOOL ret = FALSE;
 #ifdef SONAME_LIBFONTCONFIG
-    FcPattern *pattern, *matches[8];
-    const char *unix_name;
+    const char *unix_name, *name;
+    FcPattern *pattern, *match;
     FcResult result;
-    UINT i, j;
-    int index;
+    DWORD len;
+    int value;
+    UINT i;
 
-    if (!fontconfig_enabled) return 0;
+    if (!fontconfig_enabled) return FALSE;
 
-    for (i = 0; i < count && ret < ARRAY_SIZE(matches); i++)
+    pattern = pFcPatternCreate();
+    pFcPatternAddString( pattern, FC_FAMILY, (const FcChar8 *)"sans" );
+    pFcPatternAddString( pattern, FC_LANG, (const FcChar8 *)langs[lang] );
+    pFcPatternAddBool( pattern, FC_SCALABLE, FcTrue );
+    pFcPatternAddString( pattern, FC_PRGNAME, (const FcChar8 *)"wine" );
+    pFcConfigSubstitute( NULL, pattern, FcMatchPattern );
+    pFcDefaultSubstitute( pattern );
+    match = pFcFontMatch( NULL, pattern, &result );
+    pFcPatternDestroy( pattern );
+    if (!match) return FALSE;
+
+    /* without a font for the language, fontconfig returns some other font */
+    if (result == FcResultMatch && pattern_has_lang( match, langs[lang] ) &&
+        pFcPatternGetString( match, FC_FILE, 0, (FcChar8 **)&unix_name ) == FcResultMatch &&
+        pFcPatternGetString( match, FC_FAMILY, 0, (FcChar8 **)&name ) == FcResultMatch &&
+        !ntdll_get_dos_file_name( unix_name, file, FILE_OPEN ))
     {
-        for (j = 0; j < ret; j++) if (pattern_has_lang( matches[j], langs[i] )) break;
-        if (j < ret) continue;
-
-        pattern = pFcPatternCreate();
-        pFcPatternAddString( pattern, FC_FAMILY, (const FcChar8 *)"sans" );
-        pFcPatternAddString( pattern, FC_LANG, (const FcChar8 *)langs[i] );
-        pFcPatternAddBool( pattern, FC_SCALABLE, FcTrue );
-        pFcPatternAddString( pattern, FC_PRGNAME, (const FcChar8 *)"wine" );
-        pFcConfigSubstitute( NULL, pattern, FcMatchPattern );
-        pFcDefaultSubstitute( pattern );
-        matches[ret] = pFcFontMatch( NULL, pattern, &result );
-        pFcPatternDestroy( pattern );
-        if (!matches[ret]) continue;
-
-        if (result != FcResultMatch || !pattern_has_lang( matches[ret], langs[i] ) ||
-            pFcPatternGetString( matches[ret], FC_FILE, 0, (FcChar8 **)&unix_name ) != FcResultMatch ||
-            ntdll_get_dos_file_name( unix_name, &files[ret], FILE_OPEN ))
-        {
-            pFcPatternDestroy( matches[ret] );
-            continue;
-        }
-        if (pFcPatternGetInteger( matches[ret], FC_INDEX, 0, &index ) != FcResultMatch) index = 0;
-        TRACE( "%s: %s index %d\n", langs[i], debugstr_a(unix_name), index );
-        indices[ret++] = index;
+        if (pFcPatternGetInteger( match, FC_INDEX, 0, &value ) != FcResultMatch) value = 0;
+        *index = value;
+        RtlUTF8ToUnicodeN( family, (LF_FACESIZE - 1) * sizeof(WCHAR), &len, name, strlen(name) );
+        family[len / sizeof(WCHAR)] = 0;
+        for (i = 0, *covered = 0; i < count; i++)
+            if (pattern_has_lang( match, langs[i] )) *covered |= 1u << i;
+        TRACE( "%s: %s index %d family %s\n", langs[lang], debugstr_a(unix_name), value, debugstr_a(name) );
+        ret = TRUE;
     }
-    for (i = 0; i < ret; i++) pFcPatternDestroy( matches[i] );
+    pFcPatternDestroy( match );
 #endif
     return ret;
 }
@@ -3946,7 +3946,7 @@ static const struct font_backend_funcs font_funcs =
 {
     freetype_load_fonts,
     fontconfig_enum_family_fallbacks,
-    fontconfig_get_language_fonts,
+    fontconfig_get_language_font,
     freetype_add_font,
     freetype_add_mem_font,
     freetype_load_font,

@@ -2123,34 +2123,49 @@ static void load_system_links(void)
     for (i = 0; noto_cjk[i] && find_family_from_name( tahomaW ); i++)
     {
         if (!(family = find_family_from_name( noto_cjk[i] ))) continue;
+        if (list_empty( get_family_face_list( family ))) continue;
         /* all fonts fall back to these links, add them even if Tahoma has a substitute */
-        face = LIST_ENTRY( list_head( &family->faces ), struct gdi_font_face, entry );
-        add_gdi_font_link_entry( add_gdi_font_link( tahomaW ), family->family_name, face->fs );
-        TRACE( "linked Tahoma to %s\n", debugstr_w(family->family_name) );
+        face = LIST_ENTRY( list_head( get_family_face_list( family )), struct gdi_font_face, entry );
+        add_gdi_font_link_entry( add_gdi_font_link( tahomaW ), face->family->family_name, face->fs );
+        TRACE( "linked Tahoma to %s\n", debugstr_w(face->family->family_name) );
         break;
     }
     if (!noto_cjk[i])
     {
         /* no Noto CJK font, link the fonts that the host prefers for these languages */
-        WCHAR *path, *files[ARRAY_SIZE(cjk_langs)];
-        UINT indices[ARRAY_SIZE(cjk_langs)];
-        DWORD count = font_funcs->get_language_fonts( cjk_langs, ARRAY_SIZE(cjk_langs), files, indices );
+        unsigned int linked = 0;
+        WCHAR *file, *path;
+        UINT index;
 
-        for (i = 0; i < count; i++)
+        for (i = 0; i < ARRAY_SIZE(cjk_langs); i++)
         {
-            path = get_nt_path( files[i] );
+            WCHAR name[LF_FACESIZE];
+
+            if (linked & (1u << i)) continue;
+            if (!font_funcs->get_language_font( cjk_langs, ARRAY_SIZE(cjk_langs), i, &file, &index, name, &j ))
+                continue;
+
+            face = NULL;
+            path = get_nt_path( file );
             WINE_RB_FOR_EACH_ENTRY( family, &family_name_tree, struct gdi_font_family, name_entry )
             {
                 if (family->family_name[0] == '@') continue;
                 LIST_FOR_EACH_ENTRY( face, &family->faces, struct gdi_font_face, entry )
-                    if (face->file && face->face_index == indices[i] && !wcsicmp( face->file, path )) break;
-                if (&face->entry == &family->faces) continue;
-                add_gdi_font_link_entry( add_gdi_font_link( tahomaW ), family->family_name, face->fs );
-                TRACE( "linked Tahoma to %s\n", debugstr_w(family->family_name) );
-                break;
+                    if (face->file && face->face_index == index && !wcsicmp( face->file, path )) break;
+                if (&face->entry != &family->faces) break;
+                face = NULL;
             }
+            /* Wine may have loaded another copy of the font, look for the family name then */
+            if (!face && (family = find_family_from_any_name( name )) &&
+                !list_empty( get_family_face_list( family )))
+                face = LIST_ENTRY( list_head( get_family_face_list( family )), struct gdi_font_face, entry );
             free( path );
-            free( files[i] );
+            free( file );
+            if (!face) continue;
+
+            add_gdi_font_link_entry( add_gdi_font_link( tahomaW ), face->family->family_name, face->fs );
+            TRACE( "linked Tahoma to %s\n", debugstr_w(face->family->family_name) );
+            linked |= j;  /* the languages that this font covers */
         }
     }
 

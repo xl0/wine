@@ -7830,6 +7830,24 @@ static void test_select_object(void)
     DeleteObject(hfont);
 }
 
+/* stops at the first scalable font that has the character */
+static INT CALLBACK font_has_char_proc(const LOGFONTA *lf, const TEXTMETRICA *tm, DWORD type, LPARAM lparam)
+{
+    HFONT hfont, old_hfont;
+    WORD index = 0xffff;
+    HDC hdc;
+
+    if (type != TRUETYPE_FONTTYPE || lf->lfFaceName[0] == '@') return 1;
+    hdc = CreateCompatibleDC(0);
+    hfont = CreateFontIndirectA(lf);
+    old_hfont = SelectObject(hdc, hfont);
+    GetGlyphIndicesW(hdc, (const WCHAR *)lparam, 1, &index, GGI_MARK_NONEXISTING_GLYPHS);
+    SelectObject(hdc, old_hfont);
+    DeleteObject(hfont);
+    DeleteDC(hdc);
+    return index == 0xffff;
+}
+
 static void test_font_link(void)
 {
     static const WCHAR ch = 0x6e2c; /* not in Tahoma, comes from a linked East Asian font */
@@ -7853,7 +7871,7 @@ static void test_font_link(void)
     memset(&lf, 0, sizeof(lf));
     lf.lfCharSet = SHIFTJIS_CHARSET;
     hdc = GetDC(0);
-    i = EnumFontFamiliesExA(hdc, &lf, is_font_installed_proc, 0, 0);
+    i = EnumFontFamiliesExA(hdc, &lf, font_has_char_proc, (LPARAM)&ch, 0);
     ReleaseDC(0, hdc);
     if (i)
     {
