@@ -565,7 +565,7 @@ static void set_cursor_pos( struct desktop *desktop, int x, int y )
     static const struct hw_msg_source source = { IMDT_UNAVAILABLE, IMO_SYSTEM };
     struct message *msg;
 
-    if (!(msg = alloc_hardware_message( 0xff515700, source, get_tick_count(), 0 ))) return;
+    if (!(msg = alloc_hardware_message( 0, source, get_tick_count(), 0 ))) return;
 
     msg->msg = WM_MOUSEMOVE;
     msg->x   = x;

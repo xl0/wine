@@ -2641,7 +2641,10 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
     msg->pt = point_phys_to_win_dpi( msg->hwnd, msg->pt );
     set_thread_dpi_awareness_context( get_window_dpi_awareness_context( msg->hwnd ));
 
-    if ((extra_info & 0xffffff00) != 0xff515700 && is_mouse_in_pointer_enabled( msg->hwnd ))
+    /* no pointer messages for pointer input itself, nor for SetCursorPos and window change moves */
+    if ((extra_info & 0xffffff00) != 0xff515700 &&
+        get_user_thread_info()->client_info->msg_source.originId != IMO_SYSTEM &&
+        is_mouse_in_pointer_enabled( msg->hwnd ))
     {
         WORD flags = POINTER_MESSAGE_FLAG_INRANGE, pointer_button_flags;
         DWORD message = 0;

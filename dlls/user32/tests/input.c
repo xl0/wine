@@ -6141,6 +6141,60 @@ static void test_GetPointerInfo( BOOL mouse_in_pointer_enabled )
     ok( ret, "UnregisterClassW failed: %lu\n", GetLastError() );
 }
 
+static unsigned int fake_moves, fake_pointer_updates;
+static ULONG_PTR fake_move_info;
+
+static LRESULT CALLBACK fake_move_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+{
+    if (msg == WM_MOUSEMOVE)
+    {
+        fake_moves++;
+        fake_move_info = GetMessageExtraInfo();
+    }
+    if (msg == WM_POINTERUPDATE) fake_pointer_updates++;
+    return DefWindowProcW( hwnd, msg, wparam, lparam );
+}
+
+static void test_fake_mouse_moves(void)
+{
+    WNDCLASSW cls = {.lpfnWndProc = fake_move_proc, .lpszClassName = L"fake_move"};
+    HWND hwnd, other;
+    POINT pt;
+
+    RegisterClassW( &cls );
+    hwnd = CreateWindowExW( WS_EX_TOPMOST, L"fake_move", NULL, WS_POPUP | WS_VISIBLE, 100, 100, 200, 200, 0, 0, 0, NULL );
+    other = CreateWindowExW( WS_EX_TOPMOST | WS_EX_NOACTIVATE, L"fake_move", NULL, WS_POPUP, 400, 100, 50, 50, 0, 0, 0, NULL );
+    SetForegroundWindow( hwnd );
+    SetCursorPos( 200, 200 );
+    empty_message_queue();
+
+    /* SetCursorPos and the moves after window changes have no extra info and no pointer messages */
+    fake_moves = fake_pointer_updates = 0;
+    fake_move_info = 0xdeadbeef;
+    SetCursorPos( 201, 200 );
+    empty_message_queue();
+    GetCursorPos( &pt );
+    if (pt.x != 201) skip( "cursor position not set\n" );
+    else
+    {
+        ok( fake_moves >= 1, "got %u WM_MOUSEMOVE\n", fake_moves );
+        ok( !fake_move_info, "got extra info %#Ix\n", fake_move_info );
+        ok( !fake_pointer_updates, "got %u WM_POINTERUPDATE\n", fake_pointer_updates );
+
+        fake_moves = fake_pointer_updates = 0;
+        fake_move_info = 0xdeadbeef;
+        ShowWindow( other, SW_SHOWNOACTIVATE );
+        empty_message_queue();
+        ok( fake_moves >= 1, "got %u WM_MOUSEMOVE\n", fake_moves );
+        ok( !fake_move_info, "got extra info %#Ix\n", fake_move_info );
+        ok( !fake_pointer_updates, "got %u WM_POINTERUPDATE\n", fake_pointer_updates );
+    }
+
+    DestroyWindow( other );
+    DestroyWindow( hwnd );
+    UnregisterClassW( L"fake_move", NULL );
+}
+
 static void test_EnableMouseInPointer( const char *arg )
 {
     DWORD enable = strtoul( arg, 0, 10 );
@@ -6164,6 +6218,7 @@ static void test_EnableMouseInPointer( const char *arg )
     ok( ret == enable, "IsMouseInPointerEnabled returned %u, error %lu\n", ret, GetLastError() );
 
     test_GetPointerInfo( enable );
+    test_fake_mouse_moves();
 
     winetest_pop_context();
 }
