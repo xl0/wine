@@ -2052,6 +2052,11 @@ static BOOL selection_notify_event( HWND hwnd, XEvent *event )
 {
     XFixesSelectionNotifyEvent *req = (XFixesSelectionNotifyEvent*)event;
 
+    if (req->selection == compositor_atom)
+    {
+        compositing_manager_changed();
+        return FALSE;
+    }
     if (!is_clipboard_owner) return FALSE;
     if (req->owner == selection_window) return FALSE;
     request_selection_contents( req->display, TRUE );
@@ -2064,10 +2069,12 @@ static BOOL selection_notify_event( HWND hwnd, XEvent *event )
  *
  * Initialize xfixes to receive clipboard update notifications
  */
-static void xfixes_init(void)
-{
 #ifdef SONAME_LIBXFIXES
-    typeof(XFixesSelectSelectionInput) *pXFixesSelectSelectionInput;
+static typeof(XFixesSelectSelectionInput) *pXFixesSelectSelectionInput;
+
+static void xfixes_load(void)
+{
+    typeof(XFixesSelectSelectionInput) *select_input;
     typeof(XFixesQueryExtension) *pXFixesQueryExtension;
     typeof(XFixesQueryVersion) *pXFixesQueryVersion;
 
@@ -2082,13 +2089,43 @@ static void xfixes_init(void)
     if (!pXFixesQueryExtension) return;
     pXFixesQueryVersion = dlsym(handle, "XFixesQueryVersion");
     if (!pXFixesQueryVersion) return;
-    pXFixesSelectSelectionInput = dlsym(handle, "XFixesSelectSelectionInput");
-    if (!pXFixesSelectSelectionInput) return;
+    select_input = dlsym(handle, "XFixesSelectSelectionInput");
+    if (!select_input) return;
 
-    if (!pXFixesQueryExtension(clipboard_display, &event_base, &error_base))
+    if (!pXFixesQueryExtension(thread_display(), &event_base, &error_base))
         return;
-    pXFixesQueryVersion(clipboard_display, &major, &minor);
-    use_xfixes = (major >= 1);
+    pXFixesQueryVersion(thread_display(), &major, &minor);
+    if (major < 1) return;
+
+    X11DRV_register_event_handler(event_base + XFixesSelectionNotify,
+            selection_notify_event, "XFixesSelectionNotify");
+    pXFixesSelectSelectionInput = select_input;
+}
+#endif
+
+/**************************************************************************
+ *		select_compositing_manager_input
+ *
+ * Get notified on this thread's display when a compositing manager starts or goes away.
+ */
+void select_compositing_manager_input( Display *display )
+{
+#ifdef SONAME_LIBXFIXES
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+
+    pthread_once( &once, xfixes_load );
+    if (!pXFixesSelectSelectionInput) return;
+    pXFixesSelectSelectionInput(display, DefaultRootWindow(display), compositor_atom,
+            XFixesSetSelectionOwnerNotifyMask |
+            XFixesSelectionWindowDestroyNotifyMask |
+            XFixesSelectionClientCloseNotifyMask);
+#endif
+}
+
+static void xfixes_init(void)
+{
+#ifdef SONAME_LIBXFIXES
+    use_xfixes = !!pXFixesSelectSelectionInput;
     if (!use_xfixes) return;
 
     pXFixesSelectSelectionInput(clipboard_display, import_window, x11drv_atom(CLIPBOARD),
@@ -2102,8 +2139,6 @@ static void xfixes_init(void)
                 XFixesSelectionWindowDestroyNotifyMask |
                 XFixesSelectionClientCloseNotifyMask);
     }
-    X11DRV_register_event_handler(event_base + XFixesSelectionNotify,
-            selection_notify_event, "XFixesSelectionNotify");
     TRACE("xfixes succesully initialized\n");
 #else
     WARN("xfixes not supported\n");

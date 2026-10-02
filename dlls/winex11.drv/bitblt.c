@@ -1589,6 +1589,7 @@ struct x11drv_window_surface
     GC                    gc;
     struct x11drv_image  *image;
     BOOL                  byteswap;
+    int                   hidden; /* last shape_hidden set on the window, -1 if none yet */
 };
 
 static struct x11drv_window_surface *get_x11_surface( struct window_surface *surface )
@@ -1848,6 +1849,14 @@ static BOOL x11drv_surface_flush( struct window_surface *window_surface, const R
 #endif /* HAVE_LIBXSHAPE */
     }
 
+    if (surface->hidden != window_surface->shape_hidden)
+    {
+        if (try_set_window_hidden( window_surface->hwnd, window_surface->shape_hidden ))
+            surface->hidden = window_surface->shape_hidden;
+        else  /* try again from the window's thread */
+            NtUserPostMessage( window_surface->hwnd, WM_X11DRV_SET_HIDDEN, 0, 0 );
+    }
+
     if (!put_shm_image( ximage, &surface->image->shminfo, surface->window, surface->gc, rect, dirty ))
         XPutImage( gdi_display, surface->window, surface->gc, ximage, dirty->left,
                    dirty->top, rect->left + dirty->left, rect->top + dirty->top,
@@ -1982,6 +1991,7 @@ BOOL X11DRV_CreateWindowSurface( HWND hwnd, BOOL layered, const RECT *surface_re
     }
     if (previous) window_surface_release( previous );
 
+    if (!layered) set_window_hidden( data, FALSE );
     if (layered)
     {
         data->layered = TRUE;
@@ -1995,6 +2005,7 @@ BOOL X11DRV_CreateWindowSurface( HWND hwnd, BOOL layered, const RECT *surface_re
 
     *surface = create_surface( data->hwnd, data->whole_window, &data->vis, surface_rect,
                                layered ? data->use_alpha : FALSE );
+    if (layered && *surface) get_x11_surface( *surface )->hidden = -1;
 
 done:
     release_win_data( data );

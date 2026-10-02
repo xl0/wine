@@ -61,6 +61,8 @@ XVisualInfo argb_visual = { 0 };
 Colormap default_colormap = None;
 XPixmapFormatValues **pixmap_formats;
 Atom systray_atom = 0;
+Atom compositor_atom = 0;
+BOOL has_compositor = FALSE;
 HWND systray_hwnd = 0;
 unsigned int screen_bpp;
 Window root_window;
@@ -673,6 +675,12 @@ NTSTATUS __wine_unix_lib_init(void)
     X11DRV_XComposite_Init();
 #endif
     x11drv_xinput2_load();
+    {
+        char name[24]; /* strlen(_NET_WM_CM_S4294967295)+1 */
+        sprintf( name, "_NET_WM_CM_S%u", DefaultScreen( display ) );
+        compositor_atom = XInternAtom( display, name, False );
+        has_compositor = XGetSelectionOwner( display, compositor_atom ) != None;
+    }
 
     x11drv_init_keyboard( gdi_display );
     x11drv_init_mouse( gdi_display );
@@ -761,6 +769,7 @@ struct x11drv_thread_data *x11drv_init_thread_data(void)
     pthread_setspecific( x11drv_thread_data_key, data );
 
     XSelectInput( data->display, DefaultRootWindow( data->display ), PropertyChangeMask );
+    select_compositing_manager_input( data->display );
     if (use_xim) xim_thread_attach( data );
     x11drv_xinput2_init( data );
     net_supported_init( data );

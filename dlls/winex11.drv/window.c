@@ -423,6 +423,7 @@ static struct x11drv_win_data *alloc_win_data( Display *display, HWND hwnd )
         data->vis = default_visual;
         data->hwnd = hwnd;
         data->user_time = -1;
+        data->alpha = 0xff;
         pthread_mutex_lock( &win_data_mutex );
         XSaveContext( gdi_display, (XID)hwnd, win_data_context, (char *)data );
     }
@@ -673,6 +674,31 @@ static void sync_window_opacity( Display *display, Window win, BYTE alpha, DWORD
                          XA_CARDINAL, 32, PropModeReplace, (unsigned char *)&opacity, 1 );
 }
 
+
+/***********************************************************************
+ *              update_window_opacity
+ */
+static void update_window_opacity( struct x11drv_win_data *data )
+{
+    BYTE alpha = data->alpha;
+
+    if (!data->whole_window) return;
+    /* nothing of the window is to be seen: have the compositing manager hide the WM frame around it too */
+    if (data->hidden && has_compositor) alpha = 0;
+    sync_window_opacity( data->display, data->whole_window, alpha, LWA_ALPHA );
+}
+
+/***********************************************************************
+ *              set_window_hidden
+ */
+void set_window_hidden( struct x11drv_win_data *data, BOOL hidden )
+{
+    if (data->hidden == hidden) return;
+    TRACE( "window %p/%lx, hidden %u\n", data->hwnd, data->whole_window, hidden );
+    data->hidden = hidden;
+    update_window_opacity( data );
+    XFlush( data->display );
+}
 
 /***********************************************************************
  *              sync_window_text
@@ -2477,7 +2503,8 @@ static void create_whole_window( struct x11drv_win_data *data )
 
     /* set the window opacity */
     if (!NtUserGetLayeredWindowAttributes( data->hwnd, &key, &alpha, &layered_flags )) layered_flags = 0;
-    sync_window_opacity( data->display, data->whole_window, alpha, layered_flags );
+    data->alpha = (layered_flags & LWA_ALPHA) ? alpha : 0xff;
+    update_window_opacity( data );
     sync_window_input_shape( data );
 
     XFlush( data->display );  /* make sure the window exists before we start painting to it */
@@ -2513,6 +2540,7 @@ static void destroy_whole_window( struct x11drv_win_data *data, BOOL already_des
     }
     if (data->whole_colormap) XFreeColormap( data->display, data->whole_colormap );
     data->whole_window = data->client_window = 0;
+    data->hidden = FALSE;
     data->whole_colormap = 0;
     data->managed = FALSE;
 
@@ -2618,8 +2646,10 @@ void X11DRV_SetWindowStyle( HWND hwnd, INT offset, STYLESTRUCT *style )
         if (changed & WS_EX_LAYERED) /* changing WS_EX_LAYERED resets attributes */
         {
             data->layered = FALSE;
+            data->hidden = FALSE;
+            data->alpha = 0xff;
             set_window_visual( data, &default_visual, FALSE );
-            sync_window_opacity( data->display, data->whole_window, 0, 0 );
+            update_window_opacity( data );
         }
         if (changed & WS_EX_TRANSPARENT) sync_window_style( data );
         flush = TRUE;
@@ -2813,6 +2843,24 @@ struct x11drv_win_data *get_win_data( HWND hwnd )
         return (struct x11drv_win_data *)data;
     pthread_mutex_unlock( &win_data_mutex );
     return NULL;
+}
+
+
+/***********************************************************************
+ *		try_set_window_hidden
+ *
+ * For the surface flush, where the window data may be locked, by this thread or by one that
+ * waits for the surface.
+ */
+BOOL try_set_window_hidden( HWND hwnd, BOOL hidden )
+{
+    struct x11drv_win_data *data;
+
+    if (pthread_mutex_trylock( &win_data_mutex )) return FALSE;
+    if (!XFindContext( gdi_display, (XID)hwnd, win_data_context, (char **)&data ))
+        set_window_hidden( data, hidden && data->layered );
+    pthread_mutex_unlock( &win_data_mutex );
+    return TRUE;
 }
 
 
@@ -3463,9 +3511,11 @@ void X11DRV_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE alpha, DWO
     {
         set_window_visual( data, &default_visual, FALSE );
 
+        data->alpha = (flags & LWA_ALPHA) ? alpha : 0xff;
+        data->hidden = FALSE;
         if (data->whole_window)
         {
-            sync_window_opacity( data->display, data->whole_window, alpha, flags );
+            update_window_opacity( data );
             XFlush( data->display );
         }
 
@@ -3495,13 +3545,38 @@ void X11DRV_UpdateLayeredWindow( HWND hwnd, BYTE alpha, UINT flags )
 
     if (!(data = get_win_data( hwnd ))) return;
 
+    data->alpha = (flags & LWA_ALPHA) ? alpha : 0xff;
     if (data->whole_window)
     {
-        sync_window_opacity( data->display, data->whole_window, alpha, flags );
+        update_window_opacity( data );
         XFlush( data->display );
     }
 
     release_win_data( data );
+}
+
+/***********************************************************************
+ *              compositing_manager_changed
+ *
+ * A compositing manager started or went away: update the hidden windows of this thread.
+ */
+void compositing_manager_changed(void)
+{
+    Display *display = thread_display();
+    struct x11drv_win_data *data;
+    HWND *list;
+    int i;
+
+    has_compositor = XGetSelectionOwner( display, compositor_atom ) != None;
+    if (!(list = build_hwnd_list())) return;
+    for (i = 0; list[i] != HWND_BOTTOM; i++)
+    {
+        if (!(data = get_win_data( list[i] ))) continue;
+        if (data->hidden && data->display == display) update_window_opacity( data );
+        release_win_data( data );
+    }
+    XFlush( display );
+    free( list );
 }
 
 
@@ -3568,6 +3643,9 @@ LRESULT X11DRV_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         /* apply the final config first, the WM may have sent it right after ending its grab */
         send_message( hwnd, WM_WINE_WINDOW_STATE_CHANGED, 0, 0 );
         return send_message( hwnd, WM_EXITSIZEMOVE, 0, 0 );
+    case WM_X11DRV_SET_HIDDEN:
+        NtUserExposeWindowSurface( hwnd, 0, NULL );  /* flush again, without the window data locked */
+        return 0;
     default:
         FIXME( "got window msg %x hwnd %p wp %lx lp %lx\n", msg, hwnd, (long)wp, lp );
         return 0;

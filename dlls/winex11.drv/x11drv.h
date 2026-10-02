@@ -598,6 +598,8 @@ enum x11drv_atoms
 extern Atom X11DRV_Atoms[NB_XATOMS - FIRST_XATOM];
 extern const char * const X11DRV_atom_names[];
 extern Atom systray_atom;
+extern Atom compositor_atom;
+extern BOOL has_compositor;
 extern HWND systray_hwnd;
 
 #define x11drv_atom(name) (X11DRV_Atoms[XATOM_##name - FIRST_XATOM])
@@ -638,7 +640,8 @@ enum x11drv_window_messages
     WM_X11DRV_SET_WIN_REGION,
     WM_X11DRV_DELETE_TAB,
     WM_X11DRV_ADD_TAB,
-    WM_X11DRV_SIZE_MOVE
+    WM_X11DRV_SIZE_MOVE,
+    WM_X11DRV_SET_HIDDEN
 };
 
 /* _NET_WM_STATE properties that we keep track of */
@@ -686,10 +689,12 @@ struct x11drv_win_data
     struct window_rects rects;  /* window rects in monitor DPI, relative to parent client area */
     struct host_window *parent; /* the host window parent, frame or embedder, NULL if root_window */
     XIC         xic;            /* X input context */
+    BYTE        alpha;          /* window alpha from the layered attributes, 255 if none */
     UINT        managed : 1;    /* is window managed? */
     UINT        embedded : 1;   /* is window an XEMBED client? */
     UINT        shaped : 1;     /* is window using a custom region shape? */
     UINT        layered : 1;    /* is window layered and with valid attributes? */
+    UINT        hidden : 1;     /* layered surface has nothing to see, the window only takes input */
     UINT        use_alpha : 1;  /* does window use an alpha channel? */
     UINT        skip_taskbar : 1; /* does window should be deleted from taskbar */
     UINT        add_taskbar : 1; /* does window should be added to taskbar regardless of style */
@@ -721,6 +726,10 @@ struct x11drv_win_data
 extern struct x11drv_win_data *get_win_data( HWND hwnd );
 extern void release_win_data( struct x11drv_win_data *data );
 extern void set_window_parent( struct x11drv_win_data *data, Window parent );
+extern void set_window_hidden( struct x11drv_win_data *data, BOOL hidden );
+extern BOOL try_set_window_hidden( HWND hwnd, BOOL hidden );
+extern void compositing_manager_changed(void);
+extern void select_compositing_manager_input( Display *display );
 extern Window X11DRV_get_whole_window( HWND hwnd );
 extern Window get_dummy_parent(void);
 
