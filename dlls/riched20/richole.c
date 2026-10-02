@@ -467,7 +467,7 @@ static HRESULT get_textfont_prop_for_pos(const struct text_services *services, i
         value->f = twips_to_points(fmt.yHeight);
         break;
     case FONT_SPACING:
-        value->f = fmt.sSpacing;
+        value->f = twips_to_points(fmt.sSpacing);
         break;
     case FONT_WEIGHT:
         value->l = fmt.wWeight;
@@ -625,7 +625,7 @@ static void textrange_set_font(ITextRange *range, ITextFont *font)
     hr = ITextFont_GetSpacing(font, &f);
     if (hr == S_OK && f != tomUndefined) {
         fmt.dwMask |= CFM_SPACING;
-        fmt.sSpacing = f;
+        fmt.sSpacing = points_to_twips(f);
     }
 
     hr = ITextFont_GetWeight(font, &value);
@@ -776,19 +776,19 @@ static HRESULT set_textfont_prop(ITextFontImpl *font, enum textfont_prop_id prop
             fmt.crTextColor = value->l;
         break;
     case FONT_KERNING:
-        fmt.wKerning = value->f;
+        fmt.wKerning = points_to_twips(value->f);
         break;
     case FONT_LANGID:
         fmt.lcid = value->l;
         break;
     case FONT_POSITION:
-        fmt.yOffset = value->f;
+        fmt.yOffset = points_to_twips(value->f);
         break;
     case FONT_SIZE:
-        fmt.yHeight = value->f;
+        fmt.yHeight = points_to_twips(value->f);
         break;
     case FONT_SPACING:
-        fmt.sSpacing = value->f;
+        fmt.sSpacing = points_to_twips(value->f);
         break;
     case FONT_WEIGHT:
         fmt.wWeight = value->l;
@@ -824,6 +824,8 @@ static inline HRESULT set_textfont_propl(ITextFontImpl *font, enum textfont_prop
 static inline HRESULT set_textfont_propf(ITextFontImpl *font, enum textfont_prop_id propid, FLOAT value)
 {
     textfont_prop_val v;
+
+    if (value == tomUndefined) return S_OK;
     v.f = value;
     return set_textfont_prop(font, propid, &v);
 }

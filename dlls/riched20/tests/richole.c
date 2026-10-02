@@ -3215,6 +3215,83 @@ static void test_ITextFont(void)
   release_interfaces(&hwnd, &reOle, &doc, NULL);
 }
 
+static void test_ITextFont_range(void)
+{
+  static const CHAR test_text1[] = "TestSomeText";
+  IRichEditOle *reOle = NULL;
+  ITextDocument *doc = NULL;
+  ITextRange *range;
+  ITextFont *font;
+  CHARFORMAT2A cf;
+  FLOAT valuef;
+  HRESULT hr;
+  HWND hwnd;
+
+  create_interfaces(&hwnd, &reOle, &doc, NULL);
+  SendMessageA(hwnd, WM_SETTEXT, 0, (LPARAM)test_text1);
+
+  /* the first two characters differ from the rest */
+  memset(&cf, 0, sizeof(cf));
+  cf.cbSize = sizeof(cf);
+  cf.dwMask = CFM_SIZE | CFM_BOLD;
+  cf.yHeight = 240;
+  SendMessageA(hwnd, EM_SETCHARFORMAT, SCF_ALL, (LPARAM)&cf);
+  cf.dwEffects = CFE_BOLD;
+  cf.yHeight = 360;
+  SendMessageA(hwnd, EM_SETSEL, 0, 2);
+  SendMessageA(hwnd, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+
+  hr = ITextDocument_Range(doc, 0, 4, &range);
+  ok(hr == S_OK, "got 0x%08lx\n", hr);
+  hr = ITextRange_GetFont(range, &font);
+  ok(hr == S_OK, "got 0x%08lx\n", hr);
+
+  /* values are in points */
+  hr = ITextFont_SetSize(font, 20.0);
+  ok(hr == S_OK, "got 0x%08lx\n", hr);
+  hr = ITextFont_SetPosition(font, 3.0);
+  ok(hr == S_OK, "got 0x%08lx\n", hr);
+  hr = ITextFont_SetKerning(font, 2.0);
+  ok(hr == S_OK, "got 0x%08lx\n", hr);
+
+  SendMessageA(hwnd, EM_SETSEL, 0, 4);
+  SendMessageA(hwnd, EM_GETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+  ok(cf.yHeight == 400, "got %ld\n", cf.yHeight);
+  ok(cf.yOffset == 60, "got %ld\n", cf.yOffset);
+  ok(cf.wKerning == 40, "got %u\n", cf.wKerning);
+
+  hr = ITextFont_SetSpacing(font, 1.5);
+  ok(hr == S_OK, "got 0x%08lx\n", hr);
+  SendMessageA(hwnd, EM_GETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+  ok(cf.sSpacing == 30, "got %d\n", cf.sSpacing);
+  hr = ITextFont_GetSpacing(font, &valuef);
+  ok(hr == S_OK, "got 0x%08lx\n", hr);
+  ok(valuef == 1.5, "got %.2f\n", valuef);
+  hr = ITextFont_SetSpacing(font, -1.0);
+  ok(hr == S_OK, "got 0x%08lx\n", hr);
+  SendMessageA(hwnd, EM_GETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+  ok(cf.sSpacing == -20, "got %d\n", cf.sSpacing);
+
+  /* tomUndefined is ignored */
+  hr = ITextFont_SetSize(font, tomUndefined);
+  ok(hr == S_OK, "got 0x%08lx\n", hr);
+  hr = ITextFont_SetPosition(font, tomUndefined);
+  ok(hr == S_OK, "got 0x%08lx\n", hr);
+  hr = ITextFont_SetKerning(font, tomUndefined);
+  ok(hr == S_OK, "got 0x%08lx\n", hr);
+  hr = ITextFont_SetSpacing(font, tomUndefined);
+  ok(hr == S_OK, "got 0x%08lx\n", hr);
+  SendMessageA(hwnd, EM_GETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+  ok(cf.yHeight == 400, "got %ld\n", cf.yHeight);
+  ok(cf.yOffset == 60, "got %ld\n", cf.yOffset);
+  ok(cf.wKerning == 40, "got %u\n", cf.wKerning);
+  ok(cf.sSpacing == -20, "got %d\n", cf.sSpacing);
+
+  ITextFont_Release(font);
+  ITextRange_Release(range);
+  release_interfaces(&hwnd, &reOle, &doc, NULL);
+}
+
 static void test_Delete(void)
 {
   static const CHAR test_text1[] = "TestSomeText";
@@ -5592,6 +5669,7 @@ START_TEST(richole)
   test_GetPara();
   test_dispatch();
   test_ITextFont();
+  test_ITextFont_range();
   test_Delete();
   test_SetText();
   test_InRange();
