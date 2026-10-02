@@ -147,9 +147,6 @@ static void stub_manager_delete_ifstub(struct stub_manager *m, struct ifstub *if
 
     list_remove(&ifstub->entry);
 
-    if (!m->disconnected)
-        rpc_unregister_interface(&ifstub->iid, TRUE);
-
     if (ifstub->stubbuffer) IRpcStubBuffer_Release(ifstub->stubbuffer);
     IUnknown_Release(ifstub->iface);
     IRpcChannelBuffer_Release(ifstub->chan);
@@ -245,7 +242,6 @@ static struct stub_manager *new_stub_manager(struct apartment *apt, IUnknown *ob
      * the marshalled ifptr.
      */
     sm->extrefs = 0;
-    sm->disconnected = FALSE;
 
     hres = IUnknown_QueryInterface(object, &IID_IExternalConnection, (void**)&sm->extern_conn);
     if(FAILED(hres))
@@ -260,21 +256,6 @@ static struct stub_manager *new_stub_manager(struct apartment *apt, IUnknown *ob
     TRACE("Created new stub manager (oid=%s) at %p for object with IUnknown %p\n", wine_dbgstr_longlong(sm->oid), sm, object);
     
     return sm;
-}
-
-void stub_manager_disconnect(struct stub_manager *m)
-{
-    struct ifstub *ifstub;
-
-    EnterCriticalSection(&m->lock);
-    if (!m->disconnected)
-    {
-        LIST_FOR_EACH_ENTRY(ifstub, &m->ifstubs, struct ifstub, entry)
-            rpc_unregister_interface(&ifstub->iid, FALSE);
-
-        m->disconnected = TRUE;
-    }
-    LeaveCriticalSection(&m->lock);
 }
 
 /* caller must remove stub manager from apartment prior to calling this function */

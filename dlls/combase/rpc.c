@@ -65,10 +65,11 @@ static CRITICAL_SECTION csChannelHook = { &csChannelHook_debug, -1, 0, 0, 0, 0 }
 
 static WCHAR rpctransportW[] = L"ncalrpc";
 
+/* Interfaces stay registered once their first stub is marshaled: unregistering
+ * waits for the calls on the interface, which may need the unregistering thread. */
 struct registered_if
 {
     struct list entry;
-    DWORD refs; /* ref count */
     RPC_SERVER_INTERFACE If; /* interface registered with the RPC runtime */
 };
 
@@ -2183,7 +2184,6 @@ HRESULT rpc_register_interface(REFIID riid)
     {
         if (IsEqualGUID(&rif->If.InterfaceId.SyntaxGUID, riid))
         {
-            rif->refs++;
             found = TRUE;
             break;
         }
@@ -2197,7 +2197,6 @@ HRESULT rpc_register_interface(REFIID riid)
         {
             RPC_STATUS status;
 
-            rif->refs = 1;
             rif->If.Length = sizeof(RPC_SERVER_INTERFACE);
             /* RPC interface ID = COM interface ID */
             rif->If.InterfaceId.SyntaxGUID = *riid;
@@ -2224,27 +2223,6 @@ HRESULT rpc_register_interface(REFIID riid)
     }
     LeaveCriticalSection(&csRegIf);
     return hr;
-}
-
-/* stub unregistration */
-void rpc_unregister_interface(REFIID riid, BOOL wait)
-{
-    struct registered_if *rif;
-    EnterCriticalSection(&csRegIf);
-    LIST_FOR_EACH_ENTRY(rif, &registered_interfaces, struct registered_if, entry)
-    {
-        if (IsEqualGUID(&rif->If.InterfaceId.SyntaxGUID, riid))
-        {
-            if (!--rif->refs)
-            {
-                RpcServerUnregisterIf((RPC_IF_HANDLE)&rif->If, NULL, wait);
-                list_remove(&rif->entry);
-                free(rif);
-            }
-            break;
-        }
-    }
-    LeaveCriticalSection(&csRegIf);
 }
 
 /* get the info for an OXID, including the IPID for the rem unknown interface

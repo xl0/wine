@@ -131,7 +131,6 @@ HRESULT rpc_create_clientchannel(const OXID *oxid, const IPID *ipid, const OXID_
         DWORD dest_context, void *dest_context_data, IRpcChannelBuffer **chan, struct apartment *apt);
 HRESULT rpc_create_serverchannel(DWORD dest_context, void *dest_context_data, IRpcChannelBuffer **chan);
 HRESULT rpc_register_interface(REFIID riid);
-void rpc_unregister_interface(REFIID riid, BOOL wait);
 HRESULT rpc_resolve_oxid(OXID oxid, OXID_INFO *oxid_info);
 void rpc_start_remoting(struct apartment *apt);
 HRESULT rpc_register_channel_hook(REFGUID rguid, IChannelHook *hook);
@@ -256,12 +255,10 @@ struct stub_manager
      */
 
     ULONG             norm_refs;  /* refcount of normal marshals (CS lock) */
-    BOOL              disconnected; /* CoDisconnectObject has been called (CS lock) */
 };
 
 ULONG stub_manager_int_release(struct stub_manager *stub_manager);
 struct stub_manager * get_stub_manager_from_object(struct apartment *apt, IUnknown *object, BOOL alloc);
-void stub_manager_disconnect(struct stub_manager *m);
 ULONG stub_manager_ext_addref(struct stub_manager *m, ULONG refs, BOOL tableweak);
 ULONG stub_manager_ext_release(struct stub_manager *m, ULONG refs, BOOL tableweak, BOOL last_unlock_releases);
 struct stub_manager * get_stub_manager(struct apartment *apt, OID oid);
