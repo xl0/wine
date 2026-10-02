@@ -1542,7 +1542,11 @@ void wm_size_move_begin( HWND hwnd )
 #endif
     if (!raw && !keyboard_grabbed) return; /* we wouldn't see the button release */
 
-    /* select before querying the buttons, so that no release gets lost in between */
+    /* selecting events on the root window makes the X server recompute the event masks of all
+     * windows on the screen, only do it for an actual WM grab (reparenting WMs report a config
+     * change for every move and resize of our managed windows) */
+    if (!wm_grab_active( data->display )) return;
+    /* select before querying the buttons again, so that no release gets lost in between */
     select_raw_button_release( data, TRUE );
     if (!wm_grab_active( data->display ))
     {
