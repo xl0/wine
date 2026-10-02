@@ -1505,10 +1505,13 @@ struct dequeue_thread_params
 static DWORD WINAPI dequeue_thread( void *arg )
 {
     struct dequeue_thread_params *params = arg;
+    LARGE_INTEGER timeout = {{0}};
     ULONG_PTR key, value;
     IO_STATUS_BLOCK iosb;
     NTSTATUS status;
 
+    status = pNtRemoveIoCompletion( params->port, &key, &value, &iosb, &timeout );
+    ok( status == STATUS_TIMEOUT, "NtRemoveIoCompletion returned %lx\n", status );
     status = pNtRemoveIoCompletion( params->port, &key, &value, &iosb, NULL );
     ok( status == STATUS_SUCCESS, "NtRemoveIoCompletion returned %lx\n", status );
     ok( value == (ULONG_PTR)params->io, "value = %Ix\n", value );
