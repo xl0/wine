@@ -160,14 +160,17 @@ static RpcServerInterface* RPCRT4_find_interface(UUID* object,
 
 static void RPCRT4_release_server_interface(RpcServerInterface *sif)
 {
-  if (!InterlockedDecrement(&sif->CurrentCalls) &&
-      sif->Delete) {
-    /* sif must have been removed from server_interfaces before
-     * CallsCompletedEvent is set */
-    if (sif->CallsCompletedEvent)
-      SetEvent(sif->CallsCompletedEvent);
-    free(sif);
-  }
+  BOOL delete;
+
+  /* RpcServerUnregisterIf checks CurrentCalls and sets Delete and
+   * CallsCompletedEvent under server_cs */
+  EnterCriticalSection(&server_cs);
+  delete = !InterlockedDecrement(&sif->CurrentCalls) && sif->Delete;
+  if (delete && sif->CallsCompletedEvent)
+    SetEvent(sif->CallsCompletedEvent);
+  LeaveCriticalSection(&server_cs);
+
+  if (delete) free(sif);
 }
 
 static RpcPktHdr *handle_bind_error(RpcConnection *conn, RPC_STATUS error)

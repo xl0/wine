@@ -1230,6 +1230,110 @@ done:
     return hr;
 }
 
+static HANDLE unregister_call_event;
+
+static void __RPC_STUB unregister_call(RPC_MESSAGE *msg)
+{
+    RPC_STATUS status;
+
+    SetEvent(unregister_call_event);
+    msg->BufferLength = sizeof(DWORD);
+    status = I_RpcGetBuffer(msg);
+    ok(status == RPC_S_OK, "I_RpcGetBuffer failed (%lu)\n", status);
+    *(DWORD *)msg->Buffer = 0xdeadbeef;
+}
+
+static RPC_DISPATCH_FUNCTION unregister_table[] = { unregister_call };
+static RPC_DISPATCH_TABLE unregister_dispatch = { 1, unregister_table };
+
+static RPC_SERVER_INTERFACE unregister_server_if =
+{
+    sizeof(RPC_SERVER_INTERFACE),
+    {{0x1fe1a1d6,0x0109,0x4b4e,{0x9a,0x31,0x7a,0x55,0x01,0x09,0x00,0x01}},{0,0}},
+    {{0x8a885d04,0x1ceb,0x11c9,{0x9f,0xe8,0x08,0x00,0x2b,0x10,0x48,0x60}},{2,0}},
+    &unregister_dispatch,
+};
+
+static RPC_CLIENT_INTERFACE unregister_client_if =
+{
+    sizeof(RPC_CLIENT_INTERFACE),
+    {{0x1fe1a1d6,0x0109,0x4b4e,{0x9a,0x31,0x7a,0x55,0x01,0x09,0x00,0x01}},{0,0}},
+    {{0x8a885d04,0x1ceb,0x11c9,{0x9f,0xe8,0x08,0x00,0x2b,0x10,0x48,0x60}},{2,0}},
+};
+
+static DWORD WINAPI unregister_client_thread(void *binding)
+{
+    RPC_MESSAGE msg = {0};
+    RPC_STATUS status;
+
+    msg.Handle = binding;
+    msg.RpcInterfaceInformation = &unregister_client_if;
+    msg.ProcNum = RPC_FLAGS_VALID_BIT;
+    msg.BufferLength = sizeof(DWORD);
+    status = I_RpcGetBuffer(&msg);
+    ok(status == RPC_S_OK, "I_RpcGetBuffer failed (%lu)\n", status);
+    status = I_RpcSendReceive(&msg);
+    ok(status == RPC_S_OK, "I_RpcSendReceive failed (%lu)\n", status);
+    ok(msg.BufferLength == sizeof(DWORD) && *(DWORD *)msg.Buffer == 0xdeadbeef, "wrong reply\n");
+    I_RpcFreeBuffer(&msg);
+    return 0;
+}
+
+/* registers the interface, makes a call and unregisters it with
+ * WaitForCallsToComplete while the call is ending */
+static DWORD WINAPI unregister_wait_thread(void *arg)
+{
+    LARGE_INTEGER freq, start, now;
+    RPC_BINDING_HANDLE binding;
+    RPC_STATUS status;
+    HANDLE thread;
+    unsigned int i;
+
+    status = RpcBindingFromStringBindingA((RPC_CSTR)"ncalrpc:[unregister_wait]", &binding);
+    ok(status == RPC_S_OK, "RpcBindingFromStringBinding failed (%lu)\n", status);
+    QueryPerformanceFrequency(&freq);
+
+    for (i = 0; i < 300; i++)
+    {
+        status = RpcServerRegisterIfEx(&unregister_server_if, NULL, NULL, RPC_IF_AUTOLISTEN,
+                                       RPC_C_LISTEN_MAX_CALLS_DEFAULT, NULL);
+        ok(status == RPC_S_OK, "RpcServerRegisterIfEx failed (%lu)\n", status);
+        thread = CreateThread(NULL, 0, unregister_client_thread, binding, 0, NULL);
+        WaitForSingleObject(unregister_call_event, INFINITE);
+
+        /* move the end of the call across the unregistration */
+        QueryPerformanceCounter(&start);
+        do QueryPerformanceCounter(&now);
+        while ((now.QuadPart - start.QuadPart) * 1000000 < (i % 64) * freq.QuadPart);
+
+        status = RpcServerUnregisterIf(&unregister_server_if, NULL, TRUE);
+        ok(status == RPC_S_OK, "RpcServerUnregisterIf failed (%lu)\n", status);
+        WaitForSingleObject(thread, INFINITE);
+        CloseHandle(thread);
+    }
+
+    RpcBindingFree(&binding);
+    return 0;
+}
+
+static void test_RpcServerUnregisterIf_wait(void)
+{
+    RPC_STATUS status;
+    HANDLE thread;
+    DWORD ret;
+
+    status = RpcServerUseProtseqEpA((RPC_CSTR)"ncalrpc", 0, (RPC_CSTR)"unregister_wait", NULL);
+    ok(status == RPC_S_OK, "RpcServerUseProtseqEp failed (%lu)\n", status);
+    unregister_call_event = CreateEventW(NULL, FALSE, FALSE, NULL);
+
+    thread = CreateThread(NULL, 0, unregister_wait_thread, NULL, 0, NULL);
+    ret = WaitForSingleObject(thread, 30000);
+    ok(!ret, "RpcServerUnregisterIf didn't return\n");
+    if (ret) return;
+    CloseHandle(thread);
+    CloseHandle(unregister_call_event);
+}
+
 START_TEST( rpc )
 {
     static unsigned char ncacn_np[] = "ncacn_np";
@@ -1273,6 +1377,7 @@ START_TEST( rpc )
     test_RpcServerUseProtseq();
     test_endpoint_mapper(ncacn_np, np_address);
     test_endpoint_mapper(ncalrpc, NULL);
+    test_RpcServerUnregisterIf_wait();
 
     if (firewall_enabled) set_firewall(APP_REMOVE);
 }
