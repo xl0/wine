@@ -845,6 +845,10 @@ void * WINAPI RtlLocateExtendedFeature2( CONTEXT_EX *context_ex, ULONG feature_i
     if (feature_id < 2 || feature_id >= 64)
         return NULL;
 
+    /* The context is not accessed for features which are not enabled. */
+    if (!(feature_mask & xstate_config->EnabledFeatures))
+        return NULL;
+
     xs = (XSAVE_AREA_HEADER *)((BYTE *)context_ex + context_ex->XState.Offset);
 
     if (length)
@@ -859,7 +863,6 @@ void * WINAPI RtlLocateExtendedFeature2( CONTEXT_EX *context_ex, ULONG feature_i
     }
     else
     {
-        if (!(feature_mask & xstate_config->EnabledFeatures)) return NULL;
         offset = xstate_config->Features[feature_id].Offset - sizeof(XSAVE_FORMAT);
     }
 

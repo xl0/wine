@@ -11541,6 +11541,22 @@ static void test_extended_context(void)
         pInitializeContext(context_buffer, CONTEXT_FULL, &context, NULL);
     }
 
+    /* Features which are not enabled are not looked up in the context: no access to an invalid CONTEXT_EX. */
+    memset(context_buffer, 0xcc, sizeof(context_buffer));
+    context = (CONTEXT *)context_buffer;
+    context->ContextFlags = CONTEXT_XSTATE;
+    context_ex = (CONTEXT_EX *)(context + 1);
+    for (i = 2; i < 64; ++i)
+    {
+        if (enabled_features & ((ULONG64)1 << i)) continue;
+        length2 = 0xdeadbeef;
+        p = pRtlLocateExtendedFeature(context_ex, i, &length2);
+        ok(!p && length2 == 0xdeadbeef, "Got unexpected p %p, length %#lx, feature %u.\n", p, length2, i);
+        length2 = 0xdeadbeef;
+        p = pLocateXStateFeature(context, i, &length2);
+        ok(!p && length2 == 0xdeadbeef, "Got unexpected p %p, length %#lx, feature %u.\n", p, length2, i);
+    }
+
     if (!(enabled_features & (1 << XSTATE_AVX)))
     {
         skip("AVX is not supported.\n");
