@@ -2437,8 +2437,17 @@ static BOOL copy_or_cut( ME_TextEditor *editor, BOOL cut )
     if (editor->password_char) return FALSE;
 
     count -= offs;
-    hr = editor_copy_or_cut( editor, cut, sel_start, count, NULL );
+    if (cut && (editor->props & TXTBIT_READONLY)) hr = E_ACCESSDENIED;
+    else hr = editor_copy( editor, sel_start, count, NULL );
     if (FAILED( hr )) editor_beep( editor, MB_ICONERROR );
+    else if (cut)
+    {
+        ME_InternalDeleteText( editor, sel_start, count, FALSE );
+        /* the selection may have reached the final paragraph mark */
+        editor->pCursors[start_cursor ^ 1] = *sel_start;
+        ME_CommitUndo( editor );
+        ME_UpdateRepaint( editor, TRUE );
+    }
 
     return SUCCEEDED( hr );
 }
@@ -3623,7 +3632,9 @@ LRESULT editor_handle_message( ME_TextEditor *editor, UINT msg, WPARAM wParam,
   {
     LONG from, to;
     int nStartCursor = ME_GetSelectionOfs(editor, &from, &to);
+    if (editor->props & TXTBIT_READONLY) return 0;
     ME_InternalDeleteText(editor, &editor->pCursors[nStartCursor], to-from, FALSE);
+    editor->pCursors[nStartCursor ^ 1] = editor->pCursors[nStartCursor];
     ME_CommitUndo(editor);
     ME_UpdateRepaint(editor, TRUE);
     return 0;

@@ -9378,6 +9378,91 @@ static void test_font_linking(void)
     DestroyWindow(hwnd);
 }
 
+static int delete_sel_changes, delete_changes;
+static CHARRANGE delete_sel;
+
+static LRESULT WINAPI delete_parent_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+{
+    if (msg == WM_NOTIFY && ((NMHDR *)lparam)->code == EN_SELCHANGE)
+    {
+        delete_sel_changes++;
+        delete_sel = ((SELCHANGE *)lparam)->chrg;
+    }
+    if (msg == WM_COMMAND && HIWORD(wparam) == EN_CHANGE) delete_changes++;
+    return DefWindowProcA(hwnd, msg, wparam, lparam);
+}
+
+static void test_delete_final_eop_selection(void)
+{
+    static const struct
+    {
+        const char *text;
+        CHARRANGE sel, expect;
+    }
+    tests[] =
+    {
+        { "", { 0, -1 }, { 0, 0 } },
+        { "abc", { 0, -1 }, { 0, 0 } },
+        { "abc", { 1, -1 }, { 1, 1 } },
+    };
+    static const UINT msgs[] = { WM_CLEAR, WM_CUT };
+    unsigned int i, j, readonly;
+    HWND hwnd, parent;
+    CHARRANGE cr, sel;
+    WNDCLASSA cls;
+    char buf[16];
+
+    cls = make_simple_class(delete_parent_proc, "DeleteParentClass");
+    RegisterClassA(&cls);
+    parent = CreateWindowA(cls.lpszClassName, NULL, 0, 0, 0, 200, 60, NULL, NULL, NULL, NULL);
+
+    for (i = 0; i < ARRAY_SIZE(tests); i++)
+    {
+        for (j = 0; j < ARRAY_SIZE(msgs); j++)
+        {
+            for (readonly = 0; readonly < 2; readonly++)
+            {
+                winetest_push_context("%u, msg %#x, readonly %u", i, msgs[j], readonly);
+                hwnd = new_richedit_with_style(parent, ES_MULTILINE | (readonly ? ES_READONLY : 0));
+                SendMessageA(hwnd, WM_SETTEXT, 0, (LPARAM)tests[i].text);
+                SendMessageA(hwnd, EM_EXSETSEL, 0, (LPARAM)&tests[i].sel);
+                SendMessageA(hwnd, EM_EXGETSEL, 0, (LPARAM)&sel);
+                ok(sel.cpMax == (LONG)strlen(tests[i].text) + 1, "got %ld\n", sel.cpMax);
+                SendMessageA(hwnd, EM_SETEVENTMASK, 0, ENM_SELCHANGE | ENM_CHANGE);
+                delete_sel_changes = delete_changes = 0;
+
+                SendMessageA(hwnd, msgs[j], 0, 0);
+                SendMessageA(hwnd, EM_EXGETSEL, 0, (LPARAM)&cr);
+                SendMessageA(hwnd, WM_GETTEXT, sizeof(buf), (LPARAM)buf);
+                if (readonly)
+                {
+                    ok(cr.cpMin == sel.cpMin && cr.cpMax == sel.cpMax, "got (%ld,%ld)\n", cr.cpMin, cr.cpMax);
+                    ok(!strcmp(buf, tests[i].text), "got %s\n", debugstr_a(buf));
+                    ok(!delete_sel_changes, "got %d EN_SELCHANGE\n", delete_sel_changes);
+                    ok(!delete_changes, "got %d EN_CHANGE\n", delete_changes);
+                }
+                else
+                {
+                    /* nothing stays selected, although the final paragraph mark isn't deleted */
+                    ok(cr.cpMin == tests[i].expect.cpMin && cr.cpMax == tests[i].expect.cpMax,
+                       "got (%ld,%ld)\n", cr.cpMin, cr.cpMax);
+                    ok(!SendMessageA(hwnd, EM_SELECTIONTYPE, 0, 0), "got a selection\n");
+                    ok(strlen(buf) == tests[i].expect.cpMin, "got %s\n", debugstr_a(buf));
+                    ok(delete_sel_changes == 1, "got %d EN_SELCHANGE\n", delete_sel_changes);
+                    ok(delete_sel.cpMin == tests[i].expect.cpMin && delete_sel.cpMax == tests[i].expect.cpMax,
+                       "got (%ld,%ld)\n", delete_sel.cpMin, delete_sel.cpMax);
+                    ok(delete_changes == 1, "got %d EN_CHANGE\n", delete_changes);
+                }
+                DestroyWindow(hwnd);
+                winetest_pop_context();
+            }
+        }
+    }
+
+    DestroyWindow(parent);
+    UnregisterClassA(cls.lpszClassName, NULL);
+}
+
 START_TEST( editor )
 {
   BOOL ret;
@@ -9457,6 +9542,7 @@ START_TEST( editor )
   test_init_messages();
   test_EM_SELECTIONTYPE();
   test_font_linking();
+  test_delete_final_eop_selection();
 
   /* Set the environment variable WINETEST_RICHED20 to keep windows
    * responsive and open for 30 seconds. This is useful for debugging.
