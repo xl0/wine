@@ -1577,6 +1577,14 @@ static const WCHAR ms_minchoW[] =
     {'M','S',' ','M','i','n','c','h','o',0};
 static const WCHAR ms_p_minchoW[] =
     {'M','S',' ','P','M','i','n','c','h','o',0};
+static const WCHAR noto_sans_cjk_jpW[] =
+    {'N','o','t','o',' ','S','a','n','s',' ','C','J','K',' ','J','P',0};
+static const WCHAR noto_sans_cjk_scW[] =
+    {'N','o','t','o',' ','S','a','n','s',' ','C','J','K',' ','S','C',0};
+static const WCHAR noto_sans_cjk_tcW[] =
+    {'N','o','t','o',' ','S','a','n','s',' ','C','J','K',' ','T','C',0};
+static const WCHAR noto_sans_cjk_krW[] =
+    {'N','o','t','o',' ','S','a','n','s',' ','C','J','K',' ','K','R',0};
 
 static const WCHAR * const font_links_list[] =
 {
@@ -2024,6 +2032,7 @@ static void load_system_links(void)
     const WCHAR *shelldlg_name;
     struct gdi_font_link *font_link, *system_font_link;
     struct gdi_font_face *face;
+    const WCHAR *noto_cjk[] = { noto_sans_cjk_jpW, noto_sans_cjk_scW, noto_sans_cjk_tcW, noto_sans_cjk_krW, NULL };
 
     static const WCHAR ms_shell_dlgW[] = {'M','S',' ','S','h','e','l','l',' ','D','l','g',0};
     static const WCHAR systemW[] = {'S','y','s','t','e','m',0};
@@ -2089,6 +2098,24 @@ static void load_system_links(void)
         }
     }
     else WARN( "could not find FontSubstitute for MS Shell Dlg\n" );
+
+    /* Link Tahoma, and through the default fallbacks every other font, to a Noto CJK
+       font, which stands in for the missing East Asian fonts of the lists above. The
+       Noto CJK fonts only differ in their preferred glyph forms, link the first one. */
+    switch (ansi_cp.CodePage)
+    {
+    case 936: noto_cjk[0] = noto_sans_cjk_scW; noto_cjk[1] = noto_sans_cjk_jpW; break;
+    case 949: noto_cjk[0] = noto_sans_cjk_krW; noto_cjk[3] = noto_sans_cjk_jpW; break;
+    case 950: noto_cjk[0] = noto_sans_cjk_tcW; noto_cjk[2] = noto_sans_cjk_jpW; break;
+    }
+    /* without Tahoma itself, the link would make the name resolve to Noto CJK */
+    for (i = 0; noto_cjk[i] && find_family_from_name( tahomaW ); i++)
+    {
+        if (!find_family_from_name( noto_cjk[i] )) continue;
+        noto_cjk[i + 1] = NULL;
+        populate_system_links( tahomaW, noto_cjk + i );
+        break;
+    }
 
     /* Explicitly add an entry for the system font, this links to Tahoma and any links
        that Tahoma has */

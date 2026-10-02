@@ -7830,6 +7830,81 @@ static void test_select_object(void)
     DeleteObject(hfont);
 }
 
+static void test_font_link(void)
+{
+    static const WCHAR ch = 0x6e2c; /* not in Tahoma, comes from a linked East Asian font */
+    static const LONG heights[] = { -32, 32 };
+    GLYPHMETRICS gm, gm_def, gm_width;
+    DWORD size, size_def;
+    HFONT hfont, old_hfont;
+    TEXTMETRICA tm;
+    unsigned int i, j;
+    LOGFONTA lf;
+    int expect;
+    WORD index;
+    SIZE sz;
+    HDC hdc;
+
+    if (!is_truetype_font_installed("Tahoma"))
+    {
+        skip("Tahoma is not installed\n");
+        return;
+    }
+    if (!is_font_installed("MS UI Gothic") && !is_font_installed("Noto Sans CJK JP"))
+    {
+        skip("no East Asian font to link to\n");
+        return;
+    }
+
+    hdc = CreateCompatibleDC(0);
+    for (i = 0; i < ARRAY_SIZE(heights); i++)
+    {
+        winetest_push_context("height %ld", heights[i]);
+        memset(&lf, 0, sizeof(lf));
+        strcpy(lf.lfFaceName, "Tahoma");
+        lf.lfHeight = heights[i];
+        hfont = CreateFontIndirectA(&lf);
+        old_hfont = SelectObject(hdc, hfont);
+        GetTextMetricsA(hdc, &tm);
+
+        /* GetGlyphIndices doesn't use font linking */
+        index = 0;
+        GetGlyphIndicesW(hdc, &ch, 1, &index, GGI_MARK_NONEXISTING_GLYPHS);
+        ok(index == 0xffff, "got index %#x\n", index);
+
+        size_def = GetGlyphOutlineW(hdc, 0, GGO_GLYPH_INDEX | GGO_NATIVE, &gm_def, 0, NULL, &mat);
+        ok(size_def != GDI_ERROR, "GetGlyphOutlineW failed\n");
+        size = GetGlyphOutlineW(hdc, ch, GGO_NATIVE, &gm, 0, NULL, &mat);
+        ok(size != GDI_ERROR, "GetGlyphOutlineW failed\n");
+        ok(size > size_def, "got outline size %lu, default glyph %lu\n", size, size_def);
+        /* the linked font has the em height of the base font */
+        ok(gm.gmCellIncX == tm.tmHeight - tm.tmInternalLeading, "got advance %d, em height %ld\n",
+           gm.gmCellIncX, tm.tmHeight - tm.tmInternalLeading);
+
+        GetTextExtentPoint32W(hdc, &ch, 1, &sz);
+        ok(sz.cx == gm.gmCellIncX, "got width %ld, advance %d\n", sz.cx, gm.gmCellIncX);
+
+        SelectObject(hdc, old_hfont);
+        DeleteObject(hfont);
+
+        /* with lfWidth, the linked font is scaled like the base font */
+        for (j = 0; j < 2; j++)
+        {
+            lf.lfWidth = j ? tm.tmAveCharWidth * 2 : tm.tmAveCharWidth / 2;
+            hfont = CreateFontIndirectA(&lf);
+            old_hfont = SelectObject(hdc, hfont);
+            GetGlyphOutlineW(hdc, ch, GGO_METRICS, &gm_width, 0, NULL, &mat);
+            expect = MulDiv(gm.gmCellIncX, lf.lfWidth, tm.tmAveCharWidth);
+            ok(abs(gm_width.gmCellIncX - expect) <= 1, "width %ld: got advance %d, expected %d\n",
+               lf.lfWidth, gm_width.gmCellIncX, expect);
+            SelectObject(hdc, old_hfont);
+            DeleteObject(hfont);
+        }
+        winetest_pop_context();
+    }
+    DeleteDC(hdc);
+}
+
 static void test_GetOutlineTextMetrics_subst(void)
 {
     OUTLINETEXTMETRICA *otm;
@@ -8093,6 +8168,7 @@ START_TEST(font)
     test_GetKerningPairs();
     test_GetOutlineTextMetrics();
     test_GetOutlineTextMetrics_subst();
+    test_font_link();
     test_SetTextJustification();
     test_TranslateCharsetInfo();
     test_font_charset();
