@@ -1192,7 +1192,12 @@ static void set_page_vprot( const void *addr, size_t size, BYTE vprot )
     while (idx >> pages_vprot_shift != end >> pages_vprot_shift)
     {
         size_t dir_size = pages_vprot_mask + 1 - (idx & pages_vprot_mask);
-        memset( pages_vprot[idx >> pages_vprot_shift] + (idx & pages_vprot_mask), vprot, dir_size );
+        BYTE *ptr = pages_vprot[idx >> pages_vprot_shift] + (idx & pages_vprot_mask);
+
+        /* replace whole cleared directories with fresh zero pages instead of touching them */
+        if (vprot || dir_size != pages_vprot_mask + 1 ||
+            anon_mmap_fixed( ptr, dir_size, PROT_READ | PROT_WRITE, 0 ) != ptr)
+            memset( ptr, vprot, dir_size );
         idx += dir_size;
     }
     memset( pages_vprot[idx >> pages_vprot_shift] + (idx & pages_vprot_mask), vprot, end - idx );
@@ -1889,7 +1894,8 @@ static NTSTATUS create_view( struct file_view **view_ret, void *base, size_t siz
     view->size    = size;
     view->protect = vprot;
     if (use_kernel_writewatch) vprot &= ~VPROT_WRITEWATCH;
-    set_page_vprot( base, size, vprot );
+    /* pages outside of views always have zero protection bytes */
+    if ((BYTE)vprot) set_page_vprot( base, size, vprot );
 
     register_view( view );
     kernel_writewatch_register_range( view, view->base, view->size );
