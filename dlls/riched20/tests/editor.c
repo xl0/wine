@@ -9330,6 +9330,54 @@ static void test_window_classes(void)
     }
 }
 
+static void test_font_linking(void)
+{
+    /* halfwidth katakana: narrower than the missing glyph */
+    static const WCHAR text[] = {'a',0xff71,0xff72,0xff73,0xff74,'b',0};
+    LOGFONTW lf = {0};
+    CHARFORMAT2W cf;
+    POINTL start, end;
+    HFONT font, old;
+    SIZE size;
+    HWND hwnd;
+    HDC hdc;
+
+    hwnd = new_richeditW(NULL);
+    /* no font binding (IMF_AUTOFONT): the text keeps its font */
+    SendMessageW(hwnd, EM_SETLANGOPTIONS, 0, 0);
+
+    memset(&cf, 0, sizeof(cf));
+    cf.cbSize = sizeof(cf);
+    cf.dwMask = CFM_FACE | CFM_SIZE | CFM_CHARSET | CFM_BOLD;
+    cf.yHeight = 240;
+    cf.bCharSet = DEFAULT_CHARSET;
+    lstrcpyW(cf.szFaceName, L"Tahoma");
+    SendMessageW(hwnd, EM_SETCHARFORMAT, SCF_ALL, (LPARAM)&cf);
+    SendMessageW(hwnd, EM_REPLACESEL, FALSE, (LPARAM)text);
+
+    SendMessageW(hwnd, EM_SETSEL, 1, 5);
+    SendMessageW(hwnd, EM_GETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+    ok(!lstrcmpW(cf.szFaceName, L"Tahoma"), "got %s\n", wine_dbgstr_w(cf.szFaceName));
+
+    /* characters that the font lacks are measured as GDI does it, with the linked fonts */
+    hdc = GetDC(hwnd);
+    lf.lfHeight = -MulDiv(240, GetDeviceCaps(hdc, LOGPIXELSY), 1440);
+    lf.lfCharSet = DEFAULT_CHARSET;
+    lstrcpyW(lf.lfFaceName, L"Tahoma");
+    font = CreateFontIndirectW(&lf);
+    old = SelectObject(hdc, font);
+    GetTextExtentPoint32W(hdc, text + 1, 4, &size);
+    SelectObject(hdc, old);
+    DeleteObject(font);
+    ReleaseDC(hwnd, hdc);
+
+    SendMessageW(hwnd, EM_POSFROMCHAR, (WPARAM)&start, 1);
+    SendMessageW(hwnd, EM_POSFROMCHAR, (WPARAM)&end, 5);
+    ok(end.x - start.x == size.cx, "got %ld, expected %ld\n", end.x - start.x, size.cx);
+
+    DestroyWindow(hwnd);
+}
+
 START_TEST( editor )
 {
   BOOL ret;
@@ -9408,6 +9456,7 @@ START_TEST( editor )
   test_para_numbering();
   test_init_messages();
   test_EM_SELECTIONTYPE();
+  test_font_linking();
 
   /* Set the environment variable WINETEST_RICHED20 to keep windows
    * responsive and open for 30 seconds. This is useful for debugging.

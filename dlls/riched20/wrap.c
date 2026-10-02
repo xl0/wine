@@ -91,6 +91,24 @@ static HRESULT shape_run( ME_Context *c, ME_Run *run )
         get_run_glyph_buffers( run );
     }
 
+    /* let GDI font linking find the glyphs that the font lacks */
+    if (SUCCEEDED(hr) && !run->script_analysis.fNoGlyphIndex && !run->script_analysis.fRTL &&
+        !(run->nFlags & MERF_NOTEXT))
+    {
+        SCRIPT_FONTPROPERTIES font_props = { sizeof(font_props) };
+        const SCRIPT_PROPERTIES **props;
+
+        ScriptGetProperties( &props, NULL );
+        ScriptGetFontProperties( c->hDC, &run->style->script_cache, &font_props );
+        for (i = 0; i < run->num_glyphs; i++) if (run->glyphs[i] == font_props.wgDefault) break;
+        if (i < run->num_glyphs && !props[run->script_analysis.eScript]->fComplex)
+        {
+            run->script_analysis.fNoGlyphIndex = TRUE;
+            hr = ScriptShape( c->hDC, &run->style->script_cache, get_text( run, 0 ), run->len, run->max_glyphs,
+                              &run->script_analysis, run->glyphs, run->clusters, run->vis_attrs, &run->num_glyphs );
+        }
+    }
+
     if (SUCCEEDED(hr))
         hr = ScriptPlace( c->hDC, &run->style->script_cache, run->glyphs, run->num_glyphs, run->vis_attrs,
                           &run->script_analysis, run->advances, run->offsets, NULL );
