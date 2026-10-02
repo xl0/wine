@@ -4099,6 +4099,72 @@ static INT CALLBACK font_has_char_proc(const LOGFONTA *lf, const TEXTMETRICA *tm
     return index == 0xffff;
 }
 
+static void test_ScriptPlace_no_glyph_index(void)
+{
+    static const WCHAR *faces[] = { L"Tahoma", L"Arial", L"DejaVu Sans" };
+    SCRIPT_ITEM items[2];
+    unsigned int i;
+    int num_items;
+    HRESULT hr;
+    HDC hdc;
+
+    hdc = CreateCompatibleDC(0);
+    hr = ScriptItemize(L"AV", 2, 2, NULL, NULL, items, &num_items);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+
+    for (i = 0; i < ARRAY_SIZE(faces); i++)
+    {
+        int bad = 0, advances[2], widths[2], num_glyphs;
+        SCRIPT_CACHE sc = NULL;
+        SCRIPT_VISATTR attrs[2];
+        SCRIPT_ANALYSIS sa;
+        WORD glyphs[2], clusters[2];
+        LOGFONTW lf = { 0 };
+        GOFFSET offsets[2];
+        WCHAR str[2], face[LF_FACESIZE];
+        HFONT font, old_font;
+
+        lf.lfHeight = -48;
+        lf.lfCharSet = DEFAULT_CHARSET;
+        lstrcpyW(lf.lfFaceName, faces[i]);
+        font = CreateFontIndirectW(&lf);
+        old_font = SelectObject(hdc, font);
+        GetTextFaceW(hdc, ARRAY_SIZE(face), face);
+        if (lstrcmpiW(face, faces[i]))
+        {
+            skip("%s is not installed.\n", debugstr_w(faces[i]));
+            DeleteObject(SelectObject(hdc, old_font));
+            continue;
+        }
+
+        /* the glyphs are characters: no pair kerning, no glyph positioning */
+        sa = items[0].a;
+        sa.fNoGlyphIndex = 1;
+        for (str[0] = 'A'; str[0] <= 'z'; str[0]++)
+        {
+            for (str[1] = 'A'; str[1] <= 'z'; str[1]++)
+            {
+                hr = ScriptShape(hdc, &sc, str, 2, 2, &sa, glyphs, clusters, attrs, &num_glyphs);
+                ok(hr == S_OK, "got hr %#lx.\n", hr);
+                ok(num_glyphs == 2 && glyphs[0] == str[0] && glyphs[1] == str[1], "got %d glyphs %#x %#x.\n",
+                   num_glyphs, glyphs[0], glyphs[1]);
+                hr = ScriptPlace(hdc, &sc, glyphs, 2, attrs, &sa, advances, offsets, NULL);
+                ok(hr == S_OK, "got hr %#lx.\n", hr);
+                GetCharWidth32W(hdc, str[0], str[0], &widths[0]);
+                GetCharWidth32W(hdc, str[1], str[1], &widths[1]);
+                if (advances[0] != widths[0] || advances[1] != widths[1] || offsets[0].du || offsets[0].dv ||
+                    offsets[1].du || offsets[1].dv)
+                    bad++;
+            }
+        }
+        ok(!bad, "%s: %d pairs are not placed by their character widths.\n", debugstr_w(faces[i]), bad);
+
+        ScriptFreeCache(&sc);
+        DeleteObject(SelectObject(hdc, old_font));
+    }
+    DeleteDC(hdc);
+}
+
 static void test_ScriptString_fallback(void)
 {
     static const WCHAR textW[] = {0x65e5, 0x672c}; /* not in Tahoma */
@@ -4308,6 +4374,7 @@ START_TEST(usp10)
     test_ScriptStringXtoCP_CPtoX(hdc);
     test_ScriptString_pSize(hdc);
     test_ScriptString_fallback();
+    test_ScriptPlace_no_glyph_index();
 
     test_ScriptLayout();
     test_digit_substitution();
