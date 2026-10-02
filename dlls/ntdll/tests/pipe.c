@@ -1493,6 +1493,162 @@ static void _test_queued_completion(unsigned line, HANDLE port, IO_STATUS_BLOCK 
                        "Information = %Iu\n", io->Information);
 }
 
+struct dequeue_thread_params
+{
+    HANDLE port;
+    IO_STATUS_BLOCK *io;
+    const char *buf;
+    NTSTATUS io_status;  /* IOSB status when NtRemoveIoCompletion returned */
+    char data[16];       /* buffer contents when NtRemoveIoCompletion returned */
+};
+
+static DWORD WINAPI dequeue_thread( void *arg )
+{
+    struct dequeue_thread_params *params = arg;
+    ULONG_PTR key, value;
+    IO_STATUS_BLOCK iosb;
+    NTSTATUS status;
+
+    status = pNtRemoveIoCompletion( params->port, &key, &value, &iosb, NULL );
+    ok( status == STATUS_SUCCESS, "NtRemoveIoCompletion returned %lx\n", status );
+    ok( value == (ULONG_PTR)params->io, "value = %Ix\n", value );
+    params->io_status = params->io->Status;
+    memcpy( params->data, params->buf, sizeof(params->data) );
+    return 0;
+}
+
+/* I/O on a file with a completion port and no event completes in the thread that dequeues the packet */
+static void test_completion_on_dequeue(void)
+{
+    static const char buf[] = "testdata";
+    struct dequeue_thread_params params;
+    OVERLAPPED_ENTRY entries[2];
+    char read_buf[16], big_buf[5000];
+    IO_STATUS_BLOCK io;
+    HANDLE port, pipe, client, event, thread;
+    OVERLAPPED ov;
+    NTSTATUS status;
+    DWORD num_bytes;
+    ULONG count;
+    BOOL ret;
+
+    create_pipe_pair( &pipe, &client, FILE_FLAG_OVERLAPPED | PIPE_ACCESS_DUPLEX,
+                      PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE, 4096 );
+    port = CreateIoCompletionPort( client, NULL, 0xdeadbeef, 0 );
+    ok( port != NULL, "CreateIoCompletionPort failed, error %lu\n", GetLastError() );
+
+    memset( &io, 0xcc, sizeof(io) );
+    memset( read_buf, 0xcc, sizeof(read_buf) );
+    status = NtReadFile( client, NULL, NULL, &io, &io, read_buf, sizeof(read_buf), NULL, NULL );
+    ok( status == STATUS_PENDING, "status = %lx\n", status );
+    ret = WriteFile( pipe, buf, sizeof(buf), &num_bytes, NULL );
+    ok( ret, "WriteFile failed, error %lu\n", GetLastError() );
+    ok( io.Status == 0xcccccccc, "Status = %lx\n", io.Status );
+    ok( read_buf[0] == (char)0xcc, "buffer written\n" );
+    test_queued_completion( port, &io, STATUS_SUCCESS, sizeof(buf) );
+    ok( !memcmp( read_buf, buf, sizeof(buf) ), "wrong data\n" );
+
+    /* partial message read */
+    memset( &io, 0xcc, sizeof(io) );
+    memset( read_buf, 0xcc, sizeof(read_buf) );
+    status = NtReadFile( client, NULL, NULL, &io, &io, read_buf, 4, NULL, NULL );
+    ok( status == STATUS_PENDING, "status = %lx\n", status );
+    ret = WriteFile( pipe, buf, sizeof(buf), &num_bytes, NULL );
+    ok( ret, "WriteFile failed, error %lu\n", GetLastError() );
+    ok( io.Status == 0xcccccccc, "Status = %lx\n", io.Status );
+    ok( read_buf[0] == (char)0xcc, "buffer written\n" );
+    test_queued_completion( port, &io, STATUS_BUFFER_OVERFLOW, 4 );
+    ok( !memcmp( read_buf, buf, 4 ), "wrong data\n" );
+    status = NtReadFile( client, NULL, NULL, &io, &io, read_buf, sizeof(read_buf), NULL, NULL );
+    ok( status == STATUS_SUCCESS, "status = %lx\n", status );
+    ok( io.Status == STATUS_SUCCESS, "Status = %lx\n", io.Status );
+    ok( io.Information == sizeof(buf) - 4, "Information = %Iu\n", io.Information );
+    test_queued_completion( port, &io, STATUS_SUCCESS, sizeof(buf) - 4 );
+
+    /* with an event, the I/O completes at once */
+    event = CreateEventW( NULL, TRUE, FALSE, NULL );
+    memset( &io, 0xcc, sizeof(io) );
+    memset( read_buf, 0xcc, sizeof(read_buf) );
+    status = NtReadFile( client, event, NULL, &io, &io, read_buf, sizeof(read_buf), NULL, NULL );
+    ok( status == STATUS_PENDING, "status = %lx\n", status );
+    ret = WriteFile( pipe, buf, sizeof(buf), &num_bytes, NULL );
+    ok( ret, "WriteFile failed, error %lu\n", GetLastError() );
+    ok( is_signaled( event ), "event not signaled\n" );
+    ok( io.Status == STATUS_SUCCESS, "Status = %lx\n", io.Status );
+    ok( !memcmp( read_buf, buf, sizeof(buf) ), "wrong data\n" );
+    test_queued_completion( port, &io, STATUS_SUCCESS, sizeof(buf) );
+    CloseHandle( event );
+
+    /* write waiting for the reader */
+    memset( &io, 0xcc, sizeof(io) );
+    memset( big_buf, 'x', sizeof(big_buf) );
+    status = NtWriteFile( client, NULL, NULL, &io, &io, big_buf, sizeof(big_buf), NULL, NULL );
+    ok( status == STATUS_PENDING, "status = %lx\n", status );
+    ret = ReadFile( pipe, big_buf, sizeof(big_buf), &num_bytes, NULL );
+    ok( ret, "ReadFile failed, error %lu\n", GetLastError() );
+    ok( num_bytes == sizeof(big_buf), "read %lu\n", num_bytes );
+    ok( io.Status == 0xcccccccc, "Status = %lx\n", io.Status );
+    test_queued_completion( port, &io, STATUS_SUCCESS, sizeof(big_buf) );
+
+    /* NtRemoveIoCompletionEx completes all dequeued packets */
+    memset( &io, 0xcc, sizeof(io) );
+    memset( read_buf, 0xcc, sizeof(read_buf) );
+    status = NtReadFile( client, NULL, NULL, &io, &io, read_buf, sizeof(read_buf), NULL, NULL );
+    ok( status == STATUS_PENDING, "status = %lx\n", status );
+    memset( &ov, 0, sizeof(ov) );
+    ret = WriteFile( client, buf, sizeof(buf), NULL, &ov );
+    ok( ret, "WriteFile failed, error %lu\n", GetLastError() );
+    ret = WriteFile( pipe, buf, sizeof(buf), &num_bytes, NULL );
+    ok( ret, "WriteFile failed, error %lu\n", GetLastError() );
+    ok( io.Status == 0xcccccccc, "Status = %lx\n", io.Status );
+    ret = GetQueuedCompletionStatusEx( port, entries, ARRAY_SIZE(entries), &count, 0, FALSE );
+    ok( ret, "GetQueuedCompletionStatusEx failed, error %lu\n", GetLastError() );
+    ok( count == 2, "count = %lu\n", count );
+    ok( entries[0].lpOverlapped == &ov, "got %p\n", entries[0].lpOverlapped );
+    ok( entries[1].lpOverlapped == (OVERLAPPED *)&io, "got %p\n", entries[1].lpOverlapped );
+    ok( entries[1].dwNumberOfBytesTransferred == sizeof(buf), "got %lu\n", entries[1].dwNumberOfBytesTransferred );
+    ok( io.Status == STATUS_SUCCESS, "Status = %lx\n", io.Status );
+    ok( io.Information == sizeof(buf), "Information = %Iu\n", io.Information );
+    ok( !memcmp( read_buf, buf, sizeof(buf) ), "wrong data\n" );
+    ret = ReadFile( pipe, read_buf, sizeof(read_buf), &num_bytes, NULL );
+    ok( ret, "ReadFile failed, error %lu\n", GetLastError() );
+
+    /* a thread waiting on the port completes it */
+    memset( &io, 0xcc, sizeof(io) );
+    memset( read_buf, 0xcc, sizeof(read_buf) );
+    status = NtReadFile( client, NULL, NULL, &io, &io, read_buf, sizeof(read_buf), NULL, NULL );
+    ok( status == STATUS_PENDING, "status = %lx\n", status );
+    params.port = port;
+    params.io = &io;
+    params.buf = read_buf;
+    thread = CreateThread( NULL, 0, dequeue_thread, &params, 0, NULL );
+    ok( WaitForSingleObject( thread, 100 ) == WAIT_TIMEOUT, "thread didn't wait\n" );
+    ret = WriteFile( pipe, buf, sizeof(buf), &num_bytes, NULL );
+    ok( ret, "WriteFile failed, error %lu\n", GetLastError() );
+    WaitForSingleObject( thread, INFINITE );
+    CloseHandle( thread );
+    ok( params.io_status == STATUS_SUCCESS, "Status = %lx\n", params.io_status );
+    ok( !memcmp( params.data, buf, sizeof(buf) ), "wrong data\n" );
+    ok( io.Information == sizeof(buf), "Information = %Iu\n", io.Information );
+
+    test_no_queued_completion( port );
+
+    /* nobody can dequeue the packet once the port is closed: the I/O isn't completed */
+    memset( &io, 0xcc, sizeof(io) );
+    memset( read_buf, 0xcc, sizeof(read_buf) );
+    status = NtReadFile( client, NULL, NULL, &io, &io, read_buf, sizeof(read_buf), NULL, NULL );
+    ok( status == STATUS_PENDING, "status = %lx\n", status );
+    CloseHandle( port );
+    ret = WriteFile( pipe, buf, sizeof(buf), &num_bytes, NULL );
+    ok( ret, "WriteFile failed, error %lu\n", GetLastError() );
+    Sleep( 50 );
+    ok( io.Status == 0xcccccccc, "Status = %lx\n", io.Status );
+    ok( read_buf[0] == (char)0xcc, "buffer written\n" );
+
+    CloseHandle( client );
+    CloseHandle( pipe );
+}
+
 static void test_completion(void)
 {
     static const char buf[] = "testdata";
@@ -3172,6 +3328,7 @@ START_TEST(pipe)
 
     trace("starting completion tests\n");
     test_completion();
+    test_completion_on_dequeue();
 
     trace("starting blocking tests\n");
     test_blocking(FILE_SYNCHRONOUS_IO_NONALERT);
