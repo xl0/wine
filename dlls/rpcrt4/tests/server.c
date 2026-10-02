@@ -2191,6 +2191,28 @@ static void test_second_interface(unsigned char *string_binding)
     ok(RPC_S_OK == RpcBindingFree(&IInterpServer_IfHandle), "RpcBindingFree\n");
 }
 
+/* each endpoint listens for connections; there's no limit on their number */
+static void test_many_endpoints(void)
+{
+  static unsigned char ncalrpc[] = "ncalrpc";
+  unsigned char endpoint[64], *binding;
+  RPC_STATUS status;
+  int i;
+
+  for (i = 0; i < 100; i++)
+  {
+    sprintf((char *)endpoint, "WineManyEndpoints%lx.%u", GetCurrentProcessId(), i);
+    status = RpcServerUseProtseqEpA(ncalrpc, 0, endpoint, NULL);
+    ok(status == RPC_S_OK, "%d: RpcServerUseProtseqEp failed with status %ld\n", i, status);
+  }
+
+  ok(RPC_S_OK == RpcStringBindingComposeA(NULL, ncalrpc, NULL, endpoint, NULL, &binding), "RpcStringBindingCompose\n");
+  ok(RPC_S_OK == RpcBindingFromStringBindingA(binding, &IMixedServer_IfHandle), "RpcBindingFromStringBinding\n");
+  ok(mixed_int_return() == INT_CODE, "RPC int_return\n");
+  ok(RPC_S_OK == RpcStringFreeA(&binding), "RpcStringFree\n");
+  ok(RPC_S_OK == RpcBindingFree(&IMixedServer_IfHandle), "RpcBindingFree\n");
+}
+
 static void test_unknown_interface(unsigned char *string_binding)
 {
     RPC_MESSAGE msg;
@@ -2402,6 +2424,7 @@ server(void)
   status = RpcServerListen(1, RPC_C_LISTEN_MAX_CALLS_DEFAULT, TRUE);
   ok(status == RPC_S_OK, "RpcServerListen failed with status %ld\n", status);
   test_is_server_listening(NULL, RPC_S_OK);
+  test_many_endpoints();
   stop_event = CreateEventW(NULL, FALSE, FALSE, NULL);
   ok(stop_event != NULL, "CreateEvent failed with error %ld\n", GetLastError());
 

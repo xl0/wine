@@ -62,7 +62,7 @@ typedef struct _RpcConnection_np
 {
     RpcConnection common;
     HANDLE pipe;
-    HANDLE listen_event;
+    BOOL listening;  /* FSCTL_PIPE_LISTEN pending, completes with an APC to the server thread */
     char *listen_pipe;
     IO_STATUS_BLOCK io_status;
     HANDLE event_cache[2]; /* a server thread may write while the listener reads */
@@ -310,7 +310,7 @@ static void rpcrt4_conn_np_handoff(RpcConnection_np *old_npc, RpcConnection_np *
 
     new_npc->pipe = old_npc->pipe;
     old_npc->pipe = 0;
-    assert(!old_npc->listen_event);
+    assert(!old_npc->listening);
 }
 
 static RPC_STATUS rpcrt4_ncacn_np_handoff(RpcConnection *old_conn, RpcConnection *new_conn)
@@ -475,11 +475,7 @@ static int rpcrt4_conn_np_close(RpcConnection *conn)
         CloseHandle(connection->pipe);
         connection->pipe = 0;
     }
-    if (connection->listen_event)
-    {
-        CloseHandle(connection->listen_event);
-        connection->listen_event = 0;
-    }
+    connection->listening = FALSE;
     for (i = 0; i < ARRAY_SIZE(connection->event_cache); i++)
     {
         if (connection->event_cache[i]) CloseHandle(connection->event_cache[i]);
@@ -683,66 +679,72 @@ static void rpcrt4_protseq_np_signal_state_changed(RpcServerProtseq *protseq)
     SetEvent(npps->mgr_event);
 }
 
+/* runs on the server thread during its alertable wait */
+static void WINAPI rpcrt4_protseq_np_listen_done(void *arg, IO_STATUS_BLOCK *io, ULONG reserved)
+{
+    RpcConnection_np *conn = arg;
+    RpcServerProtseq *protseq = conn->common.protseq;
+    RpcConnection *cconn = NULL;
+
+    EnterCriticalSection(&protseq->cs);
+    conn->listening = FALSE;
+    if (io->Status == STATUS_SUCCESS || io->Status == STATUS_PIPE_CONNECTED)
+        cconn = rpcrt4_spawn_connection(&conn->common);
+    else
+        ERR("listen failed %lx\n", io->Status);
+    LeaveCriticalSection(&protseq->cs);
+    if (cconn)
+        RPCRT4_new_client(cconn);
+}
+
 static void *rpcrt4_protseq_np_get_wait_array(RpcServerProtseq *protseq, void *prev_array, unsigned int *count)
 {
     HANDLE *objs = prev_array;
     RpcConnection_np *conn;
     RpcServerProtseq_np *npps = CONTAINING_RECORD(protseq, RpcServerProtseq_np, common);
-    
+
     EnterCriticalSection(&protseq->cs);
-    
-    /* open and count connections */
-    *count = 1;
+
+    /* Listens complete with an APC rather than an event, so the number of
+     * endpoints isn't limited by MAXIMUM_WAIT_OBJECTS. */
     LIST_FOR_EACH_ENTRY(conn, &protseq->listeners, RpcConnection_np, common.protseq_entry)
     {
-        if (!conn->pipe && rpcrt4_conn_create_pipe(&conn->common) != RPC_S_OK)
-            continue;
-        if (!conn->listen_event)
+        while (!conn->listening)
         {
             NTSTATUS status;
-            HANDLE event;
 
-            event = get_np_event(conn);
-            if (!event)
-                continue;
+            if (!conn->pipe && rpcrt4_conn_create_pipe(&conn->common) != RPC_S_OK)
+                break;
 
-            status = NtFsControlFile(conn->pipe, event, NULL, NULL, &conn->io_status, FSCTL_PIPE_LISTEN, NULL, 0, NULL, 0);
-            switch (status)
+            status = NtFsControlFile(conn->pipe, NULL, rpcrt4_protseq_np_listen_done, conn, &conn->io_status,
+                                     FSCTL_PIPE_LISTEN, NULL, 0, NULL, 0);
+            if (status == STATUS_PENDING || status == STATUS_SUCCESS)
+                conn->listening = TRUE;
+            else if (status == STATUS_PIPE_CONNECTED)
             {
-            case STATUS_SUCCESS:
-            case STATUS_PIPE_CONNECTED:
-                conn->io_status.Status = status;
-                SetEvent(event);
-                break;
-            case STATUS_PENDING:
-                break;
-            default:
-                ERR("pipe listen error %lx\n", status);
-                continue;
+                /* a client connected before the listen, no APC is queued */
+                RpcConnection *cconn = rpcrt4_spawn_connection(&conn->common);
+                if (!cconn)
+                    break;
+                RPCRT4_new_client(cconn);
             }
-
-            conn->listen_event = event;
+            else
+            {
+                ERR("pipe listen error %lx\n", status);
+                break;
+            }
         }
-        (*count)++;
     }
-    
-    /* make array of connections */
-    objs = realloc(objs, *count * sizeof(HANDLE));
+    LeaveCriticalSection(&protseq->cs);
+
+    objs = realloc(objs, sizeof(HANDLE));
     if (!objs)
     {
         ERR("couldn't allocate objs\n");
-        LeaveCriticalSection(&protseq->cs);
         return NULL;
     }
-    
     objs[0] = npps->mgr_event;
     *count = 1;
-    LIST_FOR_EACH_ENTRY(conn, &protseq->listeners, RpcConnection_np, common.protseq_entry)
-    {
-        if (conn->listen_event)
-            objs[(*count)++] = conn->listen_event;
-    }
-    LeaveCriticalSection(&protseq->cs);
     return objs;
 }
 
@@ -753,58 +755,20 @@ static void rpcrt4_protseq_np_free_wait_array(RpcServerProtseq *protseq, void *a
 
 static int rpcrt4_protseq_np_wait_for_new_connection(RpcServerProtseq *protseq, unsigned int count, void *wait_array)
 {
-    HANDLE b_handle;
     HANDLE *objs = wait_array;
     DWORD res;
-    RpcConnection *cconn = NULL;
-    RpcConnection_np *conn;
-    
+
     if (!objs)
         return -1;
 
-    do
-    {
-        /* an alertable wait isn't strictly necessary, but due to our
-         * overlapped I/O implementation in Wine we need to free some memory
-         * by the file user APC being called, even if no completion routine was
-         * specified at the time of starting the async operation */
-        res = WaitForMultipleObjectsEx(count, objs, FALSE, INFINITE, TRUE);
-    } while (res == WAIT_IO_COMPLETION);
-
+    /* completed listens run their APC during the wait */
+    res = WaitForMultipleObjectsEx(count, objs, FALSE, INFINITE, TRUE);
     if (res == WAIT_OBJECT_0)
         return 0;
-    else if (res == WAIT_FAILED)
-    {
-        ERR("wait failed with error %ld\n", GetLastError());
-        return -1;
-    }
-    else
-    {
-        b_handle = objs[res - WAIT_OBJECT_0];
-        /* find which connection got a RPC */
-        EnterCriticalSection(&protseq->cs);
-        LIST_FOR_EACH_ENTRY(conn, &protseq->listeners, RpcConnection_np, common.protseq_entry)
-        {
-            if (b_handle == conn->listen_event)
-            {
-                release_np_event(conn, conn->listen_event);
-                conn->listen_event = NULL;
-                if (conn->io_status.Status == STATUS_SUCCESS || conn->io_status.Status == STATUS_PIPE_CONNECTED)
-                    cconn = rpcrt4_spawn_connection(&conn->common);
-                else
-                    ERR("listen failed %lx\n", conn->io_status.Status);
-                break;
-            }
-        }
-        LeaveCriticalSection(&protseq->cs);
-        if (!cconn)
-        {
-            ERR("failed to locate connection for handle %p\n", b_handle);
-            return -1;
-        }
-        RPCRT4_new_client(cconn);
+    if (res == WAIT_IO_COMPLETION)
         return 1;
-    }
+    ERR("wait failed with error %ld\n", GetLastError());
+    return -1;
 }
 
 static size_t rpcrt4_ncalrpc_get_top_of_tower(unsigned char *tower_data,
