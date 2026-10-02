@@ -2208,6 +2208,17 @@ static void update_surface_region( HWND hwnd )
     {
         NtGdiOffsetRgn( region, -visible.left, -visible.top );
         if (shape) NtGdiCombineRgn( region, region, shape, RGN_AND );
+        else
+        {
+            /* the surface is larger than the window, what is left of it is no client surface */
+            RECT rect = win->surface->rect;
+            HRGN outside = NtGdiCreateRectRgn( rect.left, rect.top, rect.right, rect.bottom );
+            HRGN window = NtGdiCreateRectRgn( 0, 0, visible.right - visible.left, visible.bottom - visible.top );
+            NtGdiCombineRgn( outside, outside, window, RGN_DIFF );
+            NtGdiCombineRgn( region, region, outside, RGN_OR );
+            NtGdiDeleteObjectApp( outside );
+            NtGdiDeleteObjectApp( window );
+        }
         window_surface_set_clip( win->surface, region );
         NtGdiDeleteObjectApp( region );
     }
@@ -2879,8 +2890,13 @@ BOOL WINAPI NtUserUpdateLayeredWindow( HWND hwnd, HDC hdc_dst, const POINT *pts_
         window_surface_lock( surface );
         NtGdiSelectBitmap( hdc, surface->color_bitmap );
 
-        if (dirty) intersect_rect( &rect, &rect, dirty );
-        NtGdiPatBlt( hdc, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, BLACKNESS );
+        if (dirty)
+        {
+            intersect_rect( &rect, &rect, dirty );
+            NtGdiPatBlt( hdc, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, BLACKNESS );
+        }
+        /* the surface is larger than the window, make what is left of it transparent too */
+        else NtGdiPatBlt( hdc, 0, 0, surface_rect.right - surface_rect.left, surface_rect.bottom - surface_rect.top, BLACKNESS );
 
         src_rect = rect;
         if (pts_src) OffsetRect( &src_rect, pts_src->x, pts_src->y );
