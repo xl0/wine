@@ -3351,8 +3351,7 @@ HRESULT WINAPI CoDisconnectObject(IUnknown *object, DWORD reserved)
     manager = get_stub_manager_from_object(apt, object, FALSE);
     if (manager)
     {
-        /* Release stub manager twice, to remove the apartment reference. */
-        stub_manager_int_release(manager);
+        stub_manager_disconnect(manager);
         stub_manager_int_release(manager);
     }
 

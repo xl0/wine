@@ -4861,25 +4861,75 @@ static void test_dead_server_call_handles(void)
     CloseHandle(cancel_mapping);
 }
 
-/* The last release of an interface's stub while the STA is in a call on a disconnected
- * object with the same interface. */
+/* An object disconnects itself in a call (twice, or also releasing its client's marshal data,
+ * or marshaling itself again) and waits. Meanwhile the client calls it again and releases the
+ * last stub of another object with the same interface. */
 struct disconnect_data
 {
-    DWORD size[2];
-    BYTE objref[2][1024];
+    DWORD size[3];
+    BYTE objref[3][1024];
+    char mode[16];
+    LONG calls;
 };
 
 static struct disconnect_data *disconnect_data;
 static HANDLE disconnect_mapping, disconnect_in_call, disconnect_released;
 static IPersist disconnect_objs[2];
 
+static void marshal_disconnect_obj(int i, IPersist *obj)
+{
+    HGLOBAL hglobal;
+    IStream *stream;
+    HRESULT hr;
+
+    hr = CreateStreamOnHGlobal(NULL, TRUE, &stream);
+    ok_ole_success(hr, CreateStreamOnHGlobal);
+    hr = CoMarshalInterface(stream, &IID_IPersist, (IUnknown *)obj, MSHCTX_LOCAL, NULL, MSHLFLAGS_NORMAL);
+    ok_ole_success(hr, CoMarshalInterface);
+    GetHGlobalFromStream(stream, &hglobal);
+    disconnect_data->size[i] = GlobalSize(hglobal);
+    memcpy(disconnect_data->objref[i], GlobalLock(hglobal), disconnect_data->size[i]);
+    GlobalUnlock(hglobal);
+    IStream_Release(stream);
+}
+
+static IStream *disconnect_objref_stream(int i)
+{
+    IStream *stream;
+    HRESULT hr;
+
+    hr = CreateStreamOnHGlobal(NULL, TRUE, &stream);
+    ok_ole_success(hr, CreateStreamOnHGlobal);
+    IStream_Write(stream, disconnect_data->objref[i], disconnect_data->size[i], NULL);
+    IStream_Seek(stream, ullZero, STREAM_SEEK_SET, NULL);
+    return stream;
+}
+
 static HRESULT WINAPI DisconnectPersist_GetClassID(IPersist *iface, CLSID *clsid)
 {
+    IStream *stream;
     DWORD index;
+    HRESULT hr;
 
     memset(clsid, 0, sizeof(*clsid));
-    if (iface != &disconnect_objs[0]) return S_OK;
-    CoDisconnectObject((IUnknown *)iface, 0);
+    if (iface != &disconnect_objs[0] || InterlockedIncrement(&disconnect_data->calls) > 1) return S_OK;
+    hr = CoDisconnectObject((IUnknown *)iface, 0);
+    ok_ole_success(hr, CoDisconnectObject);
+    if (!strcmp(disconnect_data->mode, "double"))
+    {
+        hr = CoDisconnectObject((IUnknown *)iface, 0);
+        ok_ole_success(hr, CoDisconnectObject);
+    }
+    else if (!strcmp(disconnect_data->mode, "release"))
+    {
+        /* the client's references */
+        stream = disconnect_objref_stream(0);
+        hr = CoReleaseMarshalData(stream);
+        ok_ole_success(hr, CoReleaseMarshalData);
+        IStream_Release(stream);
+    }
+    else if (!strcmp(disconnect_data->mode, "remarshal"))
+        marshal_disconnect_obj(2, iface);
     SetEvent(disconnect_in_call);
     /* the client releases the other object meanwhile */
     return CoWaitForMultipleHandles(0, 10000, 1, &disconnect_released, &index);
@@ -4907,9 +4957,6 @@ static void disconnect_server_proc(void)
 {
     HANDLE ready = CreateEventA(NULL, FALSE, FALSE, "Wine COM Test Cancel Ready");
     HANDLE quit = CreateEventA(NULL, FALSE, FALSE, "Wine COM Test Cancel Quit");
-    HGLOBAL hglobal;
-    IStream *stream;
-    HRESULT hr;
     MSG msg;
     int i;
 
@@ -4917,15 +4964,7 @@ static void disconnect_server_proc(void)
     for (i = 0; i < 2; i++)
     {
         disconnect_objs[i].lpVtbl = &DisconnectPersistVtbl;
-        hr = CreateStreamOnHGlobal(NULL, TRUE, &stream);
-        ok_ole_success(hr, CreateStreamOnHGlobal);
-        hr = CoMarshalInterface(stream, &IID_IPersist, (IUnknown *)&disconnect_objs[i], MSHCTX_LOCAL, NULL, MSHLFLAGS_NORMAL);
-        ok_ole_success(hr, CoMarshalInterface);
-        GetHGlobalFromStream(stream, &hglobal);
-        disconnect_data->size[i] = GlobalSize(hglobal);
-        memcpy(disconnect_data->objref[i], GlobalLock(hglobal), disconnect_data->size[i]);
-        GlobalUnlock(hglobal);
-        IStream_Release(stream);
+        marshal_disconnect_obj(i, &disconnect_objs[i]);
     }
     SetEvent(ready);
 
@@ -4939,14 +4978,10 @@ static void disconnect_server_proc(void)
 
 static IPersist *unmarshal_disconnect_obj(int i)
 {
+    IStream *stream = disconnect_objref_stream(i);
     IPersist *proxy = NULL;
-    IStream *stream;
     HRESULT hr;
 
-    hr = CreateStreamOnHGlobal(NULL, TRUE, &stream);
-    ok_ole_success(hr, CreateStreamOnHGlobal);
-    IStream_Write(stream, disconnect_data->objref[i], disconnect_data->size[i], NULL);
-    IStream_Seek(stream, ullZero, STREAM_SEEK_SET, NULL);
     hr = CoUnmarshalInterface(stream, &IID_IPersist, (void **)&proxy);
     ok_ole_success(hr, CoUnmarshalInterface);
     IStream_Release(stream);
@@ -4954,39 +4989,58 @@ static IPersist *unmarshal_disconnect_obj(int i)
 }
 
 static HRESULT disconnect_call_hr;
+static IPersist *disconnect_proxy;
 
 /* calls the first object, which disconnects itself and waits for disconnect_released, then calls it again */
 static DWORD CALLBACK disconnect_call_proc(void *arg)
 {
     IPersist *proxy;
     CLSID clsid;
-    HRESULT hr;
+    HRESULT hr, hr2;
 
     CoInitializeEx(NULL, COINIT_MULTITHREADED);
-    proxy = unmarshal_disconnect_obj(0);
+    disconnect_proxy = proxy = unmarshal_disconnect_obj(0);
     hr = IPersist_GetClassID(proxy, &clsid);
     disconnect_call_hr = IPersist_GetClassID(proxy, &clsid);
     IPersist_Release(proxy);
+    if (!strcmp(disconnect_data->mode, "remarshal"))
+    {
+        /* a new connection */
+        proxy = unmarshal_disconnect_obj(2);
+        hr2 = IPersist_GetClassID(proxy, &clsid);
+        ok(hr2 == S_OK, "got %#lx\n", hr2);
+        IPersist_Release(proxy);
+    }
     CoUninitialize();
     return hr;
 }
 
-/* releases the only reference to the second object */
+/* calls the first object again while its first call is running, then releases the only
+ * reference to the second object */
 static DWORD CALLBACK disconnect_release_proc(void *arg)
 {
+    CLSID clsid;
+    HRESULT hr;
+
     CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    hr = IPersist_GetClassID(disconnect_proxy, &clsid);
+    ok(hr == S_OK, "got %#lx\n", hr);
+    ok(disconnect_data->calls == 2, "got %ld calls\n", disconnect_data->calls);
     IPersist_Release(unmarshal_disconnect_obj(1));
     CoUninitialize();
     return 0;
 }
 
-static void test_release_in_disconnected_call(void)
+static void test_disconnected_call(const char *mode)
 {
     HANDLE ready, quit, call, release;
     PROCESS_INFORMATION pi;
     DWORD ret;
 
+    winetest_push_context("%s", mode);
     open_disconnect_data();
+    strcpy(disconnect_data->mode, mode);
+    disconnect_data->calls = 0;
     ready = CreateEventA(NULL, FALSE, FALSE, "Wine COM Test Cancel Ready");
     quit = CreateEventA(NULL, FALSE, FALSE, "Wine COM Test Cancel Quit");
     create_target_process("-disconnect", &pi);
@@ -5022,6 +5076,7 @@ static void test_release_in_disconnected_call(void)
     CloseHandle(disconnect_released);
     UnmapViewOfFile(disconnect_data);
     CloseHandle(disconnect_mapping);
+    winetest_pop_context();
 }
 
 struct git_params
@@ -5750,7 +5805,10 @@ START_TEST(marshal)
     test_cancel_call("process sta");
     test_cancel_call("process mta");
     test_dead_server_call_handles();
-    test_release_in_disconnected_call();
+    test_disconnected_call("once");
+    test_disconnected_call("double");
+    test_disconnected_call("release");
+    test_disconnected_call("remarshal");
     test_bad_marshal_stream();
     test_proxy_interfaces();
     test_proxy_rpc_options();

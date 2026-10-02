@@ -342,6 +342,26 @@ ULONG stub_manager_int_release(struct stub_manager *m)
     return refs;
 }
 
+/* drops the apartment reference, once. calls in progress keep the stub manager
+ * and its interface stubs alive, but the object gets a new one when marshaled again */
+void stub_manager_disconnect(struct stub_manager *m)
+{
+    struct apartment *apt = m->apt;
+    BOOL disconnected;
+
+    EnterCriticalSection(&apt->cs);
+    if (!(disconnected = m->disconnected))
+    {
+        m->disconnected = TRUE;
+        if (rb_get(&apt->stubmgr_objects, m->object) == &m->object_entry)
+            rb_remove(&apt->stubmgr_objects, &m->object_entry);
+    }
+    LeaveCriticalSection(&apt->cs);
+
+    if (!disconnected)
+        stub_manager_int_release(m);
+}
+
 /* gets the stub manager associated with an object - caller must have
  * a reference to the apartment while a reference to the stub manager is held.
  * it must also call release on the stub manager when it is no longer needed */
@@ -471,7 +491,7 @@ ULONG stub_manager_ext_release(struct stub_manager *m, ULONG refs, BOOL tablewea
 
     if (rc == 0)
         if (!(m->extern_conn && last_unlock_releases && m->weakrefs))
-            stub_manager_int_release(m);
+            stub_manager_disconnect(m);
 
     return rc;
 }

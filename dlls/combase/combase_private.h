@@ -255,9 +255,11 @@ struct stub_manager
      */
 
     ULONG             norm_refs;  /* refcount of normal marshals (CS lock) */
+    BOOL              disconnected; /* the apartment reference is gone (CS apt->cs) */
 };
 
 ULONG stub_manager_int_release(struct stub_manager *stub_manager);
+void stub_manager_disconnect(struct stub_manager *m);
 struct stub_manager * get_stub_manager_from_object(struct apartment *apt, IUnknown *object, BOOL alloc);
 ULONG stub_manager_ext_addref(struct stub_manager *m, ULONG refs, BOOL tableweak);
 ULONG stub_manager_ext_release(struct stub_manager *m, ULONG refs, BOOL tableweak, BOOL last_unlock_releases);
