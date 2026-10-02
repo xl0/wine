@@ -37,7 +37,6 @@ struct apartment
     struct rb_tree stubmgr_objects; /* stub managers by object (CS cs) */
     struct rb_tree ifstub_ipids; /* interface stubs of the stub managers by IPID (CS cs) */
     BOOL remunk_exported;    /* has the IRemUnknown interface for this apartment been created yet? (CS cs) */
-    LONG remoting_started;   /* has the RPC system been started for this apartment? (LOCK) */
     struct list loaded_dlls; /* list of dlls loaded by this apartment (CS cs) */
     DWORD host_apt_tid;      /* thread ID of apartment hosting objects of differing threading model (CS cs) */
     HWND host_apt_hwnd;      /* handle to apartment window of host apartment (CS cs) */

@@ -73,11 +73,11 @@ struct registered_if
     RPC_SERVER_INTERFACE If; /* interface registered with the RPC runtime */
 };
 
-/* get the pipe endpoint specified of the specified apartment */
+/* get the pipe endpoint of the process that owns the specified apartment */
 static inline void get_rpc_endpoint(LPWSTR endpoint, const OXID *oxid)
 {
     /* FIXME: should get endpoint from rpcss */
-    wsprintfW(endpoint, L"\\pipe\\OLE_%016I64x", *oxid);
+    wsprintfW(endpoint, L"\\pipe\\OLE_%08x", (DWORD)(*oxid >> 32));
 }
 
 typedef struct
@@ -2307,27 +2307,31 @@ HRESULT rpc_resolve_oxid(OXID oxid, OXID_INFO *oxid_info)
     return S_OK;
 }
 
+static BOOL CALLBACK start_remoting_once(INIT_ONCE *once, void *param, void **context)
+{
+    WCHAR endpoint[200];
+    RPC_STATUS status;
+
+    get_rpc_endpoint(endpoint, param);
+
+    status = RpcServerUseProtseqEpW(
+        rpctransportW,
+        RPC_C_PROTSEQ_MAX_REQS_DEFAULT,
+        endpoint,
+        NULL);
+    if (status != RPC_S_OK)
+        ERR("Couldn't register endpoint %s\n", debugstr_w(endpoint));
+    return TRUE;
+}
+
 /* make the apartment reachable by other threads and processes and create the
  * IRemUnknown object */
 void rpc_start_remoting(struct apartment *apt)
 {
-    if (!InterlockedExchange(&apt->remoting_started, TRUE))
-    {
-        WCHAR endpoint[200];
-        RPC_STATUS status;
+    static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
 
-        get_rpc_endpoint(endpoint, &apt->oxid);
-
-        status = RpcServerUseProtseqEpW(
-            rpctransportW,
-            RPC_C_PROTSEQ_MAX_REQS_DEFAULT,
-            endpoint,
-            NULL);
-        if (status != RPC_S_OK)
-            ERR("Couldn't register endpoint %s\n", debugstr_w(endpoint));
-
-        /* FIXME: move remote unknown exporting into this function */
-    }
+    /* one endpoint serves all apartments of the process, calls are routed by IPID */
+    InitOnceExecuteOnce(&once, start_remoting_once, &apt->oxid, NULL);
     start_apartment_remote_unknown(apt);
 }
 

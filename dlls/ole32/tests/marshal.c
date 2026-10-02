@@ -1525,6 +1525,40 @@ static void test_call_actctx(void)
     ReleaseActCtx(ctx);
 }
 
+/* each apartment that marshals an object listens for calls; there's no limit on their number */
+static void test_many_apartments(void)
+{
+    IClassFactory *cf;
+    IUnknown *unk;
+    IStream *stream;
+    HANDLE thread;
+    DWORD tid;
+    HRESULT hr;
+    int i;
+
+    for (i = 0; i < 100; i++)
+    {
+        winetest_push_context("%d", i);
+        hr = CreateStreamOnHGlobal(NULL, TRUE, &stream);
+        ok_ole_success(hr, CreateStreamOnHGlobal);
+        tid = start_host_object(stream, &IID_IClassFactory, (IUnknown *)&Test_ClassFactory, MSHLFLAGS_NORMAL, &thread);
+        IStream_Seek(stream, ullZero, STREAM_SEEK_SET, NULL);
+        hr = CoUnmarshalInterface(stream, &IID_IClassFactory, (void **)&cf);
+        ok_ole_success(hr, CoUnmarshalInterface);
+        if (SUCCEEDED(hr))
+        {
+            hr = IClassFactory_CreateInstance(cf, NULL, &IID_IUnknown, (void **)&unk);
+            ok_ole_success(hr, IClassFactory_CreateInstance);
+            IUnknown_Release(unk);
+            IClassFactory_Release(cf);
+        }
+        IStream_Release(stream);
+        end_host_object(tid, thread);
+        winetest_pop_context();
+        if (FAILED(hr)) break;
+    }
+}
+
 /* tests that proxies are working when the host joins mta apartment */
 static void test_marshal_proxy_join_mta_apartment(void)
 {
@@ -6313,6 +6347,7 @@ START_TEST(marshal)
     test_handler_marshaling();
     test_client_security();
     test_call_actctx();
+    test_many_apartments();
 
     test_local_server();
 
