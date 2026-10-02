@@ -2751,6 +2751,8 @@ static void add_child_font( struct gdi_font *font, const WCHAR *family_name )
     if (!(face = find_matching_face_by_name( family_name, NULL, &font->lf, fs, FALSE, NULL ))) return;
 
     if (!(child = create_gdi_font( face, family_name, &font->lf ))) return;
+    /* linked fonts get the em height of the base font, not its cell height */
+    child->lf.lfHeight = -font->ppem;
     child->matrix = font->matrix;
     child->can_use_bitmap = font->can_use_bitmap;
     child->scale_y = font->scale_y;
