@@ -9578,6 +9578,88 @@ static void test_layered_window(void)
     DeleteObject( hbm );
 }
 
+static void test_layered_window_alpha(void)
+{
+    BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+    BITMAPINFO info = {{sizeof(info.bmiHeader), 100, -100, 1, 32, BI_RGB}};
+    POINT src = {0, 0}, pos = {150, 150};
+    SIZE size = {100, 100};
+    WNDCLASSA cls = {0};
+    HWND back, hwnd;
+    COLORREF color;
+    HBITMAP bitmap;
+    HDC hdc, screen;
+    DWORD *bits;
+    BOOL ret;
+    int i;
+
+    cls.lpfnWndProc = DefWindowProcA;
+    cls.hInstance = GetModuleHandleA( 0 );
+    cls.hbrBackground = CreateSolidBrush( RGB(255, 0, 0) );
+    cls.lpszClassName = "LayeredAlphaClass";
+    RegisterClassA( &cls );
+
+    back = CreateWindowExA( WS_EX_TOPMOST | WS_EX_TOOLWINDOW, "LayeredAlphaClass", NULL, WS_POPUP | WS_VISIBLE,
+                            100, 100, 200, 200, 0, 0, 0, NULL );
+    hwnd = CreateWindowExA( WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW, "LayeredAlphaClass", NULL, WS_POPUP,
+                            0, 0, 10, 10, back, 0, 0, NULL );
+    flush_events( TRUE );
+
+    hdc = CreateCompatibleDC( 0 );
+    bitmap = CreateDIBSection( hdc, &info, DIB_RGB_COLORS, (void **)&bits, NULL, 0 );
+    SelectObject( hdc, bitmap );
+
+    /* opaque white */
+    for (i = 0; i < 100 * 100; i++) bits[i] = 0xffffffff;
+    ret = UpdateLayeredWindow( hwnd, 0, &pos, &size, hdc, &src, 0, &blend, ULW_ALPHA );
+    ok( ret, "UpdateLayeredWindow failed, error %lu\n", GetLastError() );
+    ShowWindow( hwnd, SW_SHOWNOACTIVATE );
+    flush_events( TRUE );
+
+    screen = GetDC( 0 );
+    color = GetPixel( screen, 200, 200 );
+    ReleaseDC( 0, screen );
+    if (color != RGB(255, 255, 255))
+    {
+        skip( "the screen doesn't show the windows, got %06lx\n", color );
+        goto done;
+    }
+
+    /* white with an alpha of 100 everywhere: the window is still there */
+    for (i = 0; i < 100 * 100; i++) bits[i] = 0x64646464;
+    ret = UpdateLayeredWindow( hwnd, 0, &pos, &size, hdc, &src, 0, &blend, ULW_ALPHA );
+    ok( ret, "UpdateLayeredWindow failed, error %lu\n", GetLastError() );
+    flush_events( TRUE );
+
+    screen = GetDC( 0 );
+    color = GetPixel( screen, 200, 200 );
+    ReleaseDC( 0, screen );
+    ok( GetGValue(color) >= 0x60 && GetGValue(color) <= 0x68 && GetBValue(color) == GetGValue(color),
+        "got color %06lx\n", color );
+
+    /* the alpha channel is not used without AC_SRC_ALPHA */
+    blend.AlphaFormat = 0;
+    for (i = 0; i < 100 * 100; i++) bits[i] = i % 100 < 50 ? 0x000000ff : 0x400000ff;
+    ret = UpdateLayeredWindow( hwnd, 0, &pos, &size, hdc, &src, 0, &blend, ULW_ALPHA );
+    ok( ret, "UpdateLayeredWindow failed, error %lu\n", GetLastError() );
+    flush_events( TRUE );
+
+    screen = GetDC( 0 );
+    color = GetPixel( screen, 175, 200 );
+    ok( color == RGB(0, 0, 255), "got color %06lx\n", color );
+    color = GetPixel( screen, 225, 200 );
+    ok( color == RGB(0, 0, 255), "got color %06lx\n", color );
+    ReleaseDC( 0, screen );
+
+done:
+    DeleteDC( hdc );
+    DeleteObject( bitmap );
+    DestroyWindow( hwnd );
+    DestroyWindow( back );
+    UnregisterClassA( "LayeredAlphaClass", GetModuleHandleA( 0 ) );
+    DeleteObject( cls.hbrBackground );
+}
+
 static MONITORINFO mi;
 
 static LRESULT CALLBACK fullscreen_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
@@ -15124,6 +15206,7 @@ START_TEST(win)
     test_GetUpdateRect();
     test_Expose();
     test_layered_window();
+    test_layered_window_alpha();
 
     test_SetForegroundWindow(hwndMain);
     test_handles( hwndMain );
