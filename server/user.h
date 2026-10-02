@@ -79,6 +79,7 @@ struct desktop
     struct list          hotkeys;          /* list of registered hotkeys */
     struct list          pointers;         /* list of active pointers */
     struct timeout_user *close_timeout;    /* timeout before closing the desktop */
+    struct timeout_user *cursor_pos_timeout; /* pending cursor position sync after window changes */
     struct thread_input *foreground_input; /* thread input of foreground thread */
     process_id_t         foreground_pid;   /* id of the foreground process */
     unsigned int         users;            /* processes and threads using this desktop */

@@ -278,6 +278,7 @@ static bool desktop_init( struct object *obj, const void *init_data )
     desktop->taskman_window = NULL;
     desktop->global_hooks = NULL;
     desktop->close_timeout = NULL;
+    desktop->cursor_pos_timeout = NULL;
     desktop->foreground_input = NULL;
     desktop->foreground_pid = 0;
     desktop->users = 0;
@@ -374,6 +375,7 @@ static void desktop_destroy( struct object *obj )
     if (desktop->msg_window) free_window_handle( desktop->msg_window );
     if (desktop->global_hooks) release_object( desktop->global_hooks );
     if (desktop->close_timeout) remove_timeout_user( desktop->close_timeout );
+    if (desktop->cursor_pos_timeout) remove_timeout_user( desktop->cursor_pos_timeout );
     if (desktop->key_repeat.timeout) remove_timeout_user( desktop->key_repeat.timeout );
     release_object( desktop->winstation );
     if (desktop->shared) free_shared_object( desktop->shared );

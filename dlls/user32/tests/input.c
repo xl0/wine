@@ -1692,6 +1692,9 @@ static void test_GetMouseMovePointsEx( char **argv )
     POINT point;
     INPUT input;
 
+    /* let the delayed mouse move after the previous tests' window changes reach the cursor history */
+    empty_message_queue();
+
     /* Get a valid content for the input struct */
     if(!GetCursorPos(&point)) {
         win_skip("GetCursorPos() failed with error %lu\n", GetLastError());

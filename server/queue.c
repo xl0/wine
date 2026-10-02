@@ -563,14 +563,7 @@ static void update_desktop_cursor_handle( struct desktop *desktop, struct thread
 static void set_cursor_pos( struct desktop *desktop, int x, int y )
 {
     static const struct hw_msg_source source = { IMDT_UNAVAILABLE, IMO_SYSTEM };
-    const struct rawinput_device *device;
     struct message *msg;
-
-    if ((device = current->process->rawinput_mouse) && (device->flags & RIDEV_NOLEGACY))
-    {
-        update_desktop_cursor_pos( desktop, 0, x, y );
-        return;
-    }
 
     if (!(msg = alloc_hardware_message( 0xff515700, source, get_tick_count(), 0 ))) return;
 
@@ -580,13 +573,20 @@ static void set_cursor_pos( struct desktop *desktop, int x, int y )
     queue_hardware_message( desktop, msg, 1 );
 }
 
-/* sync cursor position after window change */
+static void cursor_pos_timeout( void *private )
+{
+    struct desktop *desktop = private;
+    const desktop_shm_t *desktop_shm = desktop->shared;
+
+    desktop->cursor_pos_timeout = NULL;
+    set_cursor_pos( desktop, desktop_shm->cursor.x, desktop_shm->cursor.y );
+}
+
+/* sync cursor position after window change; like Windows, a bit later and once for a burst of changes */
 void update_cursor_pos( struct desktop *desktop )
 {
-    desktop_shm_t *desktop_shm;
-
-    desktop_shm = desktop->shared;
-    set_cursor_pos( desktop, desktop_shm->cursor.x, desktop_shm->cursor.y );
+    if (!desktop->cursor_pos_timeout)
+        desktop->cursor_pos_timeout = add_timeout_user( -16 * TICKS_PER_SEC / 1000, cursor_pos_timeout, desktop );
 }
 
 /* retrieve default position and time for synthesized messages */
