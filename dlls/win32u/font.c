@@ -3807,7 +3807,8 @@ static UINT get_glyph_index_linked( struct gdi_font **font, UINT glyph )
     UINT res;
 
     if ((res = get_glyph_index( *font, glyph ))) return res;
-    if (glyph < 32) return 0;  /* don't check linked fonts for control characters */
+    /* don't check linked fonts for control characters */
+    if (glyph < 32 || (glyph >= 0x80 && glyph <= 0x9f)) return 0;
 
     LIST_FOR_EACH_ENTRY( child, &(*font)->child_fonts, struct gdi_font, entry )
     {
