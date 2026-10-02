@@ -2223,7 +2223,7 @@ HRESULT unmarshal_object(const STDOBJREF *stdobjref, struct apartment *apt, MSHC
             IRpcChannelBuffer *chanbuf;
             hr = rpc_create_clientchannel(&stdobjref->oxid, &stdobjref->ipid,
                     &proxy_manager->oxid_info, riid, proxy_manager->dest_context,
-                    proxy_manager->dest_context_data, &chanbuf, apt);
+                    proxy_manager->dest_context_data, (IUnknown *)&proxy_manager->IMultiQI_iface, &chanbuf, apt);
             if (hr == S_OK)
                 hr = proxy_manager_create_ifproxy(proxy_manager, stdobjref, riid, chanbuf, &ifproxy);
         }

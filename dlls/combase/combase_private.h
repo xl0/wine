@@ -129,7 +129,7 @@ HRESULT rpc_get_local_class_object(REFCLSID rclsid, REFIID riid, void **obj);
 HRESULT rpc_register_local_server(REFCLSID clsid, IStream *stream, DWORD flags, unsigned int *cookie);
 HRESULT rpc_revoke_local_server(unsigned int cookie);
 HRESULT rpc_create_clientchannel(const OXID *oxid, const IPID *ipid, const OXID_INFO *oxid_info, const IID *iid,
-        DWORD dest_context, void *dest_context_data, IRpcChannelBuffer **chan, struct apartment *apt);
+        DWORD dest_context, void *dest_context_data, IUnknown *proxy, IRpcChannelBuffer **chan, struct apartment *apt);
 HRESULT rpc_create_serverchannel(DWORD dest_context, void *dest_context_data, IRpcChannelBuffer **chan);
 HRESULT rpc_register_interface(REFIID riid);
 HRESULT rpc_resolve_oxid(OXID oxid, OXID_INFO *oxid_info);

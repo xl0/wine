@@ -5466,6 +5466,90 @@ static void test_uninit_in_threads(void)
     wait_child_process(&pi);
 }
 
+/* The last release of a proxy while another thread calls through it: the call keeps the proxy. */
+static HANDLE proxy_in_call, proxy_released;
+static IPersist *proxy_in_call_proxy;
+
+static HRESULT WINAPI CallReleasePersist_GetClassID(IPersist *iface, CLSID *clsid)
+{
+    DWORD index;
+
+    memset(clsid, 0, sizeof(*clsid));
+    SetEvent(proxy_in_call);
+    return CoWaitForMultipleHandles(0, 10000, 1, &proxy_released, &index);
+}
+
+static const IPersistVtbl CallReleasePersistVtbl =
+{
+    UninitPersist_QueryInterface,
+    UninitPersist_AddRef,
+    UninitPersist_Release,
+    CallReleasePersist_GetClassID
+};
+
+static DWORD CALLBACK release_in_call_call_proc(void *stream)
+{
+    CLSID clsid;
+    HRESULT hr;
+
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    IStream_Seek(stream, ullZero, STREAM_SEEK_SET, NULL);
+    hr = CoUnmarshalInterface(stream, &IID_IPersist, (void **)&proxy_in_call_proxy);
+    ok_ole_success(hr, CoUnmarshalInterface);
+    hr = IPersist_GetClassID(proxy_in_call_proxy, &clsid);
+    CoUninitialize();
+    return hr;
+}
+
+static DWORD CALLBACK release_in_call_release_proc(void *arg)
+{
+    ULONG ref;
+
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    ref = IPersist_Release(proxy_in_call_proxy);
+    CoUninitialize();
+    return ref;
+}
+
+static void test_release_proxy_in_call(void)
+{
+    IPersist obj = { &CallReleasePersistVtbl };
+    HANDLE host, call, release;
+    IStream *stream;
+    DWORD tid, ret;
+    HRESULT hr;
+
+    open_uninit_data();
+    uninit_data->refs = 1;
+    proxy_in_call = CreateEventA(NULL, FALSE, FALSE, NULL);
+    proxy_released = CreateEventA(NULL, FALSE, FALSE, NULL);
+    hr = CreateStreamOnHGlobal(NULL, TRUE, &stream);
+    ok_ole_success(hr, CreateStreamOnHGlobal);
+    tid = start_host_object(stream, &IID_IPersist, (IUnknown *)&obj, MSHLFLAGS_NORMAL, &host);
+
+    call = CreateThread(NULL, 0, release_in_call_call_proc, stream, 0, NULL);
+    ok(!WaitForSingleObject(proxy_in_call, 10000), "wait timed out\n");
+    release = CreateThread(NULL, 0, release_in_call_release_proc, NULL, 0, NULL);
+    ok(!WaitForSingleObject(release, 10000), "release hangs\n");
+    GetExitCodeThread(release, &ret);
+    ok(ret == 1, "got %lu\n", ret);
+    SetEvent(proxy_released);
+
+    ok(!WaitForSingleObject(call, 10000), "call hangs\n");
+    GetExitCodeThread(call, &ret);
+    ok(ret == S_OK, "got %#lx\n", ret);
+    ok(uninit_data->refs == 1, "got %ld refs\n", uninit_data->refs);
+
+    end_host_object(tid, host);
+    IStream_Release(stream);
+    CloseHandle(call);
+    CloseHandle(release);
+    CloseHandle(proxy_in_call);
+    CloseHandle(proxy_released);
+    UnmapViewOfFile(uninit_data);
+    CloseHandle(uninit_mapping);
+}
+
 struct git_params
 {
 	DWORD cookie;
@@ -6213,6 +6297,7 @@ START_TEST(marshal)
     test_disconnected_call("remarshal");
     test_uninit_in_threads();
     test_uninit_with_queued_call("process");
+    test_release_proxy_in_call();
     test_bad_marshal_stream();
     test_proxy_interfaces();
     test_proxy_rpc_options();

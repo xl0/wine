@@ -97,6 +97,7 @@ typedef struct
     OXID                   oxid; /* apartment in which the channel is valid */
     DWORD                  server_pid; /* id of server process */
     IID                    iid; /* IID of the proxy this belongs to */
+    IUnknown              *proxy; /* the proxy manager, referenced by each call in progress (weak) */
 } ClientRpcChannelBuffer;
 
 struct dispatch_params
@@ -1335,6 +1336,8 @@ static HRESULT WINAPI ClientRpcChannelBuffer_GetBuffer(LPRPCCHANNELBUFFER iface,
     }
     else
     {
+        /* releasing the proxy during the call doesn't destroy it */
+        IUnknown_AddRef(This->proxy);
         msg->Handle = message_state;
         orpcthis = msg->Buffer;
         msg->Buffer = (char *)msg->Buffer + FIELD_OFFSET(WIRE_ORPCTHIS, extensions);
@@ -1670,6 +1673,7 @@ static HRESULT WINAPI ServerRpcChannelBuffer_FreeBuffer(LPRPCCHANNELBUFFER iface
 
 static HRESULT WINAPI ClientRpcChannelBuffer_FreeBuffer(LPRPCCHANNELBUFFER iface, RPCOLEMESSAGE* olemsg)
 {
+    IUnknown *proxy = ((ClientRpcChannelBuffer *)iface)->proxy;
     RPC_MESSAGE *msg = (RPC_MESSAGE *)olemsg;
     RPC_STATUS status;
     struct message_state *message_state;
@@ -1699,6 +1703,7 @@ static HRESULT WINAPI ClientRpcChannelBuffer_FreeBuffer(LPRPCCHANNELBUFFER iface
     msg->RpcInterfaceInformation = NULL;
 
     release_message_state(message_state);
+    IUnknown_Release(proxy);
 
     TRACE("-- %ld\n", status);
 
@@ -1763,7 +1768,7 @@ static const IRpcChannelBufferVtbl ServerRpcChannelBufferVtbl =
 HRESULT rpc_create_clientchannel(const OXID *oxid, const IPID *ipid,
                                 const OXID_INFO *oxid_info, const IID *iid,
                                 DWORD dest_context, void *dest_context_data,
-                                IRpcChannelBuffer **chan, struct apartment *apt)
+                                IUnknown *proxy, IRpcChannelBuffer **chan, struct apartment *apt)
 {
     ClientRpcChannelBuffer *This;
     WCHAR                   endpoint[200];
@@ -1820,6 +1825,7 @@ HRESULT rpc_create_clientchannel(const OXID *oxid, const IPID *ipid,
     This->oxid = apartment_getoxid(apt);
     This->server_pid = oxid_info->dwPid;
     This->iid = *iid;
+    This->proxy = proxy;
 
     *chan = &This->super.IRpcChannelBuffer_iface;
 
