@@ -111,6 +111,8 @@ struct dispatch_params
     HANDLE             actctx; /* caller's activation context, for in-process calls */
     RPC_STATUS         status; /* status (out) */
     HRESULT            hr; /* hresult (out) */
+    struct apartment  *apt; /* apartment and stub manager referenced by a call from another process */
+    struct stub_manager *stub_manager;
 };
 
 struct message_state
@@ -1198,6 +1200,35 @@ static void client_call_done(struct dispatch_params *params)
     release_message_state(message_state);
 }
 
+/* queues a call for an STA, unless its thread has uninitialized it */
+static BOOL post_sta_call(struct apartment *apt, struct dispatch_params *params)
+{
+    BOOL posted;
+
+    EnterCriticalSection(&apt->cs);
+    posted = !apt->uninitialized && PostMessageW(apartment_getwindow(apt), DM_EXECUTERPC, 0, (LPARAM)params);
+    LeaveCriticalSection(&apt->cs);
+    return posted;
+}
+
+/* the call has completed or was cancelled: drop the references the call holds on the
+ * server side, on the thread that ran it, and wake the caller */
+static void call_done(struct dispatch_params *params)
+{
+    if (params->chan) IRpcChannelBuffer_Release(params->chan);
+    if (params->stub) IRpcStubBuffer_Release(params->stub);
+    params->chan = NULL;
+    params->stub = NULL;
+    if (params->bypass_rpcrt)
+    {
+        client_call_done(params);
+        return;
+    }
+    stub_manager_int_release(params->stub_manager);
+    apartment_release(params->apt);
+    if (params->handle) SetEvent(params->handle);
+}
+
 static HRESULT WINAPI ClientRpcChannelBuffer_GetBuffer(LPRPCCHANNELBUFFER iface, RPCOLEMESSAGE* olemsg, REFIID riid)
 {
     ClientRpcChannelBuffer *This = (ClientRpcChannelBuffer *)iface;
@@ -1274,8 +1305,6 @@ static HRESULT WINAPI ClientRpcChannelBuffer_GetBuffer(LPRPCCHANNELBUFFER iface,
         {
             message_state->target_hwnd = apartment_getwindow(apt);
             message_state->target_tid = apt->tid;
-            if (!message_state->target_hwnd)
-                ERR("window for apartment %s is NULL\n", wine_dbgstr_longlong(apt->oxid));
         }
     }
     if (apt) apartment_release(apt);
@@ -1499,18 +1528,16 @@ static HRESULT WINAPI ClientRpcChannelBuffer_SendReceive(LPRPCCHANNELBUFFER ifac
         }
         else
         {
+            struct apartment *target = apartment_findfromtid(message_state->target_tid);
+
             TRACE("Calling apartment thread %#lx...\n", message_state->target_tid);
 
-            if (!PostMessageW(message_state->target_hwnd, DM_EXECUTERPC, 0,
-                              (LPARAM)&message_state->params))
-            {
-                ERR("PostMessage failed with error %lu\n", GetLastError());
-
-                /* Note: message_state->params.iface doesn't have a reference and
-                 * so doesn't need to be released */
-
-                hr = HRESULT_FROM_WIN32(GetLastError());
-            }
+            /* the thread may have uninitialized the apartment and created a new one */
+            if (!target || apartment_getwindow(target) != message_state->target_hwnd)
+                hr = RPC_E_SERVER_DIED_DNE;
+            else if (!post_sta_call(target, &message_state->params))
+                hr = RPC_E_DISCONNECTED;
+            if (target) apartment_release(target);
         }
     }
     else
@@ -1982,6 +2009,13 @@ void rpc_execute_call(struct dispatch_params *params)
 
     apt = com_get_current_apt();
 
+    /* a call left in the queue is dispatched while the apartment is being uninitialized */
+    if (apt->uninitialized)
+    {
+        params->hr = RPC_E_DISCONNECTED;
+        goto exit;
+    }
+
     /* handle ORPCTHIS and server extensions */
 
     params->hr = unmarshal_ORPCTHIS(msg, &orpcthis, &orpc_ext_array, &first_wire_orpc_extent);
@@ -2097,15 +2131,37 @@ exit_reset_state:
 
 exit:
     free(message_state);
-    /* bypass_rpcrt is only set for calls from a client channel of this process */
-    if (params->bypass_rpcrt) client_call_done(params);
-    else if (params->handle) SetEvent(params->handle);
+    call_done(params);
+}
+
+/* fails the calls queued for an STA whose thread is uninitializing it */
+void rpc_cancel_queued_calls(struct apartment *apt)
+{
+    MSG msg;
+
+    EnterCriticalSection(&apt->cs);
+    apt->uninitialized = TRUE;
+    LeaveCriticalSection(&apt->cs);
+
+    if (!apt->win) return;
+    while (PeekMessageW(&msg, apt->win, DM_EXECUTERPC, DM_EXECUTERPC, PM_REMOVE))
+    {
+        struct dispatch_params *params = (struct dispatch_params *)msg.lParam;
+
+        /* a pending WM_QUIT is returned whatever the filter */
+        if (msg.message == WM_QUIT)
+        {
+            PostQuitMessage(msg.wParam);
+            break;
+        }
+        params->hr = RPC_E_DISCONNECTED;
+        call_done(params);
+    }
 }
 
 static void __RPC_STUB dispatch_rpc(RPC_MESSAGE *msg)
 {
     struct dispatch_params *params;
-    struct stub_manager *stub_manager;
     struct apartment *apt;
     IPID ipid;
     HRESULT hr;
@@ -2121,7 +2177,7 @@ static void __RPC_STUB dispatch_rpc(RPC_MESSAGE *msg)
         return;
     }
 
-    hr = ipid_get_dispatch_params(&ipid, &apt, &stub_manager, &params->stub, &params->chan,
+    hr = ipid_get_dispatch_params(&ipid, &params->apt, &params->stub_manager, &params->stub, &params->chan,
                                   &params->iid, &params->iface);
     if (hr != S_OK)
     {
@@ -2140,30 +2196,29 @@ static void __RPC_STUB dispatch_rpc(RPC_MESSAGE *msg)
     /* Note: this is the important difference between STAs and MTAs - we
      * always execute RPCs to STAs in the thread that originally created the
      * apartment (i.e. the one that pumps messages to the window) */
+    apt = params->apt;
     if (!apt->multi_threaded)
     {
-        params->handle = get_call_event();
+        HANDLE event = get_call_event();
 
         TRACE("Calling apartment thread %#lx...\n", apt->tid);
 
-        if (PostMessageW(apartment_getwindow(apt), DM_EXECUTERPC, 0, (LPARAM)params))
-            WaitForSingleObject(params->handle, INFINITE);
+        params->handle = event;
+        if (post_sta_call(apt, params))
+            WaitForSingleObject(event, INFINITE);
         else
-            ERR("PostMessage failed with error %lu\n", GetLastError());
-        release_call_event(params->handle);
+        {
+            params->handle = NULL;
+            params->hr = RPC_E_DISCONNECTED;
+            call_done(params);
+        }
+        release_call_event(event);
     }
     else
         rpc_execute_mta_call(params);
 
     hr = params->hr;
-    if (params->chan)
-        IRpcChannelBuffer_Release(params->chan);
-    if (params->stub)
-        IRpcStubBuffer_Release(params->stub);
     free(params);
-
-    stub_manager_int_release(stub_manager);
-    apartment_release(apt);
 
     /* if IRpcStubBuffer_Invoke fails, we should raise an exception to tell
      * the RPC runtime that the call failed */

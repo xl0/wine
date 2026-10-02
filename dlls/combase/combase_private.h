@@ -43,6 +43,7 @@ struct apartment
     HWND host_apt_hwnd;      /* handle to apartment window of host apartment (CS cs) */
     struct local_server *local_server; /* A marshallable object exposing local servers (CS cs) */
     BOOL being_destroyed;    /* is currently being destroyed */
+    BOOL uninitialized;      /* STA: its thread uninitialized it, calls are no longer queued (CS cs) */
 
     /* FIXME: OIDs should be given out by RPCSS */
     OID oidc;                /* object ID counter, starts at 1, zero is invalid OID (CS cs) */
@@ -138,6 +139,7 @@ void rpc_unregister_channel_hooks(void);
 
 struct dispatch_params;
 void rpc_execute_call(struct dispatch_params *params);
+void rpc_cancel_queued_calls(struct apartment *apt);
 
 enum class_reg_data_origin
 {

@@ -1221,6 +1221,7 @@ void leave_apartment(struct tlsdata *data)
     {
         if (data->ole_inits)
             WARN( "Uninitializing apartment while Ole is still initialized\n" );
+        if (!data->apt->multi_threaded) rpc_cancel_queued_calls(data->apt);
         apartment_release(data->apt);
         if (data->implicit_mta_cookie)
         {

@@ -5079,6 +5079,393 @@ static void test_disconnected_call(const char *mode)
     winetest_pop_context();
 }
 
+/* An STA stops pumping while a call to its object is queued, then uninitializes (or its
+ * thread exits): the call fails and the stub releases the object. */
+struct uninit_data
+{
+    DWORD size;
+    BYTE objref[1024];
+    LONG refs, calls, refs_after;
+};
+
+static struct uninit_data *uninit_data;
+static HANDLE uninit_mapping;
+
+static ULONG WINAPI UninitPersist_AddRef(IPersist *iface)
+{
+    return InterlockedIncrement(&uninit_data->refs);
+}
+
+static HRESULT WINAPI UninitPersist_QueryInterface(IPersist *iface, REFIID riid, void **ppv)
+{
+    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IPersist))
+    {
+        *ppv = iface;
+        UninitPersist_AddRef(iface);
+        return S_OK;
+    }
+    *ppv = NULL;
+    return E_NOINTERFACE;
+}
+
+static ULONG WINAPI UninitPersist_Release(IPersist *iface)
+{
+    return InterlockedDecrement(&uninit_data->refs);
+}
+
+static HRESULT WINAPI UninitPersist_GetClassID(IPersist *iface, CLSID *clsid)
+{
+    InterlockedIncrement(&uninit_data->calls);
+    memset(clsid, 0, sizeof(*clsid));
+    return S_OK;
+}
+
+static const IPersistVtbl UninitPersistVtbl =
+{
+    UninitPersist_QueryInterface,
+    UninitPersist_AddRef,
+    UninitPersist_Release,
+    UninitPersist_GetClassID
+};
+
+static IPersist uninit_obj = { &UninitPersistVtbl };
+static HANDLE uninit_unmarshaled;
+
+static void open_uninit_data(void)
+{
+    uninit_mapping = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, sizeof(*uninit_data),
+                                        "Wine COM Test Uninit Data");
+    uninit_data = MapViewOfFile(uninit_mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(*uninit_data));
+}
+
+static DWORD CALLBACK uninit_server_proc(void *arg)
+{
+    HANDLE ready = CreateEventA(NULL, FALSE, FALSE, "Wine COM Test Uninit Ready");
+    HANDLE go = CreateEventA(NULL, FALSE, FALSE, "Wine COM Test Uninit Go");
+    HGLOBAL hglobal;
+    IStream *stream;
+    HRESULT hr;
+    int i;
+
+    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    uninit_data->refs = 1;
+    hr = CreateStreamOnHGlobal(NULL, TRUE, &stream);
+    ok_ole_success(hr, CreateStreamOnHGlobal);
+    hr = CoMarshalInterface(stream, &IID_IPersist, (IUnknown *)&uninit_obj, MSHCTX_LOCAL, NULL, MSHLFLAGS_NORMAL);
+    ok_ole_success(hr, CoMarshalInterface);
+    GetHGlobalFromStream(stream, &hglobal);
+    uninit_data->size = GlobalSize(hglobal);
+    memcpy(uninit_data->objref, GlobalLock(hglobal), uninit_data->size);
+    GlobalUnlock(hglobal);
+    IStream_Release(stream);
+    SetEvent(ready);
+
+    /* no message pumping, wait for the call to be queued */
+    ok(!WaitForSingleObject(go, 10000), "wait timed out\n");
+    for (i = 0; i < 1000 && !(HIWORD(GetQueueStatus(QS_POSTMESSAGE)) & QS_POSTMESSAGE); i++) Sleep(10);
+    ok(i < 1000, "call not queued\n");
+    if (arg)
+    {
+        /* the thread exits without uninitializing */
+        CloseHandle(ready);
+        CloseHandle(go);
+        return 0;
+    }
+    CoUninitialize();
+    uninit_data->refs_after = uninit_data->refs;
+    /* the failed call's reply is sent by another thread */
+    ok(!WaitForSingleObject(go, 10000), "wait timed out\n");
+    CloseHandle(ready);
+    CloseHandle(go);
+    return 0;
+}
+
+static DWORD CALLBACK uninit_call_proc(void *arg)
+{
+    IPersist *proxy = NULL;
+    IStream *stream;
+    CLSID clsid;
+    HRESULT hr;
+
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    hr = CreateStreamOnHGlobal(NULL, TRUE, &stream);
+    ok_ole_success(hr, CreateStreamOnHGlobal);
+    IStream_Write(stream, uninit_data->objref, uninit_data->size, NULL);
+    IStream_Seek(stream, ullZero, STREAM_SEEK_SET, NULL);
+    hr = CoUnmarshalInterface(stream, &IID_IPersist, (void **)&proxy);
+    ok_ole_success(hr, CoUnmarshalInterface);
+    IStream_Release(stream);
+    SetEvent(uninit_unmarshaled);
+    hr = IPersist_GetClassID(proxy, &clsid);
+    IPersist_Release(proxy);
+    CoUninitialize();
+    return hr;
+}
+
+static void test_uninit_with_queued_call(const char *mode)
+{
+    BOOL process = !strcmp(mode, "process"), exit_thread = !strcmp(mode, "exit");
+    HANDLE ready, go, server = NULL, call;
+    PROCESS_INFORMATION pi;
+    DWORD ret, code;
+
+    winetest_push_context("%s", mode);
+    open_uninit_data();
+    uninit_data->calls = 0;
+    ready = CreateEventA(NULL, FALSE, FALSE, "Wine COM Test Uninit Ready");
+    go = CreateEventA(NULL, FALSE, FALSE, "Wine COM Test Uninit Go");
+    if (process) create_target_process("-uninit", &pi);
+    else server = CreateThread(NULL, 0, uninit_server_proc, (void *)(INT_PTR)exit_thread, 0, NULL);
+    ok(!WaitForSingleObject(ready, 10000), "wait timed out\n");
+
+    uninit_unmarshaled = CreateEventA(NULL, FALSE, FALSE, NULL);
+    call = CreateThread(NULL, 0, uninit_call_proc, NULL, 0, NULL);
+    ok(!WaitForSingleObject(uninit_unmarshaled, 10000), "wait timed out\n");
+    SetEvent(go);
+    ret = WaitForSingleObject(call, 5000);
+    ok(!ret, "call hangs\n");
+    SetEvent(go);
+    GetExitCodeThread(call, &code);
+    ok(code == RPC_E_DISCONNECTED, "got %#lx\n", code);
+    ok(!uninit_data->calls, "got %ld calls\n", uninit_data->calls);
+
+    if (process)
+    {
+        if (!ret) wait_child_process(&pi);
+        else
+        {
+            TerminateProcess(pi.hProcess, 1);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+        }
+    }
+    else
+    {
+        ok(!WaitForSingleObject(server, 5000), "server hangs\n");
+        CloseHandle(server);
+        if (exit_thread) uninit_data->refs_after = uninit_data->refs;
+    }
+    ok(uninit_data->refs_after == 1, "got %ld refs\n", uninit_data->refs_after);
+
+    CloseHandle(call);
+    CloseHandle(uninit_unmarshaled);
+    CloseHandle(ready);
+    CloseHandle(go);
+    UnmapViewOfFile(uninit_data);
+    CloseHandle(uninit_mapping);
+    winetest_pop_context();
+}
+
+/* The STA uninitializes and initializes a new apartment between a call's GetBuffer and
+ * SendReceive (while an argument is marshaled): the call doesn't run in the new apartment. */
+static HANDLE reinit_marshaling, reinit_done;
+static LONG reinit_loads;
+static IMarshal *reinit_std_marshal;
+
+static HRESULT WINAPI ReinitPersistStream_QueryInterface(IPersistStream *iface, REFIID riid, void **ppv)
+{
+    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IPersist) || IsEqualIID(riid, &IID_IPersistStream))
+    {
+        *ppv = iface;
+        return S_OK;
+    }
+    *ppv = NULL;
+    return E_NOINTERFACE;
+}
+
+static ULONG WINAPI ReinitPersistStream_AddRef(IPersistStream *iface) { return 2; }
+static ULONG WINAPI ReinitPersistStream_Release(IPersistStream *iface) { return 1; }
+static HRESULT WINAPI ReinitPersistStream_GetClassID(IPersistStream *iface, CLSID *clsid) { return E_NOTIMPL; }
+static HRESULT WINAPI ReinitPersistStream_IsDirty(IPersistStream *iface) { return S_OK; }
+
+static HRESULT WINAPI ReinitPersistStream_Load(IPersistStream *iface, IStream *stream)
+{
+    InterlockedIncrement(&reinit_loads);
+    return S_OK;
+}
+
+static HRESULT WINAPI ReinitPersistStream_Save(IPersistStream *iface, IStream *stream, BOOL clear) { return S_OK; }
+static HRESULT WINAPI ReinitPersistStream_GetSizeMax(IPersistStream *iface, ULARGE_INTEGER *size) { return S_OK; }
+
+static const IPersistStreamVtbl ReinitPersistStreamVtbl =
+{
+    ReinitPersistStream_QueryInterface,
+    ReinitPersistStream_AddRef,
+    ReinitPersistStream_Release,
+    ReinitPersistStream_GetClassID,
+    ReinitPersistStream_IsDirty,
+    ReinitPersistStream_Load,
+    ReinitPersistStream_Save,
+    ReinitPersistStream_GetSizeMax
+};
+
+static IPersistStream ReinitPersistStream = { &ReinitPersistStreamVtbl };
+
+/* marshals the Load argument with the standard marshaler, after the server reinitialized */
+static HRESULT WINAPI ReinitMarshal_QueryInterface(IMarshal *iface, REFIID riid, void **ppv)
+{
+    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IMarshal))
+    {
+        *ppv = iface;
+        return S_OK;
+    }
+    *ppv = NULL;
+    return E_NOINTERFACE;
+}
+
+static ULONG WINAPI ReinitMarshal_AddRef(IMarshal *iface) { return 2; }
+static ULONG WINAPI ReinitMarshal_Release(IMarshal *iface) { return 1; }
+
+static HRESULT WINAPI ReinitMarshal_GetUnmarshalClass(IMarshal *iface, REFIID riid, void *pv, DWORD dest_context,
+        void *dest_context_data, DWORD flags, CLSID *clsid)
+{
+    return IMarshal_GetUnmarshalClass(reinit_std_marshal, riid, pv, dest_context, dest_context_data, flags, clsid);
+}
+
+static HRESULT WINAPI ReinitMarshal_GetMarshalSizeMax(IMarshal *iface, REFIID riid, void *pv, DWORD dest_context,
+        void *dest_context_data, DWORD flags, DWORD *size)
+{
+    return IMarshal_GetMarshalSizeMax(reinit_std_marshal, riid, pv, dest_context, dest_context_data, flags, size);
+}
+
+static HRESULT WINAPI ReinitMarshal_MarshalInterface(IMarshal *iface, IStream *stream, REFIID riid, void *pv,
+        DWORD dest_context, void *dest_context_data, DWORD flags)
+{
+    SetEvent(reinit_marshaling);
+    ok(!WaitForSingleObject(reinit_done, 10000), "wait timed out\n");
+    return IMarshal_MarshalInterface(reinit_std_marshal, stream, riid, pv, dest_context, dest_context_data, flags);
+}
+
+static HRESULT WINAPI ReinitMarshal_UnmarshalInterface(IMarshal *iface, IStream *stream, REFIID riid, void **ppv)
+{
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI ReinitMarshal_ReleaseMarshalData(IMarshal *iface, IStream *stream)
+{
+    return IMarshal_ReleaseMarshalData(reinit_std_marshal, stream);
+}
+
+static HRESULT WINAPI ReinitMarshal_DisconnectObject(IMarshal *iface, DWORD reserved) { return S_OK; }
+
+static const IMarshalVtbl ReinitMarshalVtbl =
+{
+    ReinitMarshal_QueryInterface,
+    ReinitMarshal_AddRef,
+    ReinitMarshal_Release,
+    ReinitMarshal_GetUnmarshalClass,
+    ReinitMarshal_GetMarshalSizeMax,
+    ReinitMarshal_MarshalInterface,
+    ReinitMarshal_UnmarshalInterface,
+    ReinitMarshal_ReleaseMarshalData,
+    ReinitMarshal_DisconnectObject
+};
+
+static IMarshal ReinitMarshal = { &ReinitMarshalVtbl };
+
+static HRESULT WINAPI ReinitArg_QueryInterface(IUnknown *iface, REFIID riid, void **ppv)
+{
+    if (IsEqualIID(riid, &IID_IMarshal)) *ppv = &ReinitMarshal;
+    else if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IStream)) *ppv = iface;
+    else
+    {
+        *ppv = NULL;
+        return E_NOINTERFACE;
+    }
+    return S_OK;
+}
+
+static ULONG WINAPI ReinitArg_AddRef(IUnknown *iface) { return 2; }
+static ULONG WINAPI ReinitArg_Release(IUnknown *iface) { return 1; }
+
+static const IUnknownVtbl ReinitArgVtbl = { ReinitArg_QueryInterface, ReinitArg_AddRef, ReinitArg_Release };
+static IUnknown ReinitArg = { &ReinitArgVtbl };
+
+static DWORD CALLBACK reinit_server_proc(void *stream)
+{
+    HANDLE done = CreateEventA(NULL, FALSE, FALSE, "Wine COM Test Reinit Done");
+    HRESULT hr;
+    MSG msg;
+
+    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    hr = CoMarshalInterface(stream, &IID_IPersistStream, (IUnknown *)&ReinitPersistStream, MSHCTX_INPROC, NULL,
+                            MSHLFLAGS_NORMAL);
+    ok_ole_success(hr, CoMarshalInterface);
+    IStream_Seek(stream, ullZero, STREAM_SEEK_SET, NULL);
+    SetEvent(done);
+
+    ok(!WaitForSingleObject(reinit_marshaling, 10000), "wait timed out\n");
+    CoUninitialize();
+    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    SetEvent(reinit_done);
+    while (MsgWaitForMultipleObjects(1, &done, FALSE, 10000, QS_ALLINPUT) == WAIT_OBJECT_0 + 1)
+        while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) DispatchMessageA(&msg);
+    CoUninitialize();
+    CloseHandle(done);
+    return 0;
+}
+
+static DWORD CALLBACK reinit_call_proc(void *stream)
+{
+    IPersistStream *proxy;
+    HRESULT hr;
+
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    hr = CoUnmarshalInterface(stream, &IID_IPersistStream, (void **)&proxy);
+    ok_ole_success(hr, CoUnmarshalInterface);
+    hr = IPersistStream_Load(proxy, (IStream *)&ReinitArg);
+    IPersistStream_Release(proxy);
+    CoUninitialize();
+    return hr;
+}
+
+static void test_call_after_reinit(void)
+{
+    HANDLE done, server, call;
+    IStream *stream, *arg;
+    DWORD ret;
+    HRESULT hr;
+
+    reinit_marshaling = CreateEventA(NULL, FALSE, FALSE, NULL);
+    reinit_done = CreateEventA(NULL, FALSE, FALSE, NULL);
+    done = CreateEventA(NULL, FALSE, FALSE, "Wine COM Test Reinit Done");
+    hr = CreateStreamOnHGlobal(NULL, TRUE, &arg);
+    ok_ole_success(hr, CreateStreamOnHGlobal);
+    hr = CoGetStandardMarshal(&IID_IStream, (IUnknown *)arg, MSHCTX_INPROC, NULL, MSHLFLAGS_NORMAL, &reinit_std_marshal);
+    ok_ole_success(hr, CoGetStandardMarshal);
+    hr = CreateStreamOnHGlobal(NULL, TRUE, &stream);
+    ok_ole_success(hr, CreateStreamOnHGlobal);
+
+    server = CreateThread(NULL, 0, reinit_server_proc, stream, 0, NULL);
+    ok(!WaitForSingleObject(done, 10000), "wait timed out\n");
+    call = CreateThread(NULL, 0, reinit_call_proc, stream, 0, NULL);
+    ok(!WaitForSingleObject(call, 10000), "call hangs\n");
+    GetExitCodeThread(call, &ret);
+    ok(ret == RPC_E_SERVER_DIED_DNE, "got %#lx\n", ret);
+    ok(!reinit_loads, "got %ld calls\n", reinit_loads);
+    SetEvent(done);
+    ok(!WaitForSingleObject(server, 10000), "server hangs\n");
+
+    IMarshal_Release(reinit_std_marshal);
+    IStream_Release(arg);
+    IStream_Release(stream);
+    CloseHandle(call);
+    CloseHandle(server);
+    CloseHandle(done);
+    CloseHandle(reinit_marshaling);
+    CloseHandle(reinit_done);
+}
+
+/* in a child process: each STA that marshals adds a listening endpoint to rpcrt4, and this
+ * process has about as many as Wine can listen on */
+static void test_uninit_in_threads(void)
+{
+    PROCESS_INFORMATION pi;
+
+    create_target_process("-uninit-threads", &pi);
+    wait_child_process(&pi);
+}
+
 struct git_params
 {
 	DWORD cookie;
@@ -5749,6 +6136,21 @@ START_TEST(marshal)
         disconnect_server_proc();
         return;
     }
+    if (argc > 2 && !strcmp(argv[2], "-uninit-threads"))
+    {
+        CoInitializeEx(NULL, COINIT_MULTITHREADED);
+        test_uninit_with_queued_call("thread");
+        test_uninit_with_queued_call("exit");
+        test_call_after_reinit();
+        CoUninitialize();
+        return;
+    }
+    if (argc > 2 && !strcmp(argv[2], "-uninit"))
+    {
+        open_uninit_data();
+        uninit_server_proc(NULL);
+        return;
+    }
 
     register_test_window();
 
@@ -5809,6 +6211,8 @@ START_TEST(marshal)
     test_disconnected_call("double");
     test_disconnected_call("release");
     test_disconnected_call("remarshal");
+    test_uninit_in_threads();
+    test_uninit_with_queued_call("process");
     test_bad_marshal_stream();
     test_proxy_interfaces();
     test_proxy_rpc_options();

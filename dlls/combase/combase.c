@@ -3537,7 +3537,11 @@ static void com_cleanup_tlsdata(void)
         return;
 
     if (tlsdata->apt)
+    {
+        /* the thread exits without uninitializing its apartment */
+        if (!tlsdata->apt->multi_threaded) rpc_cancel_queued_calls(tlsdata->apt);
         apartment_release(tlsdata->apt);
+    }
     if (tlsdata->implicit_mta_cookie)
         apartment_decrement_mta_usage(tlsdata->implicit_mta_cookie);
 
