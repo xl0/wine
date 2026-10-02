@@ -181,10 +181,82 @@ static void test_Interfaces(void)
     ITextSelection_Release(txtsel);
 }
 
+static void test_ITextFont_tomApplyTmp(void)
+{
+    ITextDocument *doc = NULL;
+    IRichEditOle *reole = NULL;
+    ITextRange *range;
+    ITextFont *font;
+    CHARFORMAT2A cf;
+    HRESULT hr;
+    HWND hwnd;
+    LONG value;
+
+    hwnd = new_window(MSFTEDIT_CLASS, ES_MULTILINE, NULL);
+    SendMessageA(hwnd, WM_SETTEXT, 0, (LPARAM)"TestSomeText");
+    memset(&cf, 0, sizeof(cf));
+    cf.cbSize = sizeof(cf);
+    cf.dwMask = CFM_UNDERLINE;
+    cf.dwEffects = CFE_UNDERLINE;
+    SendMessageA(hwnd, EM_SETCHARFORMAT, SCF_ALL, (LPARAM)&cf);
+
+    SendMessageA(hwnd, EM_GETOLEINTERFACE, 0, (LPARAM)&reole);
+    hr = IRichEditOle_QueryInterface(reole, &IID_ITextDocument, (void **)&doc);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    hr = ITextDocument_Range(doc, 0, 4, &range);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    hr = ITextRange_GetFont(range, &font);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+
+    /* temporary formatting doesn't change the character format */
+    hr = ITextFont_Reset(font, tomApplyTmp);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    hr = ITextFont_SetUnderline(font, tomNone);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+
+    SendMessageA(hwnd, EM_SETSEL, 0, 4);
+    SendMessageA(hwnd, EM_GETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+    ok(cf.dwEffects & CFE_UNDERLINE, "got effects %#lx.\n", cf.dwEffects);
+
+    hr = ITextFont_Reset(font, tomApplyNow);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+
+    SendMessageA(hwnd, EM_GETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+    ok(cf.dwEffects & CFE_UNDERLINE, "got effects %#lx.\n", cf.dwEffects);
+    hr = ITextFont_GetUnderline(font, &value);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    ok(value == tomSingle || value == tomTrue, "got %ld.\n", value);
+
+    /* back to permanent formatting */
+    hr = ITextFont_SetUnderline(font, tomNone);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    SendMessageA(hwnd, EM_GETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+    ok(!(cf.dwEffects & CFE_UNDERLINE), "got effects %#lx.\n", cf.dwEffects);
+
+    /* tomApplyLater ends it too */
+    hr = ITextFont_Reset(font, tomApplyTmp);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    hr = ITextFont_Reset(font, tomApplyLater);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    hr = ITextFont_SetSize(font, 21.0);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    hr = ITextFont_Reset(font, tomApplyNow);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    SendMessageA(hwnd, EM_GETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+    ok(cf.yHeight == 420, "got height %ld.\n", cf.yHeight);
+
+    ITextFont_Release(font);
+    ITextRange_Release(range);
+    ITextDocument_Release(doc);
+    IRichEditOle_Release(reole);
+    DestroyWindow(hwnd);
+}
+
 START_TEST(richole)
 {
     msftedit_hmodule = LoadLibraryA("msftedit.dll");
     ok(msftedit_hmodule != NULL, "error: %d\n", (int) GetLastError());
 
     test_Interfaces();
+    test_ITextFont_tomApplyTmp();
 }

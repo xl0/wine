@@ -224,6 +224,7 @@ typedef struct ITextFontImpl {
     textfont_prop_val props[FONT_PROPID_LAST];
     BOOL get_cache_enabled;
     BOOL set_cache_enabled;
+    BOOL set_tmp;        /* tomApplyTmp: properties are set as temporary display formatting */
     DWORD set_mask;      /* properties set since tomApplyLater */
 } ITextFontImpl;
 
@@ -727,6 +728,10 @@ static HRESULT set_textfont_prop(ITextFontImpl *font, enum textfont_prop_id prop
     ME_Cursor from, to;
     CHARFORMAT2W fmt;
     LONG start, end;
+
+    /* temporary formatting is not supported, the text keeps its format */
+    if (font->range && font->set_tmp)
+        return S_OK;
 
     /* when font is not attached to any range use cache */
     if (!font->range || font->set_cache_enabled) {
@@ -3009,14 +3014,19 @@ static HRESULT WINAPI TextFont_Reset(ITextFont *iface, LONG value)
             This->get_cache_enabled = FALSE;
             break;
         case tomApplyLater:
+            This->set_tmp = FALSE;
             This->set_cache_enabled = TRUE;
             break;
         case tomApplyNow:
+            This->set_tmp = FALSE;
             if (This->set_cache_enabled)
             {
                 This->set_cache_enabled = FALSE;
                 textfont_apply_range_props(This);
             }
+            break;
+        case tomApplyTmp:
+            This->set_tmp = TRUE;
             break;
         case tomUsePoints:
         case tomUseTwips:
@@ -3503,6 +3513,7 @@ static HRESULT create_textfont(ITextRange *range, const ITextFontImpl *src, ITex
 
     font->ITextFont_iface.lpVtbl = &textfontvtbl;
     font->ref = 1;
+    font->set_tmp = FALSE;
     font->set_mask = 0;
 
     if (src) {

@@ -3300,6 +3300,12 @@ static void test_ITextFont_range(void)
   ok(cf.wKerning == 40, "got %u\n", cf.wKerning);
   ok(cf.sSpacing == -20, "got %d\n", cf.sSpacing);
 
+  /* temporary formatting is new in msftedit */
+  hr = ITextFont_Reset(font, tomApplyTmp);
+  todo_wine ok(hr == E_INVALIDARG, "got 0x%08lx\n", hr);
+  hr = ITextFont_Reset(font, tomApplyNow);
+  ok(hr == S_OK, "got 0x%08lx\n", hr);
+
   ITextFont_Release(font);
   ITextRange_Release(range);
   release_interfaces(&hwnd, &reOle, &doc, NULL);
