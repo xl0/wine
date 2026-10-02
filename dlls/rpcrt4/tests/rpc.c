@@ -1334,6 +1334,140 @@ static void test_RpcServerUnregisterIf_wait(void)
     CloseHandle(unregister_call_event);
 }
 
+static HANDLE restart_call_event, restart_release_event;
+
+static void __RPC_STUB restart_call(RPC_MESSAGE *msg)
+{
+    RPC_STATUS status;
+
+    SetEvent(restart_call_event);
+    WaitForSingleObject(restart_release_event, 10000);
+    msg->BufferLength = sizeof(DWORD);
+    status = I_RpcGetBuffer(msg);
+    ok(status == RPC_S_OK, "I_RpcGetBuffer failed (%lu)\n", status);
+    *(DWORD *)msg->Buffer = 0xdeadbeef;
+}
+
+static RPC_DISPATCH_FUNCTION restart_table[] = { restart_call };
+static RPC_DISPATCH_TABLE restart_dispatch = { 1, restart_table };
+
+static RPC_SERVER_INTERFACE restart_server_if =
+{
+    sizeof(RPC_SERVER_INTERFACE),
+    {{0x1fe1a1d6,0x0109,0x4b4e,{0x9a,0x31,0x7a,0x55,0x01,0x16,0x00,0x01}},{0,0}},
+    {{0x8a885d04,0x1ceb,0x11c9,{0x9f,0xe8,0x08,0x00,0x2b,0x10,0x48,0x60}},{2,0}},
+    &restart_dispatch,
+};
+
+static RPC_SERVER_INTERFACE restart_auto_server_if =
+{
+    sizeof(RPC_SERVER_INTERFACE),
+    {{0x1fe1a1d6,0x0109,0x4b4e,{0x9a,0x31,0x7a,0x55,0x01,0x16,0x00,0x02}},{0,0}},
+    {{0x8a885d04,0x1ceb,0x11c9,{0x9f,0xe8,0x08,0x00,0x2b,0x10,0x48,0x60}},{2,0}},
+    &restart_dispatch,
+};
+
+static RPC_CLIENT_INTERFACE restart_client_if =
+{
+    sizeof(RPC_CLIENT_INTERFACE),
+    {{0x1fe1a1d6,0x0109,0x4b4e,{0x9a,0x31,0x7a,0x55,0x01,0x16,0x00,0x01}},{0,0}},
+    {{0x8a885d04,0x1ceb,0x11c9,{0x9f,0xe8,0x08,0x00,0x2b,0x10,0x48,0x60}},{2,0}},
+};
+
+static RPC_CLIENT_INTERFACE restart_auto_client_if =
+{
+    sizeof(RPC_CLIENT_INTERFACE),
+    {{0x1fe1a1d6,0x0109,0x4b4e,{0x9a,0x31,0x7a,0x55,0x01,0x16,0x00,0x02}},{0,0}},
+    {{0x8a885d04,0x1ceb,0x11c9,{0x9f,0xe8,0x08,0x00,0x2b,0x10,0x48,0x60}},{2,0}},
+};
+
+static RPC_STATUS restart_do_call(RPC_CLIENT_INTERFACE *client_if)
+{
+    RPC_BINDING_HANDLE binding;
+    RPC_MESSAGE msg = {0};
+    RPC_STATUS status;
+
+    status = RpcBindingFromStringBindingA((RPC_CSTR)"ncalrpc:[listen_restart]", &binding);
+    ok(status == RPC_S_OK, "RpcBindingFromStringBinding failed (%lu)\n", status);
+    msg.Handle = binding;
+    msg.RpcInterfaceInformation = client_if;
+    msg.ProcNum = RPC_FLAGS_VALID_BIT;
+    msg.BufferLength = sizeof(DWORD);
+    status = I_RpcGetBuffer(&msg);
+    ok(status == RPC_S_OK, "I_RpcGetBuffer failed (%lu)\n", status);
+    status = I_RpcSendReceive(&msg);
+    if (status == RPC_S_OK)
+    {
+        ok(msg.BufferLength == sizeof(DWORD) && *(DWORD *)msg.Buffer == 0xdeadbeef, "wrong reply\n");
+        I_RpcFreeBuffer(&msg);
+    }
+    RpcBindingFree(&binding);
+    return status;
+}
+
+static DWORD WINAPI restart_client_thread(void *arg)
+{
+    return restart_do_call(&restart_client_if);
+}
+
+static DWORD WINAPI restart_register_thread(void *arg)
+{
+    return RpcServerRegisterIfEx(&restart_auto_server_if, NULL, NULL, RPC_IF_AUTOLISTEN,
+                                 RPC_C_LISTEN_MAX_CALLS_DEFAULT, NULL);
+}
+
+/* starts listening again while the server is still finishing a call after
+ * RpcMgmtStopServerListening */
+static void test_listen_after_stop(void)
+{
+    HANDLE client, thread;
+    RPC_STATUS status;
+    DWORD ret;
+
+    status = RpcServerUseProtseqEpA((RPC_CSTR)"ncalrpc", 0, (RPC_CSTR)"listen_restart", NULL);
+    ok(status == RPC_S_OK, "RpcServerUseProtseqEp failed (%lu)\n", status);
+    status = RpcServerRegisterIf(&restart_server_if, NULL, NULL);
+    ok(status == RPC_S_OK, "RpcServerRegisterIf failed (%lu)\n", status);
+    restart_call_event = CreateEventW(NULL, FALSE, FALSE, NULL);
+    restart_release_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+
+    status = RpcServerListen(1, RPC_C_LISTEN_MAX_CALLS_DEFAULT, TRUE);
+    ok(status == RPC_S_OK, "RpcServerListen failed (%lu)\n", status);
+    client = CreateThread(NULL, 0, restart_client_thread, NULL, 0, NULL);
+    WaitForSingleObject(restart_call_event, INFINITE);
+
+    status = RpcMgmtStopServerListening(NULL);
+    ok(status == RPC_S_OK, "RpcMgmtStopServerListening failed (%lu)\n", status);
+    status = RpcServerListen(1, RPC_C_LISTEN_MAX_CALLS_DEFAULT, TRUE);
+    ok(status == RPC_S_ALREADY_LISTENING, "RpcServerListen returned %lu\n", status);
+
+    /* an autolisten interface starts listening again */
+    thread = CreateThread(NULL, 0, restart_register_thread, NULL, 0, NULL);
+    ret = WaitForSingleObject(thread, 200);
+    todo_wine ok(!ret, "RpcServerRegisterIfEx waited for the call\n");
+    SetEvent(restart_release_event);
+    ret = WaitForSingleObject(thread, 10000);
+    ok(!ret, "RpcServerRegisterIfEx didn't return\n");
+    if (ret) return;
+    GetExitCodeThread(thread, &ret);
+    ok(ret == RPC_S_OK, "RpcServerRegisterIfEx failed (%lu)\n", ret);
+    CloseHandle(thread);
+    WaitForSingleObject(client, INFINITE);
+    GetExitCodeThread(client, &ret);
+    ok(ret == RPC_S_OK, "call failed (%lu)\n", ret);
+    CloseHandle(client);
+
+    status = restart_do_call(&restart_auto_client_if);
+    ok(status == RPC_S_OK, "call failed (%lu)\n", status);
+
+    status = RpcServerUnregisterIf(&restart_auto_server_if, NULL, TRUE);
+    ok(status == RPC_S_OK, "RpcServerUnregisterIf failed (%lu)\n", status);
+    status = RpcServerUnregisterIf(&restart_server_if, NULL, TRUE);
+    ok(status == RPC_S_OK, "RpcServerUnregisterIf failed (%lu)\n", status);
+    CloseHandle(restart_call_event);
+    CloseHandle(restart_release_event);
+}
+
 START_TEST( rpc )
 {
     static unsigned char ncacn_np[] = "ncacn_np";
@@ -1377,6 +1511,7 @@ START_TEST( rpc )
     test_RpcServerUseProtseq();
     test_endpoint_mapper(ncacn_np, np_address);
     test_endpoint_mapper(ncalrpc, NULL);
+    test_listen_after_stop();
     test_RpcServerUnregisterIf_wait();
 
     if (firewall_enabled) set_firewall(APP_REMOVE);

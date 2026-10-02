@@ -728,14 +728,19 @@ static DWORD CALLBACK RPCRT4_server_thread(LPVOID the_arg)
     /* start waiting */
     res = cps->ops->wait_for_new_connection(cps, count, objs);
 
-    if (res == -1 || (res == 0 && !std_listen))
+    if (res == -1 || res == 0)
     {
-      /* cleanup */
-      cps->ops->free_wait_array(cps, objs);
-      break;
-    }
-    else if (res == 0)
+      EnterCriticalSection(&listen_cs);
+      if (res == -1 || !std_listen) cps->server_exiting = TRUE;
+      LeaveCriticalSection(&listen_cs);
+      if (cps->server_exiting)
+      {
+        /* cleanup */
+        cps->ops->free_wait_array(cps, objs);
+        break;
+      }
       set_ready_event = TRUE;
+    }
   }
 
   TRACE("closing connections\n");
@@ -750,7 +755,7 @@ static DWORD CALLBACK RPCRT4_server_thread(LPVOID the_arg)
   }
   LeaveCriticalSection(&cps->cs);
 
-  if (res == 0 && !std_listen)
+  if (res == 0)
       SetEvent(cps->server_ready_event);
 
   TRACE("waiting for active connections to close\n");
@@ -777,15 +782,25 @@ static DWORD CALLBACK RPCRT4_server_thread(LPVOID the_arg)
  * make the changes */
 static void RPCRT4_sync_with_server_thread(RpcServerProtseq *ps)
 {
+  BOOL running;
+
   /* make sure we are the only thread sync'ing the server state, otherwise
    * there is a race with the server thread setting an older state and setting
    * the server_ready_event when the new state hasn't yet been applied */
   WaitForSingleObject(ps->mgr_mutex, INFINITE);
 
-  ps->ops->signal_state_changed(ps);
+  /* an exiting server thread no longer listens for state changes */
+  EnterCriticalSection(&listen_cs);
+  running = ps->server_thread && !ps->server_exiting;
+  LeaveCriticalSection(&listen_cs);
 
-  /* wait for server thread to make the requested changes before returning */
-  WaitForSingleObject(ps->server_ready_event, INFINITE);
+  if (running)
+  {
+    ps->ops->signal_state_changed(ps);
+
+    /* wait for server thread to make the requested changes before returning */
+    WaitForSingleObject(ps->server_ready_event, INFINITE);
+  }
 
   ReleaseMutex(ps->mgr_mutex);
 }
@@ -795,8 +810,21 @@ static RPC_STATUS RPCRT4_start_listen_protseq(RpcServerProtseq *ps, BOOL auto_li
   RPC_STATUS status = RPC_S_OK;
 
   EnterCriticalSection(&listen_cs);
+  while (ps->server_thread && ps->server_exiting)
+  {
+    HANDLE thread;
+
+    /* listening was stopped, wait until the old server thread closed its connections */
+    DuplicateHandle(GetCurrentProcess(), ps->server_thread, GetCurrentProcess(), &thread, 0, FALSE,
+                    DUPLICATE_SAME_ACCESS);
+    LeaveCriticalSection(&listen_cs);
+    WaitForSingleObject(thread, INFINITE);
+    CloseHandle(thread);
+    EnterCriticalSection(&listen_cs);
+  }
   if (ps->server_thread) goto done;
 
+  ps->server_exiting = FALSE;
   if (!ps->mgr_mutex) ps->mgr_mutex = CreateMutexW(NULL, FALSE, NULL);
   if (!ps->server_ready_event) ps->server_ready_event = CreateEventW(NULL, FALSE, FALSE, NULL);
   ps->server_thread = CreateThread(NULL, 0, RPCRT4_server_thread, ps, 0, NULL);
@@ -832,13 +860,17 @@ static RPC_STATUS RPCRT4_start_listen(BOOL auto_listen)
     EnterCriticalSection(&server_cs);
     LIST_FOR_EACH_ENTRY(cps, &protseqs, RpcServerProtseq, entry)
     {
+      /* protseqs are never removed; don't hold server_cs while waiting for
+       * an exiting server thread, its calls need it to complete */
+      LeaveCriticalSection(&server_cs);
       status = RPCRT4_start_listen_protseq(cps, TRUE);
-      if (status != RPC_S_OK)
-        break;
-      
       /* make sure server is actually listening on the interface before
        * returning */
-      RPCRT4_sync_with_server_thread(cps);
+      if (status == RPC_S_OK)
+        RPCRT4_sync_with_server_thread(cps);
+      EnterCriticalSection(&server_cs);
+      if (status != RPC_S_OK)
+        break;
     }
     LeaveCriticalSection(&server_cs);
   }
@@ -1622,29 +1654,34 @@ RPC_STATUS WINAPI RpcMgmtWaitServerListen( void )
   WaitForSingleObject( event, INFINITE );
   TRACE( "done waiting\n" );
 
-  EnterCriticalSection(&listen_cs);
   /* wait for server threads to finish */
   while(1)
   {
-      if (listen_count)
-          break;
-
       wait_thread = NULL;
       EnterCriticalSection(&server_cs);
-      LIST_FOR_EACH_ENTRY(protseq, &protseqs, RpcServerProtseq, entry)
+      EnterCriticalSection(&listen_cs);
+      if (!listen_count)
       {
-          if ((wait_thread = protseq->server_thread))
-              break;
+          LIST_FOR_EACH_ENTRY(protseq, &protseqs, RpcServerProtseq, entry)
+          {
+              if (protseq->server_thread)
+              {
+                  DuplicateHandle(GetCurrentProcess(), protseq->server_thread, GetCurrentProcess(), &wait_thread,
+                                  0, FALSE, DUPLICATE_SAME_ACCESS);
+                  break;
+              }
+          }
       }
+      LeaveCriticalSection(&listen_cs);
       LeaveCriticalSection(&server_cs);
       if (!wait_thread)
           break;
 
       TRACE("waiting for thread %lu\n", GetThreadId(wait_thread));
-      LeaveCriticalSection(&listen_cs);
       WaitForSingleObject(wait_thread, INFINITE);
-      EnterCriticalSection(&listen_cs);
+      CloseHandle(wait_thread);
   }
+  EnterCriticalSection(&listen_cs);
   if (listen_done_event == event)
   {
       listen_done_event = NULL;
