@@ -2255,18 +2255,19 @@ static FT_Matrix *get_transform_matrices( struct gdi_font *font, BOOL vertical, 
                                           FT_Matrix matrices[3] )
 {
     static const FT_Matrix identity_mat = { (1 << 16), 0, 0, (1 << 16) };
+    struct gdi_font *base_font = font->base_font ? font->base_font : font;
     BOOL needs_transform = FALSE;
     double width_ratio;
     int i;
 
     matrices[matrix_unrotated] = identity_mat;
 
-    /* Scaling factor */
+    /* Scaling factor, linked fonts are scaled like their base font */
     if (font->aveWidth)
     {
-        if (!freetype_set_outline_text_metrics( font )) freetype_set_bitmap_text_metrics( font );
+        if (!freetype_set_outline_text_metrics( base_font )) freetype_set_bitmap_text_metrics( base_font );
         width_ratio = (double)font->aveWidth;
-        width_ratio /= (double)font->otm.otmTextMetrics.tmAveCharWidth;
+        width_ratio /= (double)base_font->otm.otmTextMetrics.tmAveCharWidth;
     }
     else
         width_ratio = font->scale_y;
