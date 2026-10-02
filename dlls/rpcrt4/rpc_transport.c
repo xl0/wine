@@ -1454,6 +1454,7 @@ static int rpcrt4_conn_tcp_close(RpcConnection *conn)
     connection->sock = -1;
     CloseHandle(connection->sock_event);
     CloseHandle(connection->cancel_event);
+    connection->sock_event = connection->cancel_event = NULL;
     return 0;
 }
 
