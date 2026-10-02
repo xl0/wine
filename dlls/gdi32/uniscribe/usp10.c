@@ -1870,6 +1870,22 @@ static BOOL requires_fallback(HDC hdc, SCRIPT_CACHE *psc, SCRIPT_ANALYSIS *psa,
     return FALSE;
 }
 
+/* whether the font in hdc has any of the glyphs that orig_glyphs lacks */
+static BOOL maps_missing_glyphs(HDC hdc, SCRIPT_CACHE *psc, const WCHAR *chars, int count, const WORD *orig_glyphs)
+{
+    WORD *glyphs;
+    BOOL ret = FALSE;
+    int i;
+
+    if (!(glyphs = calloc(count, sizeof(*glyphs))))
+        return TRUE;
+    ScriptGetCMap(hdc, psc, chars, count, 0, glyphs);
+    for (i = 0; i < count && !ret; i++)
+        ret = !orig_glyphs[i] && glyphs[i];
+    free(glyphs);
+    return ret;
+}
+
 static void find_fallback_font(enum usp10_script scriptid, WCHAR *FaceName)
 {
     HKEY hkey;
@@ -2014,11 +2030,16 @@ HRESULT WINAPI ScriptStringAnalyse(HDC hdc, const void *pString, int cString,
 
             if ((dwFlags & SSA_FALLBACK) && requires_fallback(hdc, sc, &analysis->pItem[i].a, &pStr[analysis->pItem[i].iCharPos], cChar))
             {
+                const WCHAR *chars = &pStr[analysis->pItem[i].iCharPos];
+                WORD *orig_glyphs = NULL;
                 LOGFONTW lf;
                 GetObjectW(GetCurrentObject(hdc, OBJ_FONT), sizeof(lf), & lf);
                 lf.lfCharSet = scriptInformation[analysis->pItem[i].a.eScript].props.bCharSet;
                 lf.lfFaceName[0] = 0;
                 find_fallback_font(analysis->pItem[i].a.eScript, lf.lfFaceName);
+                if ((dwFlags & SSA_LINK) && !scriptInformation[analysis->pItem[i].a.eScript].props.fComplex &&
+                    (orig_glyphs = calloc(cChar, sizeof(*orig_glyphs))))
+                    ScriptGetCMap(hdc, sc, chars, cChar, 0, orig_glyphs);
                 if (lf.lfFaceName[0])
                 {
                     analysis->glyphs[i].fallbackFont = CreateFontIndirectW(&lf);
@@ -2026,8 +2047,19 @@ HRESULT WINAPI ScriptStringAnalyse(HDC hdc, const void *pString, int cString,
                     {
                         ScriptFreeCache(sc);
                         originalFont = SelectObject(hdc, analysis->glyphs[i].fallbackFont);
+                        /* a fallback font without any of the missing glyphs is no help,
+                           font linking may find them */
+                        if (orig_glyphs && !maps_missing_glyphs(hdc, sc, chars, cChar, orig_glyphs))
+                        {
+                            ScriptFreeCache(sc);
+                            SelectObject(hdc, originalFont);
+                            originalFont = 0;
+                            DeleteObject(analysis->glyphs[i].fallbackFont);
+                            analysis->glyphs[i].fallbackFont = NULL;
+                        }
                     }
                 }
+                free(orig_glyphs);
             }
 
             /* FIXME: When we properly shape Hangul remove this check */

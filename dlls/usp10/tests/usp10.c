@@ -4081,6 +4081,65 @@ static void test_ScriptString_pSize(HDC hdc)
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
 }
 
+static int CALLBACK enum_any_font_proc(const LOGFONTA *lf, const TEXTMETRICA *tm, DWORD type, LPARAM lparam)
+{
+    return 0;
+}
+
+static void test_ScriptString_fallback(void)
+{
+    static const WCHAR textW[] = {0x65e5, 0x672c}; /* not in Tahoma */
+    static const WCHAR latinW[] = {'a', 0x13c, 0x146, 0x180};
+    SCRIPT_STRING_ANALYSIS ssa;
+    HFONT hfont, old_hfont;
+    int widths[4], widths_link[4];
+    LOGFONTA lf;
+    HRESULT hr;
+    HDC hdc;
+
+    hdc = CreateCompatibleDC(0);
+    memset(&lf, 0, sizeof(lf));
+    strcpy(lf.lfFaceName, "Tahoma");
+    lf.lfHeight = -32;
+    hfont = CreateFontIndirectA(&lf);
+    old_hfont = SelectObject(hdc, hfont);
+
+    /* SSA_LINK doesn't drop a fallback font that has some of the missing glyphs */
+    hr = ScriptStringAnalyse(hdc, latinW, ARRAY_SIZE(latinW), 16, -1, SSA_GLYPHS | SSA_FALLBACK,
+                             0, NULL, NULL, NULL, NULL, NULL, &ssa);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    ScriptStringGetLogicalWidths(ssa, widths);
+    ScriptStringFree(&ssa);
+    hr = ScriptStringAnalyse(hdc, latinW, ARRAY_SIZE(latinW), 16, -1, SSA_GLYPHS | SSA_FALLBACK | SSA_LINK,
+                             0, NULL, NULL, NULL, NULL, NULL, &ssa);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    ScriptStringGetLogicalWidths(ssa, widths_link);
+    ScriptStringFree(&ssa);
+    ok(!memcmp(widths, widths_link, sizeof(widths)), "got widths %d %d %d %d, without SSA_LINK %d %d %d %d\n",
+       widths_link[0], widths_link[1], widths_link[2], widths_link[3], widths[0], widths[1], widths[2], widths[3]);
+
+    if (EnumFontFamiliesA(hdc, "SimSun", enum_any_font_proc, 0) &&
+        EnumFontFamiliesA(hdc, "Noto Sans CJK JP", enum_any_font_proc, 0))
+    {
+        skip("no East Asian font\n");
+    }
+    else
+    {
+        hr = ScriptStringAnalyse(hdc, textW, ARRAY_SIZE(textW), 16, -1, SSA_GLYPHS | SSA_FALLBACK | SSA_LINK,
+                                 0, NULL, NULL, NULL, NULL, NULL, &ssa);
+        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+        hr = ScriptStringGetLogicalWidths(ssa, widths);
+        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+        /* full width East Asian glyphs, not the default glyph */
+        ok(widths[0] == 32 && widths[1] == 32, "got widths %d, %d\n", widths[0], widths[1]);
+        ScriptStringFree(&ssa);
+    }
+
+    SelectObject(hdc, old_hfont);
+    DeleteObject(hfont);
+    DeleteDC(hdc);
+}
+
 static void test_script_cache_reuse(void)
 {
     HRESULT hr;
@@ -4234,6 +4293,7 @@ START_TEST(usp10)
     test_ScriptString(hdc);
     test_ScriptStringXtoCP_CPtoX(hdc);
     test_ScriptString_pSize(hdc);
+    test_ScriptString_fallback();
 
     test_ScriptLayout();
     test_digit_substitution();
