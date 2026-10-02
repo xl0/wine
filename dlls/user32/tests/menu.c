@@ -4230,6 +4230,100 @@ if (0) /* FIXME: uncomment once Wine is fixed */ {
     DeleteObject(hbmp);
 }
 
+static HWND fake_move_other;
+static int fake_move_step, fake_move_hilite[3];
+
+static int menu_hilited_item( HMENU menu )
+{
+    int i, count = GetMenuItemCount( menu );
+    for (i = 0; i < count; i++) if (GetMenuState( menu, i, MF_BYPOSITION ) & MF_HILITE) return i;
+    return -1;
+}
+
+static LRESULT WINAPI fake_move_menu_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+{
+    if (msg == WM_TIMER && wparam == 1)
+    {
+        HMENU menu = GetPropA( hwnd, "menu" );
+        fake_move_hilite[fake_move_step] = menu_hilited_item( menu );
+        switch (fake_move_step++)
+        {
+        case 0: /* window change under the still cursor */
+            ShowWindow( fake_move_other, SW_SHOWNOACTIVATE );
+            break;
+        case 1: /* keyboard selection, then another window change */
+            keybd_event( VK_DOWN, 0, 0, 0 );
+            keybd_event( VK_DOWN, 0, KEYEVENTF_KEYUP, 0 );
+            ShowWindow( fake_move_other, SW_HIDE );
+            break;
+        default:
+            KillTimer( hwnd, 1 );
+            EndMenu();
+            break;
+        }
+        return 0;
+    }
+    return DefWindowProcA( hwnd, msg, wparam, lparam );
+}
+
+static void test_menu_fake_mousemove(void)
+{
+    WNDCLASSA cls = {0};
+    DWORD start;
+    HMENU menu;
+    HWND hwnd;
+    POINT pt;
+    char str[16];
+    MSG msg;
+    int i;
+
+    cls.lpfnWndProc = fake_move_menu_proc;
+    cls.hInstance = GetModuleHandleA( NULL );
+    cls.lpszClassName = "fake_move_menu";
+    RegisterClassA( &cls );
+    hwnd = CreateWindowExA( WS_EX_TOPMOST, "fake_move_menu", NULL, WS_POPUP | WS_VISIBLE, 100, 100, 600, 400,
+                            NULL, NULL, NULL, NULL );
+    fake_move_other = CreateWindowExA( WS_EX_TOPMOST | WS_EX_NOACTIVATE, "fake_move_menu", NULL, WS_POPUP,
+                                       0, 0, 50, 50, NULL, NULL, NULL, NULL );
+    SetForegroundWindow( hwnd );
+    menu = CreatePopupMenu();
+    for (i = 0; i < 8; i++)
+    {
+        sprintf( str, "item %d", i );
+        AppendMenuA( menu, MF_STRING, 100 + i, str );
+    }
+    SetPropA( hwnd, "menu", menu );
+    SetCursorPos( 400, 300 );
+    start = GetTickCount();
+    while (GetTickCount() - start < 200)
+    {
+        while (PeekMessageA( &msg, 0, 0, 0, PM_REMOVE )) DispatchMessageA( &msg );
+        Sleep( 10 );
+    }
+    GetCursorPos( &pt );
+    if (pt.x != 400 || pt.y != 300)
+    {
+        skip( "cursor position not set\n" );
+        goto done;
+    }
+
+    /* moves that don't change the position (sent when windows change under the cursor) don't select the item
+     * under the cursor; the menu opens with an item under the cursor */
+    fake_move_step = 0;
+    SetTimer( hwnd, 1, 300, NULL );
+    TrackPopupMenu( menu, TPM_LEFTALIGN | TPM_TOPALIGN, 380, 240, 0, hwnd, NULL );
+    ok( fake_move_step == 3, "got step %d\n", fake_move_step );
+    ok( fake_move_hilite[0] == -1, "item %d highlighted after opening\n", fake_move_hilite[0] );
+    ok( fake_move_hilite[1] == -1, "item %d highlighted after a window change\n", fake_move_hilite[1] );
+    ok( fake_move_hilite[2] == 0, "item %d highlighted after VK_DOWN and a window change\n", fake_move_hilite[2] );
+
+done:
+    DestroyMenu( menu );
+    DestroyWindow( fake_move_other );
+    DestroyWindow( hwnd );
+    UnregisterClassA( "fake_move_menu", GetModuleHandleA( NULL ) );
+}
+
 START_TEST(menu)
 {
     register_menu_check_class();
@@ -4256,6 +4350,7 @@ START_TEST(menu)
 
     test_menu_hilitemenuitem();
     test_menu_trackpopupmenu();
+    test_menu_fake_mousemove();
     test_menu_trackagain();
     test_menu_cancelmode();
     test_menu_maxdepth();

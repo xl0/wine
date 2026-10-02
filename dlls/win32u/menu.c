@@ -4100,10 +4100,12 @@ static BOOL track_menu( HMENU hmenu, UINT flags, int x, int y, HWND hwnd, const 
     int executed_menu_id = -1;
     HWND capture_win;
     struct menu *menu;
+    POINT last_pt;
     BOOL remove;
     MTRACKER mt;
     MSG msg;
 
+    NtUserGetCursorPos( &last_pt );
     mt.trackFlags = 0;
     mt.hCurrentMenu = hmenu;
     mt.hTopMenu = hmenu;
@@ -4226,6 +4228,9 @@ static BOOL track_menu( HMENU hmenu, UINT flags, int x, int y, HWND hwnd, const 
                     break;
 
                 case WM_MOUSEMOVE:
+                    /* moves that don't change the position (window changes under the cursor) are ignored */
+                    if (mt.pt.x == last_pt.x && mt.pt.y == last_pt.y) break;
+                    last_pt = mt.pt;
                     /* the selected menu item must be changed every time the mouse moves. */
                     if (hmenu) exit_menu |= !menu_mouse_move( &mt, hmenu, flags );
                     break;
