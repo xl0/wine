@@ -6329,9 +6329,10 @@ static const struct message WmMove_mouse2[] = {
 
 static void test_setwindowpos(void)
 {
-    HWND hwnd;
+    HWND hwnd, hwnd2;
     RECT rc;
     LRESULT res;
+    int i;
     const INT X = 50;
     const INT Y = 50;
     const INT winX = 100;
@@ -6398,9 +6399,87 @@ static void test_setwindowpos(void)
     ok(res == TRUE, "SetWindowPos expected TRUE, got %Id.\n", res);
     flush_events();
     ok_sequence(WmMove_mouse2, "MouseMove2", FALSE);
+
+    /* showing or hiding a window also sends WM_MOUSEMOVE to the window under the cursor */
+    ShowWindow( hwnd, SW_HIDE );
+    flush_events();
+    flush_sequence();
+    ShowWindow( hwnd, SW_SHOWNOACTIVATE );
+    flush_events();
+    for (i = 0; i < sequence_cnt; i++) if (sequence[i].message == WM_MOUSEMOVE && sequence[i].hwnd == hwnd) break;
+    ok( i < sequence_cnt, "got no WM_MOUSEMOVE after showing the window\n" );
+
+    hwnd2 = CreateWindowExA( 0, "TestWindowClass", NULL, WS_POPUP, 0, 0, 50, 50, 0, 0, 0, NULL );
+    flush_events();
+    flush_sequence();
+    ShowWindow( hwnd2, SW_SHOWNOACTIVATE );
+    flush_events();
+    for (i = 0; i < sequence_cnt; i++) if (sequence[i].message == WM_MOUSEMOVE && sequence[i].hwnd == hwnd) break;
+    ok( i < sequence_cnt, "got no WM_MOUSEMOVE after showing another window\n" );
+    flush_sequence();
+    ShowWindow( hwnd2, SW_HIDE );
+    flush_events();
+    for (i = 0; i < sequence_cnt; i++) if (sequence[i].message == WM_MOUSEMOVE && sequence[i].hwnd == hwnd) break;
+    ok( i < sequence_cnt, "got no WM_MOUSEMOVE after hiding another window\n" );
+    DestroyWindow( hwnd2 );
     ignore_mouse_messages = TRUE;
 
     DestroyWindow(hwnd);
+}
+
+static HWND hover_toggle_hwnd;
+static unsigned int hover_moves, hover_timers;
+
+static LRESULT CALLBACK hover_toggle_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+{
+    if (msg == WM_MOUSEMOVE && hwnd != hover_toggle_hwnd)
+    {
+        /* like a hover effect: every mouse move shows or hides a window elsewhere */
+        hover_moves++;
+        ShowWindow( hover_toggle_hwnd, IsWindowVisible( hover_toggle_hwnd ) ? SW_HIDE : SW_SHOWNOACTIVATE );
+    }
+    if (msg == WM_TIMER) hover_timers++;
+    return DefWindowProcA( hwnd, msg, wparam, lparam );
+}
+
+static void test_fake_mousemove_loop(void)
+{
+    WNDCLASSA cls = {0};
+    DWORD start;
+    HWND hwnd;
+    MSG msg;
+
+    cls.lpfnWndProc = hover_toggle_proc;
+    cls.hInstance = GetModuleHandleA( NULL );
+    cls.hCursor = LoadCursorA( 0, (LPCSTR)IDC_ARROW );
+    cls.lpszClassName = "hover_toggle";
+    RegisterClassA( &cls );
+
+    hwnd = CreateWindowExA( WS_EX_TOPMOST, "hover_toggle", NULL, WS_POPUP | WS_VISIBLE, 200, 200, 200, 200, 0, 0, 0, NULL );
+    hover_toggle_hwnd = CreateWindowExA( WS_EX_TOPMOST | WS_EX_NOACTIVATE, "hover_toggle", NULL, WS_POPUP,
+                                         0, 0, 50, 50, 0, 0, 0, NULL );
+    SetForegroundWindow( hwnd );
+    SetCursorPos( 300, 300 );
+    flush_events();
+
+    /* the fake WM_MOUSEMOVE after a window change is delayed and coalesced, the app doesn't livelock */
+    hover_moves = hover_timers = 0;
+    SetTimer( hwnd, 1, 50, NULL );
+    ShowWindow( hover_toggle_hwnd, SW_SHOWNOACTIVATE );
+    start = GetTickCount();
+    while (GetTickCount() - start < 1000)
+    {
+        if (PeekMessageA( &msg, 0, 0, 0, PM_REMOVE )) DispatchMessageA( &msg );
+        else Sleep( 1 );
+    }
+    KillTimer( hwnd, 1 );
+    ok( hover_moves > 0, "got no WM_MOUSEMOVE\n" );
+    ok( hover_moves < 200, "got %u WM_MOUSEMOVE in 1 s\n", hover_moves );
+    ok( hover_timers >= 5, "got %u WM_TIMER in 1 s\n", hover_timers );
+
+    DestroyWindow( hover_toggle_hwnd );
+    DestroyWindow( hwnd );
+    UnregisterClassA( "hover_toggle", GetModuleHandleA( NULL ) );
 }
 
 static void invisible_parent_tests(void)
@@ -22034,6 +22113,7 @@ START_TEST(msg)
     test_scrollwindowex();
     test_messages();
     test_setwindowpos();
+    test_fake_mousemove_loop();
     test_showwindow();
     invisible_parent_tests();
     test_mdi_messages();

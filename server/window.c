@@ -2830,8 +2830,9 @@ DECL_HANDLER(set_window_pos)
     old_client = win->client_rect;
     set_window_pos( win, previous, flags, &window_rect, &client_rect,
                     &visible_rect, &surface_rect, &valid_rect );
-    if ((win->style & old_style & WS_VISIBLE) && (memcmp( &old_client, &win->client_rect, sizeof(old_client) )
-        || memcmp( &old_window, &win->window_rect, sizeof(old_window) )))
+    if (((win->style ^ old_style) & WS_VISIBLE) ||
+        ((win->style & WS_VISIBLE) && (memcmp( &old_client, &win->client_rect, sizeof(old_client) )
+        || memcmp( &old_window, &win->window_rect, sizeof(old_window) ))))
         update_cursor_pos( win->desktop );
 
     if (win->paint_flags & SET_WINPOS_LAYERED_WINDOW) validate_whole_window( win );
