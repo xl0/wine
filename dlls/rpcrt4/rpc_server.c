@@ -104,6 +104,8 @@ static BOOL std_listen;
 static LONG listen_count;
 /* event set once all manual listening is finished */
 static HANDLE listen_done_event;
+/* counts the listen_done_events created; CS listen_cs */
+static LONG listen_done_gen;
 
 static UUID uuid_nil;
 
@@ -848,7 +850,10 @@ static RPC_STATUS RPCRT4_start_listen(BOOL auto_listen)
   {
     status = RPC_S_OK;
     if(!auto_listen)
+    {
       listen_done_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+      listen_done_gen++;
+    }
     if (++listen_count == 1)
       std_listen = TRUE;
   }
@@ -1639,12 +1644,17 @@ RPC_STATUS WINAPI RpcServerListen( UINT MinimumCallThreads, UINT MaxCalls, UINT 
 RPC_STATUS WINAPI RpcMgmtWaitServerListen( void )
 {
   RpcServerProtseq *protseq;
-  HANDLE event, wait_thread;
+  HANDLE event = NULL, wait_thread;
+  LONG gen;
 
   TRACE("()\n");
 
+  /* another waiter may close listen_done_event and a new one may reuse the handle value */
   EnterCriticalSection(&listen_cs);
-  event = listen_done_event;
+  if (listen_done_event)
+    DuplicateHandle(GetCurrentProcess(), listen_done_event, GetCurrentProcess(), &event, 0, FALSE,
+                    DUPLICATE_SAME_ACCESS);
+  gen = listen_done_gen;
   LeaveCriticalSection(&listen_cs);
 
   if (!event)
@@ -1682,12 +1692,13 @@ RPC_STATUS WINAPI RpcMgmtWaitServerListen( void )
       CloseHandle(wait_thread);
   }
   EnterCriticalSection(&listen_cs);
-  if (listen_done_event == event)
+  if (listen_done_event && listen_done_gen == gen)
   {
+      CloseHandle( listen_done_event );
       listen_done_event = NULL;
-      CloseHandle( event );
   }
   LeaveCriticalSection(&listen_cs);
+  CloseHandle( event );
   return RPC_S_OK;
 }
 
