@@ -7850,7 +7850,12 @@ static void test_font_link(void)
         skip("Tahoma is not installed\n");
         return;
     }
-    if (!is_font_installed("MS UI Gothic") && !is_font_installed("Noto Sans CJK JP"))
+    memset(&lf, 0, sizeof(lf));
+    lf.lfCharSet = SHIFTJIS_CHARSET;
+    hdc = GetDC(0);
+    i = EnumFontFamiliesExA(hdc, &lf, is_font_installed_proc, 0, 0);
+    ReleaseDC(0, hdc);
+    if (i)
     {
         skip("no East Asian font to link to\n");
         return;

@@ -2033,6 +2033,7 @@ static void load_system_links(void)
     struct gdi_font_link *font_link, *system_font_link;
     struct gdi_font_face *face;
     const WCHAR *noto_cjk[] = { noto_sans_cjk_jpW, noto_sans_cjk_scW, noto_sans_cjk_tcW, noto_sans_cjk_krW, NULL };
+    const char *cjk_langs[] = { "ja", "zh-cn", "zh-tw", "ko" };
 
     static const WCHAR ms_shell_dlgW[] = {'M','S',' ','S','h','e','l','l',' ','D','l','g',0};
     static const WCHAR systemW[] = {'S','y','s','t','e','m',0};
@@ -2104,9 +2105,18 @@ static void load_system_links(void)
        Noto CJK fonts only differ in their preferred glyph forms, link the first one. */
     switch (ansi_cp.CodePage)
     {
-    case 936: noto_cjk[0] = noto_sans_cjk_scW; noto_cjk[1] = noto_sans_cjk_jpW; break;
-    case 949: noto_cjk[0] = noto_sans_cjk_krW; noto_cjk[3] = noto_sans_cjk_jpW; break;
-    case 950: noto_cjk[0] = noto_sans_cjk_tcW; noto_cjk[2] = noto_sans_cjk_jpW; break;
+    case 936:
+        noto_cjk[0] = noto_sans_cjk_scW; noto_cjk[1] = noto_sans_cjk_jpW;
+        cjk_langs[0] = "zh-cn"; cjk_langs[1] = "ja";
+        break;
+    case 949:
+        noto_cjk[0] = noto_sans_cjk_krW; noto_cjk[3] = noto_sans_cjk_jpW;
+        cjk_langs[0] = "ko"; cjk_langs[3] = "ja";
+        break;
+    case 950:
+        noto_cjk[0] = noto_sans_cjk_tcW; noto_cjk[2] = noto_sans_cjk_jpW;
+        cjk_langs[0] = "zh-tw"; cjk_langs[2] = "ja";
+        break;
     }
     /* without Tahoma itself, the link would make the name resolve to Noto CJK */
     for (i = 0; noto_cjk[i] && find_family_from_name( tahomaW ); i++)
@@ -2115,6 +2125,31 @@ static void load_system_links(void)
         noto_cjk[i + 1] = NULL;
         populate_system_links( tahomaW, noto_cjk + i );
         break;
+    }
+    if (!noto_cjk[i])
+    {
+        /* no Noto CJK font, link the fonts that the host prefers for these languages */
+        WCHAR *path, *files[ARRAY_SIZE(cjk_langs)];
+        UINT indices[ARRAY_SIZE(cjk_langs)];
+        struct gdi_font_family *family;
+        DWORD count = font_funcs->get_language_fonts( cjk_langs, ARRAY_SIZE(cjk_langs), files, indices );
+
+        for (i = 0; i < count; i++)
+        {
+            path = get_nt_path( files[i] );
+            WINE_RB_FOR_EACH_ENTRY( family, &family_name_tree, struct gdi_font_family, name_entry )
+            {
+                if (family->family_name[0] == '@') continue;
+                LIST_FOR_EACH_ENTRY( face, &family->faces, struct gdi_font_face, entry )
+                    if (face->file && face->face_index == indices[i] && !wcsicmp( face->file, path )) break;
+                if (&face->entry == &family->faces) continue;
+                add_gdi_font_link_entry( add_gdi_font_link( tahomaW ), family->family_name, face->fs );
+                TRACE( "linked Tahoma to %s\n", debugstr_w(family->family_name) );
+                break;
+            }
+            free( path );
+            free( files[i] );
+        }
     }
 
     /* Explicitly add an entry for the system font, this links to Tahoma and any links

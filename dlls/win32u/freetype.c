@@ -132,11 +132,14 @@ MAKE_FUNCPTR(FcFontList);
 MAKE_FUNCPTR(FcFontMatch);
 MAKE_FUNCPTR(FcFontSetDestroy);
 MAKE_FUNCPTR(FcInit);
+MAKE_FUNCPTR(FcLangSetHasLang);
+MAKE_FUNCPTR(FcPatternAddBool);
 MAKE_FUNCPTR(FcPatternAddString);
 MAKE_FUNCPTR(FcPatternCreate);
 MAKE_FUNCPTR(FcPatternDestroy);
 MAKE_FUNCPTR(FcPatternGetBool);
 MAKE_FUNCPTR(FcPatternGetInteger);
+MAKE_FUNCPTR(FcPatternGetLangSet);
 MAKE_FUNCPTR(FcPatternGetString);
 MAKE_FUNCPTR(FcConfigGetFontDirs);
 MAKE_FUNCPTR(FcConfigGetCurrent);
@@ -1250,11 +1253,14 @@ static void init_fontconfig(void)
     LOAD_FUNCPTR(FcFontMatch);
     LOAD_FUNCPTR(FcFontSetDestroy);
     LOAD_FUNCPTR(FcInit);
+    LOAD_FUNCPTR(FcLangSetHasLang);
+    LOAD_FUNCPTR(FcPatternAddBool);
     LOAD_FUNCPTR(FcPatternAddString);
     LOAD_FUNCPTR(FcPatternCreate);
     LOAD_FUNCPTR(FcPatternDestroy);
     LOAD_FUNCPTR(FcPatternGetBool);
     LOAD_FUNCPTR(FcPatternGetInteger);
+    LOAD_FUNCPTR(FcPatternGetLangSet);
     LOAD_FUNCPTR(FcPatternGetString);
     LOAD_FUNCPTR(FcConfigGetFontDirs);
     LOAD_FUNCPTR(FcConfigGetCurrent);
@@ -2006,6 +2012,63 @@ done:
 /*************************************************************
  * fontconfig_enum_family_fallbacks
  */
+#ifdef SONAME_LIBFONTCONFIG
+static BOOL pattern_has_lang( FcPattern *pattern, const char *lang )
+{
+    FcLangSet *langs;
+
+    return pFcPatternGetLangSet( pattern, FC_LANG, 0, &langs ) == FcResultMatch &&
+           pFcLangSetHasLang( langs, (const FcChar8 *)lang ) == FcLangEqual;
+}
+#endif
+
+/* get the fonts that fontconfig prefers for the languages, skipping the languages
+ * that an earlier font covers */
+static UINT fontconfig_get_language_fonts( const char * const *langs, UINT count,
+                                           WCHAR **files, UINT *indices )
+{
+    UINT ret = 0;
+#ifdef SONAME_LIBFONTCONFIG
+    FcPattern *pattern, *matches[8];
+    const char *unix_name;
+    FcResult result;
+    UINT i, j;
+    int index;
+
+    if (!fontconfig_enabled) return 0;
+
+    for (i = 0; i < count && ret < ARRAY_SIZE(matches); i++)
+    {
+        for (j = 0; j < ret; j++) if (pattern_has_lang( matches[j], langs[i] )) break;
+        if (j < ret) continue;
+
+        pattern = pFcPatternCreate();
+        pFcPatternAddString( pattern, FC_FAMILY, (const FcChar8 *)"sans" );
+        pFcPatternAddString( pattern, FC_LANG, (const FcChar8 *)langs[i] );
+        pFcPatternAddBool( pattern, FC_SCALABLE, FcTrue );
+        pFcPatternAddString( pattern, FC_PRGNAME, (const FcChar8 *)"wine" );
+        pFcConfigSubstitute( NULL, pattern, FcMatchPattern );
+        pFcDefaultSubstitute( pattern );
+        matches[ret] = pFcFontMatch( NULL, pattern, &result );
+        pFcPatternDestroy( pattern );
+        if (!matches[ret]) continue;
+
+        if (result != FcResultMatch || !pattern_has_lang( matches[ret], langs[i] ) ||
+            pFcPatternGetString( matches[ret], FC_FILE, 0, (FcChar8 **)&unix_name ) != FcResultMatch ||
+            ntdll_get_dos_file_name( unix_name, &files[ret], FILE_OPEN ))
+        {
+            pFcPatternDestroy( matches[ret] );
+            continue;
+        }
+        if (pFcPatternGetInteger( matches[ret], FC_INDEX, 0, &index ) != FcResultMatch) index = 0;
+        TRACE( "%s: %s index %d\n", langs[i], debugstr_a(unix_name), index );
+        indices[ret++] = index;
+    }
+    for (i = 0; i < ret; i++) pFcPatternDestroy( matches[i] );
+#endif
+    return ret;
+}
+
 static BOOL fontconfig_enum_family_fallbacks( UINT pitch_and_family, int index,
                                               WCHAR buffer[LF_FACESIZE] )
 {
@@ -3883,6 +3946,7 @@ static const struct font_backend_funcs font_funcs =
 {
     freetype_load_fonts,
     fontconfig_enum_family_fallbacks,
+    fontconfig_get_language_fonts,
     freetype_add_font,
     freetype_add_mem_font,
     freetype_load_font,

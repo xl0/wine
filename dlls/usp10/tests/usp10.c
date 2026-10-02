@@ -4118,8 +4118,9 @@ static void test_ScriptString_fallback(void)
     ok(!memcmp(widths, widths_link, sizeof(widths)), "got widths %d %d %d %d, without SSA_LINK %d %d %d %d\n",
        widths_link[0], widths_link[1], widths_link[2], widths_link[3], widths[0], widths[1], widths[2], widths[3]);
 
-    if (EnumFontFamiliesA(hdc, "SimSun", enum_any_font_proc, 0) &&
-        EnumFontFamiliesA(hdc, "Noto Sans CJK JP", enum_any_font_proc, 0))
+    memset(&lf, 0, sizeof(lf));
+    lf.lfCharSet = SHIFTJIS_CHARSET;
+    if (EnumFontFamiliesExA(hdc, &lf, enum_any_font_proc, 0, 0))
     {
         skip("no East Asian font\n");
     }

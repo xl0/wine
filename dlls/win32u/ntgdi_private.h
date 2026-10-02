@@ -321,6 +321,7 @@ struct font_backend_funcs
 {
     void  (*load_fonts)(void);
     BOOL  (*enum_family_fallbacks)( UINT pitch_and_family, int index, WCHAR buffer[LF_FACESIZE] );
+    UINT  (*get_language_fonts)( const char * const *langs, UINT count, WCHAR **files, UINT *indices );
     INT   (*add_font)( const WCHAR *file, UINT flags );
     INT   (*add_mem_font)( void *ptr, SIZE_T size, UINT flags );
 
