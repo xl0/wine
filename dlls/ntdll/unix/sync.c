@@ -2895,13 +2895,34 @@ NTSTATUS WINAPI NtSetIoCompletionEx( HANDLE completion_handle, HANDLE completion
     return ret;
 }
 
+/* complete the async I/O of a dequeued completion packet, in the dequeuing thread like Windows,
+ * or wait until the process that issued it did */
+static void complete_dequeued_async( client_ptr_t user, client_ptr_t iosb, HANDLE apc_wait, IO_STATUS_BLOCK *io )
+{
+    unsigned int status = io->Status;
+    ULONG_PTR info = io->Information;
+
+    if (apc_wait)
+    {
+        server_wait_for_object( apc_wait, FALSE, NULL );
+        NtClose( apc_wait );
+        return;
+    }
+    if (!user) return;
+    if (!complete_async_io( user, iosb, &status, &info ))
+        ERR( "async %s can't be restarted\n", wine_dbgstr_longlong( user ));
+    io->Status = status;
+    io->Information = info;
+}
+
 /***********************************************************************
  *             NtRemoveIoCompletion (NTDLL.@)
  */
 NTSTATUS WINAPI NtRemoveIoCompletion( HANDLE handle, ULONG_PTR *key, ULONG_PTR *value,
                                       IO_STATUS_BLOCK *io, LARGE_INTEGER *timeout )
 {
-    HANDLE wait_handle = NULL;
+    HANDLE wait_handle = NULL, apc_wait = NULL;
+    client_ptr_t user = 0, iosb = 0;
     LARGE_INTEGER rounded;
     unsigned int status;
 
@@ -2917,28 +2938,37 @@ NTSTATUS WINAPI NtRemoveIoCompletion( HANDLE handle, ULONG_PTR *key, ULONG_PTR *
             *value          = reply->cvalue;
             io->Information = reply->information;
             io->Status      = reply->status;
+            user            = reply->user;
+            iosb            = reply->iosb;
+            apc_wait        = wine_server_ptr_handle( reply->wait_handle );
         }
         else wait_handle = wine_server_ptr_handle( reply->wait_handle );
     }
     SERVER_END_REQ;
-    if (status != STATUS_PENDING) return status;
-    if (!timeout || timeout->QuadPart)
-        status = server_wait_for_object( wait_handle, FALSE, round_timeout( timeout, &rounded ));
-    else                               status = STATUS_TIMEOUT;
-    if (status != WAIT_OBJECT_0) return status;
-
-    SERVER_START_REQ( get_thread_completion )
+    if (status == STATUS_PENDING)
     {
-        if (!(status = wine_server_call( req )))
-        {
-            *key            = reply->ckey;
-            *value          = reply->cvalue;
-            io->Information = reply->information;
-            io->Status      = reply->status;
-        }
-    }
-    SERVER_END_REQ;
+        if (!timeout || timeout->QuadPart)
+            status = server_wait_for_object( wait_handle, FALSE, round_timeout( timeout, &rounded ));
+        else
+            status = STATUS_TIMEOUT;
+        if (status != WAIT_OBJECT_0) return status;
 
+        SERVER_START_REQ( get_thread_completion )
+        {
+            if (!(status = wine_server_call( req )))
+            {
+                *key            = reply->ckey;
+                *value          = reply->cvalue;
+                io->Information = reply->information;
+                io->Status      = reply->status;
+                user            = reply->user;
+                iosb            = reply->iosb;
+                apc_wait        = wine_server_ptr_handle( reply->wait_handle );
+            }
+        }
+        SERVER_END_REQ;
+    }
+    complete_dequeued_async( user, iosb, apc_wait, io );
     return status;
 }
 
@@ -2949,7 +2979,8 @@ NTSTATUS WINAPI NtRemoveIoCompletion( HANDLE handle, ULONG_PTR *key, ULONG_PTR *
 NTSTATUS WINAPI NtRemoveIoCompletionEx( HANDLE handle, FILE_IO_COMPLETION_INFORMATION *info, ULONG count,
                                         ULONG *written, LARGE_INTEGER *timeout, BOOLEAN alertable )
 {
-    HANDLE wait_handle = NULL;
+    HANDLE wait_handle = NULL, apc_wait = NULL;
+    client_ptr_t user = 0, iosb = 0;
     LARGE_INTEGER rounded;
     unsigned int status;
     ULONG i = 0;
@@ -2970,11 +3001,15 @@ NTSTATUS WINAPI NtRemoveIoCompletionEx( HANDLE handle, FILE_IO_COMPLETION_INFORM
                 info[i].CompletionValue           = reply->cvalue;
                 info[i].IoStatusBlock.Information = reply->information;
                 info[i].IoStatusBlock.Status      = reply->status;
+                user                              = reply->user;
+                iosb                              = reply->iosb;
+                apc_wait                          = wine_server_ptr_handle( reply->wait_handle );
             }
             else wait_handle = wine_server_ptr_handle( reply->wait_handle );
         }
         SERVER_END_REQ;
         if (status != STATUS_SUCCESS) break;
+        complete_dequeued_async( user, iosb, apc_wait, &info[i].IoStatusBlock );
         ++i;
     }
     if (i || (status != STATUS_PENDING && status != STATUS_USER_APC))
@@ -3001,10 +3036,17 @@ NTSTATUS WINAPI NtRemoveIoCompletionEx( HANDLE handle, FILE_IO_COMPLETION_INFORM
             info[i].CompletionValue           = reply->cvalue;
             info[i].IoStatusBlock.Information = reply->information;
             info[i].IoStatusBlock.Status      = reply->status;
-            ++i;
+            user                              = reply->user;
+            iosb                              = reply->iosb;
+            apc_wait                          = wine_server_ptr_handle( reply->wait_handle );
         }
     }
     SERVER_END_REQ;
+    if (!status)
+    {
+        complete_dequeued_async( user, iosb, apc_wait, &info[i].IoStatusBlock );
+        ++i;
+    }
 
 done:
     *written = i ? i : 1;

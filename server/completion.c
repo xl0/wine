@@ -57,7 +57,14 @@ struct comp_msg
     apc_param_t   cvalue;
     apc_param_t   information;
     unsigned int  status;
+    struct async *async;          /* async completed by the thread that dequeues it */
 };
+
+static void free_comp_msg( struct comp_msg *msg )
+{
+    if (msg->async) release_object( msg->async );
+    free( msg );
+}
 
 struct completion_wait
 {
@@ -100,7 +107,7 @@ static void completion_wait_destroy( struct object *obj )
 {
     struct completion_wait *wait = (struct completion_wait *)obj;
 
-    free( wait->msg );
+    if (wait->msg) free_comp_msg( wait->msg );
 }
 
 static void completion_wait_dump( struct object *obj, int verbose )
@@ -116,7 +123,7 @@ static int completion_wait_signaled( struct object *obj, struct wait_queue_entry
     struct completion_wait *wait = (struct completion_wait *)obj;
 
     assert( obj->ops == &completion_wait_ops );
-    if (!wait->completion) return 1;
+    if (!wait->completion || wait->msg) return 1;  /* a satisfied wait keeps its packet until fetched */
     return wait->completion->depth;
 }
 
@@ -132,12 +139,12 @@ static void completion_wait_satisfied( struct object *obj, struct wait_queue_ent
         make_wait_abandoned( entry );
         return;
     }
+    if (wait->msg) return;  /* not fetched yet */
     msg_entry = list_head( &wait->completion->queue );
     assert( msg_entry );
     msg = LIST_ENTRY( msg_entry, struct comp_msg, queue_entry );
     --wait->completion->depth;
     list_remove( &msg->queue_entry );
-    if (wait->msg) free( wait->msg );
     wait->msg = msg;
 }
 
@@ -170,7 +177,7 @@ static void completion_destroy( struct object *obj)
 
     LIST_FOR_EACH_ENTRY_SAFE( tmp, next, &completion->queue, struct comp_msg, queue_entry )
     {
-        free( tmp );
+        free_comp_msg( tmp );
     }
 
     if (completion->sync) release_object( completion->sync );
@@ -207,8 +214,16 @@ static int completion_close_handle( struct object *obj, struct process *process,
 {
     struct completion *completion = (struct completion *)obj;
     struct completion_wait *wait, *wait_next;
+    struct comp_msg *msg;
 
     if (completion->obj.handle_count != 1) return 1;
+
+    /* nobody can dequeue the packets anymore, drop the asyncs (they reference the port) */
+    LIST_FOR_EACH_ENTRY( msg, &completion->queue, struct comp_msg, queue_entry )
+    {
+        if (msg->async) release_object( msg->async );
+        msg->async = NULL;
+    }
 
     LIST_FOR_EACH_ENTRY_SAFE( wait, wait_next, &completion->wait_queue, struct completion_wait, wait_queue_entry )
     {
@@ -260,8 +275,8 @@ struct completion *get_completion_obj( struct process *process, obj_handle_t han
     return (struct completion *) get_handle_obj( process, handle, access, &completion_ops );
 }
 
-void add_completion( struct completion *completion, apc_param_t ckey, apc_param_t cvalue,
-                     unsigned int status, apc_param_t information )
+void add_completion_async( struct completion *completion, apc_param_t ckey, apc_param_t cvalue,
+                           unsigned int status, apc_param_t information, struct async *async )
 {
     struct comp_msg *msg = mem_alloc( sizeof( *msg ) );
     struct completion_wait *wait;
@@ -273,6 +288,7 @@ void add_completion( struct completion *completion, apc_param_t ckey, apc_param_
     msg->cvalue = cvalue;
     msg->status = status;
     msg->information = information;
+    msg->async = async && completion->obj.handle_count ? (struct async *)grab_object( async ) : NULL;
 
     list_add_tail( &completion->queue, &msg->queue_entry );
     completion->depth++;
@@ -282,6 +298,36 @@ void add_completion( struct completion *completion, apc_param_t ckey, apc_param_
         if (list_empty( &completion->queue )) return;
     }
     if (!list_empty( &completion->queue )) signal_sync( completion->sync );
+}
+
+void add_completion( struct completion *completion, apc_param_t ckey, apc_param_t cvalue,
+                     unsigned int status, apc_param_t information )
+{
+    add_completion_async( completion, ckey, cvalue, status, information, NULL );
+}
+
+/* return a dequeued completion message to the current thread */
+static void reply_comp_msg( struct comp_msg *msg, apc_param_t *ckey, apc_param_t *cvalue, apc_param_t *information,
+                            unsigned int *status, client_ptr_t *user, client_ptr_t *iosb, obj_handle_t *wait )
+{
+    *ckey = msg->ckey;
+    *cvalue = msg->cvalue;
+    *information = msg->information;
+    *status = msg->status;
+    if (msg->async && !(*user = async_dequeue_completion( msg->async, iosb, status, wait )) && !*wait)
+    {
+        /* the issuing process is gone, like Windows report the I/O as aborted */
+        *status = STATUS_CANCELLED;
+        *information = 0;
+    }
+    else if (msg->async && *user && *status == STATUS_ALERTED)
+    {
+        /* keep the async alive until the client fetched its output data */
+        if (current->completion_async) release_object( current->completion_async );
+        current->completion_async = msg->async;
+        msg->async = NULL;
+    }
+    free_comp_msg( msg );
 }
 
 /* create a completion */
@@ -361,12 +407,8 @@ DECL_HANDLER(remove_completion)
         list_remove( entry );
         completion->depth--;
         msg = LIST_ENTRY( entry, struct comp_msg, queue_entry );
-        reply->ckey = msg->ckey;
-        reply->cvalue = msg->cvalue;
-        reply->status = msg->status;
-        reply->information = msg->information;
-        free( msg );
-        reply->wait_handle = 0;
+        reply_comp_msg( msg, &reply->ckey, &reply->cvalue, &reply->information, &reply->status,
+                        &reply->user, &reply->iosb, &reply->wait_handle );
         if (list_empty( &completion->queue )) reset_sync( completion->sync );
     }
 
@@ -384,12 +426,9 @@ DECL_HANDLER(get_thread_completion)
         return;
     }
 
-    reply->ckey = msg->ckey;
-    reply->cvalue = msg->cvalue;
-    reply->status = msg->status;
-    reply->information = msg->information;
-    free( msg );
     current->completion_wait->msg = NULL;
+    reply_comp_msg( msg, &reply->ckey, &reply->cvalue, &reply->information, &reply->status,
+                    &reply->user, &reply->iosb, &reply->wait_handle );
     if (!current->completion_wait->completion) cleanup_thread_completion( current );
 }
 

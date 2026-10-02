@@ -255,6 +255,7 @@ extern void start_server( BOOL debug );
 extern unsigned int server_call_unlocked( void *req_ptr );
 extern void server_enter_uninterrupted_section( pthread_mutex_t *mutex, sigset_t *sigset );
 extern void server_leave_uninterrupted_section( pthread_mutex_t *mutex, sigset_t *sigset );
+extern BOOL complete_async_io( client_ptr_t user, client_ptr_t iosb, unsigned int *status, ULONG_PTR *info );
 extern unsigned int server_select( const union select_op *select_op, data_size_t size, UINT flags,
                                    timeout_t abs_timeout, struct context_data *context, struct user_apc *user_apc );
 extern unsigned int server_wait( const union select_op *select_op, data_size_t size, UINT flags,

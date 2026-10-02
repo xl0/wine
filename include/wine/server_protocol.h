@@ -5660,6 +5660,9 @@ struct remove_completion_reply
     apc_param_t   information;
     unsigned int  status;
     obj_handle_t  wait_handle;
+
+    client_ptr_t  user;
+    client_ptr_t  iosb;
 };
 
 
@@ -5676,7 +5679,9 @@ struct get_thread_completion_reply
     apc_param_t   cvalue;
     apc_param_t   information;
     unsigned int  status;
-    char __pad_36[4];
+    obj_handle_t  wait_handle;
+    client_ptr_t  user;
+    client_ptr_t  iosb;
 };
 
 
@@ -7306,6 +7311,6 @@ union generic_reply
     struct dcomp_get_shared_visual_info_reply dcomp_get_shared_visual_info_reply;
 };
 
-#define SERVER_PROTOCOL_VERSION 969
+#define SERVER_PROTOCOL_VERSION 970
 
 #endif /* __WINE_WINE_SERVER_PROTOCOL_H */

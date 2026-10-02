@@ -381,6 +381,7 @@ static inline void init_thread_structure( struct thread *thread )
     thread->creation_time = current_time;
     thread->exit_time     = 0;
     thread->completion_wait = NULL;
+    thread->completion_async = NULL;
 
     list_init( &thread->mutex_list );
     list_init( &thread->d3dkmt_mutexes );
@@ -561,6 +562,8 @@ static void cleanup_thread( struct thread *thread )
     int i;
 
     cleanup_thread_completion( thread );
+    if (thread->completion_async) release_object( thread->completion_async );
+    thread->completion_async = NULL;
     if (thread->context)
     {
         thread->context->status = STATUS_ACCESS_DENIED;
@@ -1454,6 +1457,21 @@ int thread_queue_apc( struct process *process, struct thread *thread, struct obj
         release_object( apc );
     }
     return ret;
+}
+
+/* queue an async procedure call, return a handle for the current process to wait for its execution */
+obj_handle_t thread_queue_apc_wait( struct process *process, struct thread *thread, struct object *owner,
+                                    const union apc_call *call_data )
+{
+    struct thread_apc *apc;
+    obj_handle_t handle = 0;
+
+    if ((apc = create_apc( owner, call_data )))
+    {
+        if (queue_apc( process, thread, apc )) handle = alloc_handle( current->process, apc, SYNCHRONIZE, 0 );
+        release_object( apc );
+    }
+    return handle;
 }
 
 /* cancel the async procedure call owned by a specific object */

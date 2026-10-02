@@ -3107,7 +3107,6 @@ static void test_async_cancel_on_handle_close(void)
 
             CloseHandle(read);
             /* Canceled asyncs with completion port and no event do not update IOSB before removing completion. */
-            todo_wine_if(other_process && tests[i].apc_context && !tests[i].event)
             ok(io.Status == 0xcccccccc, "got %#lx.\n", io.Status);
 
             if (other_process && tests[i].apc_context && !tests[i].event)

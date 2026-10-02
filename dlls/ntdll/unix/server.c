@@ -390,6 +390,22 @@ static NTSTATUS invoke_user_apc( CONTEXT *context, const struct user_apc *apc, N
 
 
 /***********************************************************************
+ *              complete_async_io
+ *
+ * Run the client callback of an async I/O and set its IOSB; FALSE if it must be restarted.
+ */
+BOOL complete_async_io( client_ptr_t user_ptr, client_ptr_t iosb, unsigned int *status, ULONG_PTR *info )
+{
+    struct async_fileio *user = wine_server_get_ptr( user_ptr );
+
+    if (!user->callback( user, info, status )) return FALSE;
+    /* the server will pass us NULL if a call failed synchronously */
+    set_async_iosb( iosb, *status, *info );
+    return TRUE;
+}
+
+
+/***********************************************************************
  *              invoke_system_apc
  */
 static void invoke_system_apc( const union apc_call *call, union apc_result *result, BOOL self )
@@ -405,18 +421,14 @@ static void invoke_system_apc( const union apc_call *call, union apc_result *res
         break;
     case APC_ASYNC_IO:
     {
-        struct async_fileio *user = wine_server_get_ptr( call->async_io.user );
         ULONG_PTR info = call->async_io.result;
-        unsigned int status;
+        unsigned int status = call->async_io.status;
 
         result->type = call->type;
-        status = call->async_io.status;
-        if (user->callback( user, &info, &status ))
+        if (complete_async_io( call->async_io.user, call->async_io.sb, &status, &info ))
         {
             result->async_io.status = status;
             result->async_io.total = info;
-            /* the server will pass us NULL if a call failed synchronously */
-            set_async_iosb( call->async_io.sb, result->async_io.status, info );
         }
         else result->async_io.status = STATUS_PENDING; /* restart it */
         break;

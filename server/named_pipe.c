@@ -1048,6 +1048,7 @@ static void pipe_end_read( struct fd *fd, struct async *async, file_pos_t pos )
         return;
     }
 
+    async_set_thread_agnostic( async );
     queue_async( &pipe_end->read_q, async );
     reselect_read_queue( pipe_end, 0 );
     set_error( STATUS_PENDING );
@@ -1082,6 +1083,7 @@ static void pipe_end_write( struct fd *fd, struct async *async, file_pos_t pos )
     if (!message) return;
 
     message->async = (struct async *)grab_object( async );
+    async_set_thread_agnostic( async );
     queue_async( &pipe_end->write_q, async );
     reselect_read_queue( pipe_end->connection, 1 );
     set_error( STATUS_PENDING );
@@ -1197,6 +1199,7 @@ static void pipe_end_transceive( struct pipe_end *pipe_end, struct async *async 
     if (!message) return;
     reselect_read_queue( pipe_end->connection, 0 );
 
+    async_set_thread_agnostic( async );
     queue_async( &pipe_end->read_q, async );
     reselect_read_queue( pipe_end, 0 );
     set_error( STATUS_PENDING );

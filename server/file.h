@@ -235,6 +235,8 @@ extern struct completion *get_completion_obj( struct process *process, obj_handl
 extern struct reserve *get_completion_reserve_obj( struct process *process, obj_handle_t handle, unsigned int access );
 extern void add_completion( struct completion *completion, apc_param_t ckey, apc_param_t cvalue,
                             unsigned int status, apc_param_t information );
+extern void add_completion_async( struct completion *completion, apc_param_t ckey, apc_param_t cvalue,
+                                  unsigned int status, apc_param_t information, struct async *async );
 extern void cleanup_thread_completion( struct thread *thread );
 
 /* serial port functions */
@@ -261,6 +263,9 @@ extern void async_wake_obj( struct async *async );
 extern int async_waiting( struct async_queue *queue );
 extern int async_queue_has_waiting_asyncs( struct async_queue *queue );
 extern void async_terminate( struct async *async, unsigned int status );
+extern void async_set_thread_agnostic( struct async *async );
+extern client_ptr_t async_dequeue_completion( struct async *async, client_ptr_t *iosb, unsigned int *status,
+                                              obj_handle_t *wait );
 extern void async_request_complete( struct async *async, unsigned int status, data_size_t result,
                                     data_size_t out_size, void *out_data );
 extern void async_request_complete_alloc( struct async *async, unsigned int status, data_size_t result,

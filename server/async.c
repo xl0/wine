@@ -116,6 +116,8 @@ struct async
     unsigned int         unknown_status :1; /* initial status is not known yet */
     unsigned int         blocking :1;     /* async is blocking */
     unsigned int         is_system :1;    /* background system operation not affecting userspace visible state. */
+    unsigned int         thread_agnostic :1; /* may be completed by the thread that dequeues its completion */
+    unsigned int         dequeue_completion :1; /* completed by the thread that dequeues the completion packet */
     struct completion   *completion;      /* completion associated with fd */
     apc_param_t          comp_key;        /* completion key associated with fd */
     unsigned int         comp_flags;      /* completion flags */
@@ -128,6 +130,8 @@ static void async_dump( struct object *obj, int verbose );
 static int async_signaled( struct object *obj, struct wait_queue_entry *entry );
 static void async_satisfied( struct object * obj, struct wait_queue_entry *entry );
 static void async_destroy( struct object *obj );
+static void async_finish( struct async *async );
+static void async_complete_cancel( struct async *async );
 
 static const struct object_ops async_ops =
 {
@@ -209,6 +213,68 @@ static void async_destroy( struct object *obj )
     release_object( async->thread );
 }
 
+/* Windows completes I/O on a file with a completion port and no event in the thread that
+ * dequeues the completion packet (thread agnostic I/O): output data and IOSB are written
+ * there, not when the I/O completes. Queue the packet with the async in that case instead
+ * of asking the issuing thread to complete it. */
+static int async_complete_on_dequeue( struct async *async, unsigned int status )
+{
+    if (!async->thread_agnostic) return 0;
+    /* the client still has to perform the I/O, or it completed synchronously */
+    if (status == STATUS_ALERTED || async->initial_status != STATUS_PENDING || async->unknown_status) return 0;
+    if (!async->iosb || async->is_system || async->event || async->data.apc || !async->data.apc_context) return 0;
+    if (async->fd && !async->completion) async->completion = fd_get_completion( async->fd, &async->comp_key );
+    if (!async->completion) return 0;
+
+    if (async->timeout) remove_timeout_user( async->timeout );
+    async->timeout = NULL;
+    async->dequeue_completion = 1;
+    add_completion_async( async->completion, async->comp_key, async->data.apc_context,
+                          async->iosb->status, async->iosb->result, async );
+    if (!async->signaled)
+    {
+        async->signaled = 1;
+        wake_up( &async->obj, 0 );
+    }
+    /* cancellation doesn't wait for the dequeue */
+    async_complete_cancel( async );
+    return 1;
+}
+
+/* let the async be completed by the thread that dequeues its completion packet; the file is
+ * then not signaled on completion, like named pipes on Windows */
+void async_set_thread_agnostic( struct async *async )
+{
+    async->thread_agnostic = 1;
+}
+
+/* the current thread dequeued the completion packet of an async completed on dequeue:
+ * return the client callback and IOSB it has to complete; 0 if the issuing process does
+ * it because the current thread can't, then *wait is a handle to wait for that */
+client_ptr_t async_dequeue_completion( struct async *async, client_ptr_t *iosb, unsigned int *status,
+                                       obj_handle_t *wait )
+{
+    async_finish( async );
+
+    if (async->thread->process != current->process)
+    {
+        union apc_call data;
+
+        memset( &data, 0, sizeof(data) );
+        data.type            = APC_ASYNC_IO;
+        data.async_io.user   = async->data.user;
+        data.async_io.sb     = async->data.iosb;
+        data.async_io.result = async->iosb->result;
+        data.async_io.status = async->iosb->out_data ? STATUS_ALERTED : async->iosb->status;
+        *wait = thread_queue_apc_wait( async->thread->process, async->thread, &async->obj, &data );
+        return 0;
+    }
+    /* if there is output data, the client fetches it with get_async_result */
+    if (async->iosb->out_data) *status = STATUS_ALERTED;
+    *iosb = async->data.iosb;
+    return async->data.user;
+}
+
 /* notifies client thread of new status of its async request */
 void async_terminate( struct async *async, unsigned int status )
 {
@@ -226,7 +292,7 @@ void async_terminate( struct async *async, unsigned int status )
      * last reference to the async, so grab a temporary reference here */
     grab_object( async );
 
-    if (!async->direct_result)
+    if (!async->direct_result && !async_complete_on_dequeue( async, status ))
     {
         union apc_call data;
 
@@ -327,6 +393,8 @@ struct async *create_async( struct fd *fd, struct thread *thread, const struct a
     async->unknown_status = 0;
     async->blocking      = !is_fd_overlapped( fd );
     async->is_system     = 0;
+    async->thread_agnostic = 0;
+    async->dequeue_completion = 0;
     async->completion    = fd_get_completion( fd, &async->comp_key );
     async->comp_flags    = 0;
     async->completion_callback = NULL;
@@ -547,6 +615,21 @@ static void async_complete_cancel( struct async *async )
     }
 }
 
+static void async_finish( struct async *async )
+{
+    async_call_completion_callback( async );
+    async_complete_cancel( async );
+
+    if (async->queue)
+    {
+        list_remove( &async->queue_entry );
+        async_reselect( async );
+        async->fd = NULL;
+        async->queue = NULL;
+        release_object( async );
+    }
+}
+
 /* store the result of the client-side async callback */
 void async_set_result( struct object *obj, unsigned int status, apc_param_t total )
 {
@@ -555,6 +638,8 @@ void async_set_result( struct object *obj, unsigned int status, apc_param_t tota
     if (obj->ops != &async_ops) return;  /* in case the client messed up the APC results */
 
     assert( async->terminated );  /* it must have been woken up if we get a result */
+
+    if (async->dequeue_completion) return;  /* already completed and reported */
 
     if (async->unknown_status) async_set_initial_status( async, status );
 
@@ -604,17 +689,7 @@ void async_set_result( struct object *obj, unsigned int status, apc_param_t tota
             wake_up( &async->obj, 0 );
         }
 
-        async_call_completion_callback( async );
-        async_complete_cancel( async );
-
-        if (async->queue)
-        {
-            list_remove( &async->queue_entry );
-            async_reselect( async );
-            async->fd = NULL;
-            async->queue = NULL;
-            release_object( async );
-        }
+        async_finish( async );
     }
 }
 
@@ -679,7 +754,7 @@ restart:
             (!iosb || async->data.iosb == iosb))
         {
             if (!async->canceled) cancel_async( async );
-            if (cancel)
+            if (cancel && !async->dequeue_completion)
             {
                 assert( !async->async_cancel );
                 async->async_cancel = cancel;
@@ -932,6 +1007,12 @@ DECL_HANDLER(get_async_result)
         }
     }
     set_error( iosb->status );
+
+    if (current->completion_async == async)
+    {
+        current->completion_async = NULL;
+        release_object( async );
+    }
 }
 
 /* notify direct completion of async and close the wait handle if not blocking */

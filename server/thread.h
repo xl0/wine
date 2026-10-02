@@ -100,6 +100,7 @@ struct thread
     data_size_t            desc_len;      /* thread description length in bytes */
     WCHAR                 *desc;          /* thread description string */
     struct completion_wait *completion_wait; /* completion port wait object the thread is associated with */
+    struct async          *completion_async; /* async of the last dequeued completion, until the client fetched its data */
 };
 
 extern struct thread *current;
@@ -125,6 +126,8 @@ extern void remove_queue( struct object *obj, struct wait_queue_entry *entry );
 extern void kill_thread( struct thread *thread, int violent_death );
 extern void wake_up( struct object *obj, int max );
 extern int thread_queue_apc( struct process *process, struct thread *thread, struct object *owner, const union apc_call *call_data );
+extern obj_handle_t thread_queue_apc_wait( struct process *process, struct thread *thread, struct object *owner,
+                                           const union apc_call *call_data );
 extern void thread_cancel_apc( struct thread *thread, struct object *owner, enum apc_type type );
 extern int thread_add_inflight_fd( struct thread *thread, int client, int server );
 extern int thread_get_inflight_fd( struct thread *thread, int client );

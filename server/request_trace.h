@@ -3170,6 +3170,8 @@ static void dump_remove_completion_reply( const struct remove_completion_reply *
     dump_uint64( ", information=", &req->information );
     fprintf( stderr, ", status=%08x", req->status );
     fprintf( stderr, ", wait_handle=%04x", req->wait_handle );
+    dump_uint64( ", user=", &req->user );
+    dump_uint64( ", iosb=", &req->iosb );
 }
 
 static void dump_get_thread_completion_request( const struct get_thread_completion_request *req )
@@ -3182,6 +3184,9 @@ static void dump_get_thread_completion_reply( const struct get_thread_completion
     dump_uint64( ", cvalue=", &req->cvalue );
     dump_uint64( ", information=", &req->information );
     fprintf( stderr, ", status=%08x", req->status );
+    fprintf( stderr, ", wait_handle=%04x", req->wait_handle );
+    dump_uint64( ", user=", &req->user );
+    dump_uint64( ", iosb=", &req->iosb );
 }
 
 static void dump_query_completion_request( const struct query_completion_request *req )
