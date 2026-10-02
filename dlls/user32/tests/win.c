@@ -14900,6 +14900,49 @@ static void test_GetProp_changes(void)
     DestroyWindow( hwnd );
 }
 
+static void blocked_owner_proc( HWND owner )
+{
+    DWORD start, elapsed;
+    HWND hwnd;
+
+    hwnd = CreateWindowExA( 0, "static", "owned", WS_POPUP, 0, 0, 100, 100, 0, 0, 0, NULL );
+    ok( hwnd != 0, "CreateWindowEx failed, error %lu\n", GetLastError() );
+    ShowWindow( hwnd, SW_SHOW );
+    SetWindowLongPtrA( hwnd, GWLP_HWNDPARENT, (LONG_PTR)owner );
+
+    /* resizing and moving an active popup doesn't need its owner's thread */
+    start = GetTickCount();
+    SetWindowPos( hwnd, 0, 0, 0, 120, 120, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED );
+    SetWindowPos( hwnd, 0, 20, 20, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE );
+    elapsed = GetTickCount() - start;
+    ok( elapsed < 1000, "SetWindowPos took %lu ms\n", elapsed );
+    DestroyWindow( hwnd );
+}
+
+static void test_blocked_owner( const char *argv0 )
+{
+    STARTUPINFOA startup = {.cb = sizeof(startup)};
+    PROCESS_INFORMATION info;
+    char cmd[MAX_PATH + 64];
+    HWND owner;
+    MSG msg;
+
+    owner = CreateWindowA( "static", "owner", WS_POPUP, 0, 0, 50, 50, 0, 0, 0, NULL );
+    sprintf( cmd, "%s win blocked_owner %p", argv0, owner );
+    ok( CreateProcessA( NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &startup, &info ),
+        "CreateProcess failed, error %lu\n", GetLastError() );
+    /* don't process messages for a while */
+    if (WaitForSingleObject( info.hProcess, 3000 ))
+    {
+        while (MsgWaitForMultipleObjects( 1, &info.hProcess, FALSE, 5000, QS_ALLINPUT ) == WAIT_OBJECT_0 + 1)
+            while (PeekMessageA( &msg, 0, 0, 0, PM_REMOVE )) DispatchMessageA( &msg );
+    }
+    wait_child_process( &info );
+    CloseHandle( info.hProcess );
+    CloseHandle( info.hThread );
+    DestroyWindow( owner );
+}
+
 START_TEST(win)
 {
     char **argv;
@@ -14942,6 +14985,11 @@ START_TEST(win)
         else if (!strcmp(argv[2], "test_other_process_window"))
         {
             other_process_proc(hwnd);
+            return;
+        }
+        else if (!strcmp(argv[2], "blocked_owner"))
+        {
+            blocked_owner_proc(hwnd);
             return;
         }
     }
@@ -15111,6 +15159,7 @@ START_TEST(win)
     test_tile_windows();
     test_GW_ENABLEDPOPUP();
     test_toolwindow_width_clamping_size();
+    test_blocked_owner( argv[0] );
 
     /* add the tests above this line */
     if (hhook) UnhookWindowsHookEx(hhook);

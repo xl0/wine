@@ -1202,11 +1202,15 @@ static void make_owner_managed( HWND hwnd )
     static const UINT flags = SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSIZE | SWP_NOMOVE | SWP_NOREDRAW |
                               SWP_DEFERERASE | SWP_NOSENDCHANGING | SWP_STATECHANGED;
     HWND owner;
+    DWORD pid;
 
     if (!(owner = NtUserGetWindowRelative( hwnd, GW_OWNER ))) return;
     if (is_managed( owner )) return;
 
-    NtUserSetWindowPos( owner, 0, 0, 0, 0, 0, flags );
+    /* an owner in this process must be managed before this window is mapped, so do it synchronously;
+     * don't wait for another process, which may be busy */
+    NtUserGetWindowThread( owner, &pid );
+    NtUserSetWindowPos( owner, 0, 0, 0, 0, 0, pid == GetCurrentProcessId() ? flags : flags | SWP_ASYNCWINDOWPOS );
 }
 
 
