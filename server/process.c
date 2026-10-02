@@ -1326,10 +1326,10 @@ DECL_HANDLER(new_process)
         process->debug_obj = debug_obj;
         process->debug_children = !(req->flags & PROCESS_CREATE_FLAGS_NO_DEBUG_INHERIT);
     }
-    else if (parent->debug_children)
+    else if (parent->debug_obj && parent->debug_children)
     {
         process->debug_obj = parent->debug_obj;
-        /* debug_children is set to 1 by default */
+        process->debug_children = !(req->flags & PROCESS_CREATE_FLAGS_NO_DEBUG_INHERIT);
     }
 
     if (info->data->process_group_id == parent->group_id)

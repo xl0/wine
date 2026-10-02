@@ -2650,6 +2650,59 @@ static void test_query_process_debug_object_handle(int argc, char **argv)
     ok(ret, "CloseHandle failed with last error %lu\n", GetLastError());
 }
 
+static DWORD get_child_debug_flags( ULONG process_flags )
+{
+    RTL_USER_PROCESS_PARAMETERS *params;
+    PS_CREATE_INFO create_info;
+    PS_ATTRIBUTE_LIST ps_attr;
+    WCHAR path[MAX_PATH + 4];
+    HANDLE process, thread;
+    UNICODE_STRING imageW;
+    DWORD debug_flags = 0xdeadbeef;
+    NTSTATUS status;
+
+    lstrcpyW( path, L"\\??\\" );
+    GetModuleFileNameW( NULL, path + 4, MAX_PATH );
+    RtlInitUnicodeString( &imageW, path );
+
+    memset( &ps_attr, 0, sizeof(ps_attr) );
+    ps_attr.Attributes[0].Attribute = PS_ATTRIBUTE_IMAGE_NAME;
+    ps_attr.Attributes[0].Size = lstrlenW( path ) * sizeof(WCHAR);
+    ps_attr.Attributes[0].ValuePtr = path;
+    ps_attr.TotalLength = sizeof(ps_attr);
+
+    status = RtlCreateProcessParametersEx( &params, &imageW, NULL, NULL, NULL, NULL, NULL, NULL,
+                                           NULL, NULL, PROCESS_PARAMS_FLAG_NORMALIZED );
+    ok( !status, "RtlCreateProcessParametersEx failed, status %#lx.\n", status );
+
+    memset( &create_info, 0, sizeof(create_info) );
+    create_info.Size = sizeof(create_info);
+    status = NtCreateUserProcess( &process, &thread, PROCESS_ALL_ACCESS, THREAD_ALL_ACCESS, NULL, NULL,
+                                  process_flags, THREAD_CREATE_FLAGS_CREATE_SUSPENDED, params,
+                                  &create_info, &ps_attr );
+    ok( !status, "NtCreateUserProcess failed, status %#lx.\n", status );
+    RtlDestroyProcessParameters( params );
+    if (status) return debug_flags;
+
+    status = NtQueryInformationProcess( process, ProcessDebugFlags, &debug_flags, sizeof(debug_flags), NULL );
+    ok( !status, "NtQueryInformationProcess failed, status %#lx.\n", status );
+    NtTerminateProcess( process, 0 );
+    NtClose( thread );
+    NtClose( process );
+    return debug_flags;
+}
+
+static void test_debuggee_no_debug_inherit(void)
+{
+    DWORD debug_flags;
+
+    /* the child inherits our debugger, but not ProcessDebugFlags */
+    debug_flags = get_child_debug_flags( 0 );
+    ok( debug_flags == 1, "got %lu.\n", debug_flags );
+    debug_flags = get_child_debug_flags( PROCESS_CREATE_FLAGS_NO_DEBUG_INHERIT );
+    ok( debug_flags == 0, "got %lu.\n", debug_flags );
+}
+
 static void test_query_process_debug_flags(int argc, char **argv)
 {
     static const DWORD test_flags[] = { DEBUG_PROCESS,
@@ -2798,6 +2851,24 @@ static void test_query_process_debug_flags(int argc, char **argv)
         ret = CloseHandle(pi.hProcess);
         ok(ret, "CloseHandle failed, last error %#lx.\n", GetLastError());
     }
+
+    debug_flags = get_child_debug_flags( 0 );
+    ok( debug_flags == 1, "got %lu.\n", debug_flags );
+    debug_flags = get_child_debug_flags( PROCESS_CREATE_FLAGS_NO_DEBUG_INHERIT );
+    ok( debug_flags == 1, "got %lu.\n", debug_flags );
+
+    sprintf(cmdline, "%s %s %s", argv[0], argv[1], "debuggee:nodebuginherit");
+    ret = CreateProcessA(NULL, cmdline, NULL, NULL, FALSE, DEBUG_PROCESS, NULL, NULL, &si, &pi);
+    ok(ret, "CreateProcess failed, last error %#lx.\n", GetLastError());
+    do
+    {
+        ret = WaitForDebugEvent(&ev, 10000);
+        ok(ret, "WaitForDebugEvent failed, last error %#lx.\n", GetLastError());
+        if (!ret) break;
+        ret = ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE);
+        ok(ret, "ContinueDebugEvent failed, last error %#lx.\n", GetLastError());
+    } while (ev.dwDebugEventCode != EXIT_PROCESS_DEBUG_EVENT || ev.dwProcessId != pi.dwProcessId);
+    wait_child_process(&pi);
 }
 
 static void test_query_process_quota_limits(void)
@@ -4685,6 +4756,7 @@ START_TEST(info)
     if (argc >= 3)
     {
         if (strcmp(argv[2], "debuggee:dbgport") == 0) test_debuggee_dbgport(argc - 2, argv + 2);
+        else if (!strcmp(argv[2], "debuggee:nodebuginherit")) test_debuggee_no_debug_inherit();
         else if (!strcmp(argv[2], "check_pp_flags"))  test_debuggee_process_parameters_flags(argc - 2, argv + 2);
         return; /* Child */
     }
