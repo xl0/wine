@@ -2032,6 +2032,7 @@ static void load_system_links(void)
     const WCHAR *shelldlg_name;
     struct gdi_font_link *font_link, *system_font_link;
     struct gdi_font_face *face;
+    struct gdi_font_family *family;
     const WCHAR *noto_cjk[] = { noto_sans_cjk_jpW, noto_sans_cjk_scW, noto_sans_cjk_tcW, noto_sans_cjk_krW, NULL };
     const char *cjk_langs[] = { "ja", "zh-cn", "zh-tw", "ko" };
 
@@ -2121,9 +2122,11 @@ static void load_system_links(void)
     /* without Tahoma itself, the link would make the name resolve to Noto CJK */
     for (i = 0; noto_cjk[i] && find_family_from_name( tahomaW ); i++)
     {
-        if (!find_family_from_name( noto_cjk[i] )) continue;
-        noto_cjk[i + 1] = NULL;
-        populate_system_links( tahomaW, noto_cjk + i );
+        if (!(family = find_family_from_name( noto_cjk[i] ))) continue;
+        /* all fonts fall back to these links, add them even if Tahoma has a substitute */
+        face = LIST_ENTRY( list_head( &family->faces ), struct gdi_font_face, entry );
+        add_gdi_font_link_entry( add_gdi_font_link( tahomaW ), family->family_name, face->fs );
+        TRACE( "linked Tahoma to %s\n", debugstr_w(family->family_name) );
         break;
     }
     if (!noto_cjk[i])
@@ -2131,7 +2134,6 @@ static void load_system_links(void)
         /* no Noto CJK font, link the fonts that the host prefers for these languages */
         WCHAR *path, *files[ARRAY_SIZE(cjk_langs)];
         UINT indices[ARRAY_SIZE(cjk_langs)];
-        struct gdi_font_family *family;
         DWORD count = font_funcs->get_language_fonts( cjk_langs, ARRAY_SIZE(cjk_langs), files, indices );
 
         for (i = 0; i < count; i++)
