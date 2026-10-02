@@ -330,6 +330,30 @@ static void reply_comp_msg( struct comp_msg *msg, apc_param_t *ckey, apc_param_t
     free_comp_msg( msg );
 }
 
+/* associate the current thread with a completion port */
+static struct completion_wait *bind_thread_completion( struct completion *completion )
+{
+    if (current->completion_wait)
+        list_remove( &current->completion_wait->wait_queue_entry );
+    else if (!(current->completion_wait = create_completion_wait( current )))
+        return NULL;
+    current->completion_wait->completion = completion;
+    list_add_head( &completion->wait_queue, &current->completion_wait->wait_queue_entry );
+    return current->completion_wait;
+}
+
+/* associate the current thread with a completion port, return the object to wait on for a packet */
+struct object *get_completion_wait_obj( obj_handle_t handle )
+{
+    struct completion *completion = get_completion_obj( current->process, handle, IO_COMPLETION_MODIFY_STATE );
+    struct completion_wait *wait;
+
+    if (!completion) return NULL;
+    wait = bind_thread_completion( completion );
+    release_object( completion );
+    return wait ? grab_object( &wait->obj ) : NULL;
+}
+
 /* create a completion */
 DECL_HANDLER(create_completion)
 {
@@ -386,17 +410,11 @@ DECL_HANDLER(remove_completion)
         release_object( completion );
         return;
     }
-    if (current->completion_wait)
-    {
-        list_remove( &current->completion_wait->wait_queue_entry );
-    }
-    else if (!(current->completion_wait = create_completion_wait( current )))
+    if (!bind_thread_completion( completion ))
     {
         release_object( completion );
         return;
     }
-    current->completion_wait->completion = completion;
-    list_add_head( &completion->wait_queue, &current->completion_wait->wait_queue_entry );
     if (!entry)
     {
         reply->wait_handle = current->completion_wait->handle;

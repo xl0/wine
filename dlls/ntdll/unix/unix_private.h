@@ -122,6 +122,7 @@ struct thread_data
     BOOL         high_res_timers;   /* timed waits are exempt from the default timer resolution */
     BOOL         suspend;           /* suspend on startup */
     BOOL         filesys_redir;     /* WOW64_TLS_FILESYSREDIR before the TEB is created */
+    HANDLE       empty_port;        /* completion port whose queue was empty when last checked */
     pthread_t    pthread_id;        /* pthread thread id */
     void        *jmp_buf;           /* setjmp buffer for exception handling */
     void        *start;             /* thread entry point */

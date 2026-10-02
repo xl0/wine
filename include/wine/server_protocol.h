@@ -464,7 +464,8 @@ enum select_opcode
     SELECT_WAIT_ALL,
     SELECT_SIGNAL_AND_WAIT,
     SELECT_KEYED_EVENT_WAIT,
-    SELECT_KEYED_EVENT_RELEASE
+    SELECT_KEYED_EVENT_RELEASE,
+    SELECT_WAIT_COMPLETION
 };
 
 union select_op
@@ -488,6 +489,11 @@ union select_op
         obj_handle_t    handle;
         client_ptr_t    key;
     } keyed_event;
+    struct
+    {
+        enum select_opcode op;
+        obj_handle_t    handle;
+    } completion;
 };
 
 enum apc_type
@@ -7311,6 +7317,6 @@ union generic_reply
     struct dcomp_get_shared_visual_info_reply dcomp_get_shared_visual_info_reply;
 };
 
-#define SERVER_PROTOCOL_VERSION 970
+#define SERVER_PROTOCOL_VERSION 971
 
 #endif /* __WINE_WINE_SERVER_PROTOCOL_H */

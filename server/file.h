@@ -238,6 +238,7 @@ extern void add_completion( struct completion *completion, apc_param_t ckey, apc
 extern void add_completion_async( struct completion *completion, apc_param_t ckey, apc_param_t cvalue,
                                   unsigned int status, apc_param_t information, struct async *async );
 extern void cleanup_thread_completion( struct thread *thread );
+extern struct object *get_completion_wait_obj( obj_handle_t handle );
 
 /* serial port functions */
 

@@ -629,6 +629,9 @@ static void dump_varargs_select_op( const char *prefix, data_size_t size )
                  data.keyed_event.handle );
         dump_uint64( ",key=", &data.keyed_event.key );
         break;
+    case SELECT_WAIT_COMPLETION:
+        fprintf( stderr, "WAIT_COMPLETION,handle=%04x", data.completion.handle );
+        break;
     default:
         fprintf( stderr, "op=%u", data.op );
         break;

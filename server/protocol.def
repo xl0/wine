@@ -480,7 +480,8 @@ enum select_opcode
     SELECT_WAIT_ALL,
     SELECT_SIGNAL_AND_WAIT,
     SELECT_KEYED_EVENT_WAIT,
-    SELECT_KEYED_EVENT_RELEASE
+    SELECT_KEYED_EVENT_RELEASE,
+    SELECT_WAIT_COMPLETION
 };
 
 union select_op
@@ -504,6 +505,11 @@ union select_op
         obj_handle_t    handle;
         client_ptr_t    key;
     } keyed_event;
+    struct
+    {
+        enum select_opcode op;   /* SELECT_WAIT_COMPLETION: associate with the port, wait for a packet */
+        obj_handle_t    handle;  /* completion port, the packet is returned by get_thread_completion */
+    } completion;
 };
 
 enum apc_type

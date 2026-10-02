@@ -2921,6 +2921,7 @@ static void complete_dequeued_async( client_ptr_t user, client_ptr_t iosb, HANDL
 NTSTATUS WINAPI NtRemoveIoCompletion( HANDLE handle, ULONG_PTR *key, ULONG_PTR *value,
                                       IO_STATUS_BLOCK *io, LARGE_INTEGER *timeout )
 {
+    struct thread_data *thread_data = get_thread_data();
     HANDLE wait_handle = NULL, apc_wait = NULL;
     client_ptr_t user = 0, iosb = 0;
     LARGE_INTEGER rounded;
@@ -2928,31 +2929,44 @@ NTSTATUS WINAPI NtRemoveIoCompletion( HANDLE handle, ULONG_PTR *key, ULONG_PTR *
 
     TRACE( "(%p, %p, %p, %p, %p)\n", handle, key, value, io, timeout );
 
-    SERVER_START_REQ( remove_completion )
+    if ((!timeout || timeout->QuadPart) && thread_data->empty_port == handle)
     {
-        req->handle = wine_server_obj_handle( handle );
-        req->alertable = 0;
-        if (!(status = wine_server_call( req )))
-        {
-            *key            = reply->ckey;
-            *value          = reply->cvalue;
-            io->Information = reply->information;
-            io->Status      = reply->status;
-            user            = reply->user;
-            iosb            = reply->iosb;
-            apc_wait        = wine_server_ptr_handle( reply->wait_handle );
-        }
-        else wait_handle = wine_server_ptr_handle( reply->wait_handle );
+        /* the queue was empty when we last looked, associate with the port and wait at once */
+        union select_op select_op;
+
+        select_op.completion.op = SELECT_WAIT_COMPLETION;
+        select_op.completion.handle = wine_server_obj_handle( handle );
+        status = server_wait( &select_op, sizeof(select_op.completion), SELECT_INTERRUPTIBLE,
+                              round_timeout( timeout, &rounded ));
     }
-    SERVER_END_REQ;
-    if (status == STATUS_PENDING)
+    else
     {
+        SERVER_START_REQ( remove_completion )
+        {
+            req->handle = wine_server_obj_handle( handle );
+            req->alertable = 0;
+            if (!(status = wine_server_call( req )))
+            {
+                *key            = reply->ckey;
+                *value          = reply->cvalue;
+                io->Information = reply->information;
+                io->Status      = reply->status;
+                user            = reply->user;
+                iosb            = reply->iosb;
+                apc_wait        = wine_server_ptr_handle( reply->wait_handle );
+            }
+            else wait_handle = wine_server_ptr_handle( reply->wait_handle );
+        }
+        SERVER_END_REQ;
+        if (status != STATUS_PENDING) goto done;
+        thread_data->empty_port = handle;
         if (!timeout || timeout->QuadPart)
             status = server_wait_for_object( wait_handle, FALSE, round_timeout( timeout, &rounded ));
         else
             status = STATUS_TIMEOUT;
-        if (status != WAIT_OBJECT_0) return status;
-
+    }
+    if (status == WAIT_OBJECT_0)
+    {
         SERVER_START_REQ( get_thread_completion )
         {
             if (!(status = wine_server_call( req )))
@@ -2968,6 +2982,9 @@ NTSTATUS WINAPI NtRemoveIoCompletion( HANDLE handle, ULONG_PTR *key, ULONG_PTR *
         }
         SERVER_END_REQ;
     }
+
+done:
+    if (status == STATUS_SUCCESS) thread_data->empty_port = 0;
     complete_dequeued_async( user, iosb, apc_wait, io );
     return status;
 }

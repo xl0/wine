@@ -1309,6 +1309,13 @@ static int select_on( const union select_op *select_op, data_size_t op_size, cli
         }
         break;
 
+    case SELECT_WAIT_COMPLETION:
+        if (!(object = get_completion_wait_obj( select_op->completion.handle ))) return 1;
+        ret = wait_on( select_op, 1, &object, flags, when );
+        release_object( object );
+        if (!ret) return 1;
+        break;
+
     case SELECT_KEYED_EVENT_WAIT:
     case SELECT_KEYED_EVENT_RELEASE:
         object = (struct object *)get_keyed_event_obj( current->process, select_op->keyed_event.handle,
