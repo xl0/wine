@@ -908,6 +908,118 @@ static void test_IsDialogMessage(void)
 }
 
 
+static WPARAM hidden_parent_command;
+static unsigned int hidden_parent_getdlgcode;
+static HWND hidden_parent_hide;
+
+static LRESULT CALLBACK hidden_parent_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+{
+    if (msg == WM_COMMAND) hidden_parent_command = wparam;
+    if (msg == WM_GETDLGCODE && !lparam)
+    {
+        if (hidden_parent_hide)
+        {
+            ShowWindow(hidden_parent_hide, SW_HIDE);
+            hidden_parent_hide = NULL;
+        }
+        /* Windows gives up after 1024 controls, don't let an endless search block the test */
+        if (++hidden_parent_getdlgcode == 10000) DestroyWindow(GetAncestor(hwnd, GA_ROOT));
+    }
+    return DefWindowProcA(hwnd, msg, wparam, lparam);
+}
+
+/* returns the WM_COMMAND that a WM_CHAR message for hwnd triggers */
+static WPARAM hidden_parent_char(HWND dialog, HWND hwnd, char ch)
+{
+    MSG msg = {0};
+    BOOL ret;
+
+    msg.hwnd = hwnd;
+    msg.message = WM_CHAR;
+    msg.wParam = ch;
+    msg.lParam = 1;
+    hidden_parent_command = 0;
+    hidden_parent_getdlgcode = 0;
+    ret = IsDialogMessageA(dialog, &msg);
+    ok(ret, "IsDialogMessageA failed for '%c'.\n", ch);
+    ok(hidden_parent_getdlgcode < 10000, "The search for '%c' did not end.\n", ch);
+    return hidden_parent_command;
+}
+
+static void test_IsDialogMessage_hidden_parent(void)
+{
+    static const struct
+    {
+        DWORD pane_style;
+        DWORD inner_style;
+        BOOL hide;
+    }
+    tests[] =
+    {
+        { WS_CHILD, WS_CHILD },
+        { WS_CHILD | WS_VISIBLE | WS_DISABLED, WS_CHILD },
+        /* the pane gets hidden during the search */
+        { WS_CHILD | WS_VISIBLE, WS_CHILD | WS_VISIBLE, TRUE },
+    };
+    HWND main, control, button1, pane, inner, child, button2;
+    WNDCLASSA cls = {0};
+    WPARAM command;
+    unsigned int i;
+
+    cls.lpfnWndProc = hidden_parent_proc;
+    cls.hInstance = g_hinst;
+    cls.lpszClassName = "IsDialogMessageHiddenParentClass";
+    RegisterClassA(&cls);
+
+    for (i = 0; i < ARRAY_SIZE(tests); i++)
+    {
+        winetest_push_context("test %u", i);
+
+        /* the message window is inside of a hidden or disabled child of the dialog */
+        main = CreateWindowA(cls.lpszClassName, "main", WS_OVERLAPPEDWINDOW,
+                             100, 100, 300, 300, NULL, NULL, g_hinst, 0);
+        ok(!!main, "Failed to create a window, error %#lx.\n", GetLastError());
+        control = CreateWindowA(cls.lpszClassName, "control", WS_CHILD | WS_VISIBLE,
+                                100, 10, 80, 20, main, NULL, g_hinst, 0);
+        ok(!!control, "Failed to create a window, error %#lx.\n", GetLastError());
+        button1 = CreateWindowA("button", "Button &1", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                                10, 10, 80, 20, main, (HMENU)100, g_hinst, 0);
+        ok(!!button1, "Failed to create a window, error %#lx.\n", GetLastError());
+        pane = CreateWindowA(cls.lpszClassName, "pane", tests[i].pane_style,
+                             10, 40, 200, 200, main, NULL, g_hinst, 0);
+        ok(!!pane, "Failed to create a window, error %#lx.\n", GetLastError());
+        inner = CreateWindowA(cls.lpszClassName, "inner", tests[i].inner_style,
+                              10, 10, 100, 100, pane, NULL, g_hinst, 0);
+        ok(!!inner, "Failed to create a window, error %#lx.\n", GetLastError());
+        child = CreateWindowA("static", "child", WS_CHILD | WS_VISIBLE,
+                              10, 10, 50, 20, inner, NULL, g_hinst, 0);
+        ok(!!child, "Failed to create a window, error %#lx.\n", GetLastError());
+        button2 = CreateWindowA("button", "Button &2", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                                10, 120, 80, 20, pane, (HMENU)200, g_hinst, 0);
+        ok(!!button2, "Failed to create a window, error %#lx.\n", GetLastError());
+
+        if (tests[i].hide) hidden_parent_hide = pane;
+        command = hidden_parent_char(main, child, 'q');
+        ok(!command, "Got unexpected command %#Ix.\n", command);
+        ok(!hidden_parent_hide, "The pane was not hidden.\n");
+        ok(!(GetWindowLongA(pane, GWL_STYLE) & WS_VISIBLE) || (GetWindowLongA(pane, GWL_STYLE) & WS_DISABLED),
+           "Got unexpected style %#lx.\n", GetWindowLongA(pane, GWL_STYLE));
+
+        /* controls outside of the pane are found */
+        command = hidden_parent_char(main, child, '1');
+        ok(command == 100, "Got unexpected command %#Ix.\n", command);
+
+        /* controls inside of it are not */
+        command = hidden_parent_char(main, child, '2');
+        todo_wine ok(!command, "Got unexpected command %#Ix.\n", command);
+
+        DestroyWindow(main);
+        winetest_pop_context();
+    }
+
+    UnregisterClassA(cls.lpszClassName, g_hinst);
+}
+
 static INT_PTR CALLBACK delayFocusDlgWinProc (HWND hDlg, UINT uiMsg, WPARAM wParam,
         LPARAM lParam)
 {
@@ -2539,6 +2651,7 @@ START_TEST(dialog)
     test_dialog_custom_data();
     test_GetNextDlgItem();
     test_IsDialogMessage();
+    test_IsDialogMessage_hidden_parent();
     test_WM_NEXTDLGCTL();
     test_focus();
     test_GetDlgItem();
