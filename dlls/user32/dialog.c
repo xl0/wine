@@ -959,6 +959,7 @@ static BOOL DIALOG_IsAccelerator( HWND hwnd, HWND hwndDlg, WPARAM wParam )
     HWND hwndControl = hwnd;
     HWND hwndNext;
     INT dlgCode;
+    BOOL looped = FALSE;
     WCHAR buffer[128];
 
     do
@@ -1008,11 +1009,12 @@ static BOOL DIALOG_IsAccelerator( HWND hwnd, HWND hwndDlg, WPARAM wParam )
             hwndControl = GetParent( hwndControl );
             if (hwndControl == hwndDlg)
             {
-                if(hwnd==hwndDlg)   /* prevent endless loop */
+                if (hwnd == hwndDlg || looped)   /* prevent endless loop */
                 {
                     hwndNext=hwnd;
                     break;
                 }
+                looped = TRUE;
                 hwndNext = GetWindow( hwndDlg, GW_CHILD );
             }
             else
