@@ -1024,9 +1024,9 @@ static void test_IsDialogMessage_hidden_parent(void)
 
         /* nothing is searched when the message window is the dialog itself */
         command = hidden_parent_char(pane, pane, '3');
-        todo_wine ok(!command, "Got unexpected command %#Ix.\n", command);
+        ok(!command, "Got unexpected command %#Ix.\n", command);
         command = hidden_parent_char(box, box, '4');
-        todo_wine ok(!command, "Got unexpected command %#Ix.\n", command);
+        ok(!command, "Got unexpected command %#Ix.\n", command);
 
         DestroyWindow(main);
         winetest_pop_context();

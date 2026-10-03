@@ -962,6 +962,8 @@ static BOOL DIALOG_IsAccelerator( HWND hwnd, HWND hwndDlg, WPARAM wParam )
     BOOL looped = FALSE;
     WCHAR buffer[128];
 
+    if (hwnd == hwndDlg) return FALSE;
+
     do
     {
         DWORD style = GetWindowLongW( hwndControl, GWL_STYLE );
@@ -1009,7 +1011,7 @@ static BOOL DIALOG_IsAccelerator( HWND hwnd, HWND hwndDlg, WPARAM wParam )
             hwndControl = GetParent( hwndControl );
             if (hwndControl == hwndDlg)
             {
-                if (hwnd == hwndDlg || looped)   /* prevent endless loop */
+                if (looped)   /* prevent endless loop */
                 {
                     hwndNext=hwnd;
                     break;
