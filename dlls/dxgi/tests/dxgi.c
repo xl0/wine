@@ -8831,6 +8831,145 @@ static void test_zero_size(IUnknown *device, BOOL is_d3d12)
     IDXGIFactory_Release(factory);
 }
 
+static BOOL CALLBACK count_windows_cb(HWND window, LPARAM lparam)
+{
+    ++*(unsigned int *)lparam;
+    return TRUE;
+}
+
+static unsigned int get_thread_window_count(void)
+{
+    unsigned int count = 0;
+
+    EnumThreadWindows(GetCurrentThreadId(), count_windows_cb, (LPARAM)&count);
+    return count;
+}
+
+static void test_composition_swapchain(IUnknown *device, BOOL is_d3d12)
+{
+    DXGI_SWAP_CHAIN_FULLSCREEN_DESC fullscreen_desc;
+    DXGI_SWAP_CHAIN_DESC1 desc = {0}, invalid_desc;
+    DXGI_SWAP_CHAIN_DESC swapchain_desc;
+    DXGI_MODE_DESC mode_desc = {0};
+    IDXGISwapChain1 *swapchain;
+    unsigned int window_count;
+    IDXGIFactory2 *factory2;
+    IDXGIFactory *factory;
+    IDXGIOutput *output;
+    BOOL fullscreen;
+    ULONG refcount;
+    HWND window;
+    HRESULT hr;
+
+    get_factory(device, is_d3d12, &factory);
+    hr = IDXGIFactory_QueryInterface(factory, &IID_IDXGIFactory2, (void **)&factory2);
+    IDXGIFactory_Release(factory);
+    if (FAILED(hr))
+    {
+        win_skip("IDXGIFactory2 is not available.\n");
+        return;
+    }
+
+    desc.Width = 640;
+    desc.Height = 480;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    desc.BufferCount = 2;
+    desc.Scaling = DXGI_SCALING_STRETCH;
+    desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    desc.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
+
+    window_count = get_thread_window_count();
+
+    hr = IDXGIFactory2_CreateSwapChainForComposition(factory2, NULL, &desc, NULL, &swapchain);
+    ok(hr == DXGI_ERROR_INVALID_CALL, "Got unexpected hr %#lx.\n", hr);
+    hr = IDXGIFactory2_CreateSwapChainForComposition(factory2, device, NULL, NULL, &swapchain);
+    ok(hr == DXGI_ERROR_INVALID_CALL, "Got unexpected hr %#lx.\n", hr);
+    invalid_desc = desc;
+    invalid_desc.Width = invalid_desc.Height = 0;
+    hr = IDXGIFactory2_CreateSwapChainForComposition(factory2, device, &invalid_desc, NULL, &swapchain);
+    ok(hr == DXGI_ERROR_INVALID_CALL, "Got unexpected hr %#lx.\n", hr);
+    invalid_desc = desc;
+    invalid_desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+    hr = IDXGIFactory2_CreateSwapChainForComposition(factory2, device, &invalid_desc, NULL, &swapchain);
+    ok(hr == DXGI_ERROR_INVALID_CALL, "Got unexpected hr %#lx.\n", hr);
+    invalid_desc = desc;
+    invalid_desc.Scaling = DXGI_SCALING_NONE;
+    hr = IDXGIFactory2_CreateSwapChainForComposition(factory2, device, &invalid_desc, NULL, &swapchain);
+    ok(hr == DXGI_ERROR_INVALID_CALL, "Got unexpected hr %#lx.\n", hr);
+    invalid_desc = desc;
+    invalid_desc.AlphaMode = DXGI_ALPHA_MODE_STRAIGHT;
+    hr = IDXGIFactory2_CreateSwapChainForComposition(factory2, device, &invalid_desc, NULL, &swapchain);
+    ok(hr == DXGI_ERROR_INVALID_CALL, "Got unexpected hr %#lx.\n", hr);
+    if (is_d3d12)
+    {
+        invalid_desc = desc;
+        invalid_desc.Flags = DXGI_SWAP_CHAIN_FLAG_GDI_COMPATIBLE;
+        hr = IDXGIFactory2_CreateSwapChainForComposition(factory2, device, &invalid_desc, NULL, &swapchain);
+        ok(hr == DXGI_ERROR_INVALID_CALL, "Got unexpected hr %#lx.\n", hr);
+    }
+
+    hr = IDXGIFactory2_CreateSwapChainForComposition(factory2, device, &desc, NULL, &swapchain);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+
+    /* A composition swapchain has no window. */
+    ok(get_thread_window_count() == window_count, "Got %u windows, expected %u.\n",
+            get_thread_window_count(), window_count);
+    window = (HWND)0xdeadbeef;
+    hr = IDXGISwapChain1_GetHwnd(swapchain, &window);
+    ok(hr == DXGI_ERROR_INVALID_CALL, "Got unexpected hr %#lx.\n", hr);
+    ok(!window, "Got unexpected window %p.\n", window);
+    hr = IDXGISwapChain1_GetDesc(swapchain, &swapchain_desc);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    ok(!swapchain_desc.OutputWindow, "Got unexpected window %p.\n", swapchain_desc.OutputWindow);
+    ok(swapchain_desc.Windowed, "Got unexpected windowed %#x.\n", swapchain_desc.Windowed);
+    output = (IDXGIOutput *)0xdeadbeef;
+    hr = IDXGISwapChain1_GetContainingOutput(swapchain, &output);
+    ok(hr == DXGI_ERROR_UNSUPPORTED, "Got unexpected hr %#lx.\n", hr);
+    ok(!output, "Got unexpected output %p.\n", output);
+    output = (IDXGIOutput *)0xdeadbeef;
+    hr = IDXGISwapChain1_GetFullscreenState(swapchain, &fullscreen, &output);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    ok(!fullscreen, "Got unexpected fullscreen %#x.\n", fullscreen);
+    ok(!output, "Got unexpected output %p.\n", output);
+    hr = IDXGISwapChain1_SetFullscreenState(swapchain, TRUE, NULL);
+    ok(hr == DXGI_ERROR_INVALID_CALL, "Got unexpected hr %#lx.\n", hr);
+    hr = IDXGISwapChain1_SetFullscreenState(swapchain, FALSE, NULL);
+    ok(hr == DXGI_ERROR_INVALID_CALL, "Got unexpected hr %#lx.\n", hr);
+    memset(&fullscreen_desc, 0xcc, sizeof(fullscreen_desc));
+    hr = IDXGISwapChain1_GetFullscreenDesc(swapchain, &fullscreen_desc);
+    ok(hr == DXGI_ERROR_INVALID_CALL, "Got unexpected hr %#lx.\n", hr);
+    ok(fullscreen_desc.Windowed == 0xcccccccc, "Got unexpected windowed %#x.\n", fullscreen_desc.Windowed);
+    mode_desc.Width = 800;
+    mode_desc.Height = 600;
+    mode_desc.Format = desc.Format;
+    hr = IDXGISwapChain1_ResizeTarget(swapchain, &mode_desc);
+    ok(hr == DXGI_ERROR_INVALID_CALL, "Got unexpected hr %#lx.\n", hr);
+
+    hr = IDXGISwapChain1_Present(swapchain, 0, 0);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    hr = IDXGISwapChain1_ResizeBuffers(swapchain, 0, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
+    ok(hr == E_INVALIDARG, "Got unexpected hr %#lx.\n", hr);
+    hr = IDXGISwapChain1_ResizeBuffers(swapchain, 0, 320, 0, DXGI_FORMAT_UNKNOWN, 0);
+    ok(hr == E_INVALIDARG, "Got unexpected hr %#lx.\n", hr);
+    hr = IDXGISwapChain1_GetDesc(swapchain, &swapchain_desc);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    ok(swapchain_desc.BufferDesc.Width == 640 && swapchain_desc.BufferDesc.Height == 480,
+            "Got unexpected size %ux%u.\n", swapchain_desc.BufferDesc.Width, swapchain_desc.BufferDesc.Height);
+    hr = IDXGISwapChain1_ResizeBuffers(swapchain, 0, 320, 240, DXGI_FORMAT_UNKNOWN, 0);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    hr = IDXGISwapChain1_Present(swapchain, 0, 0);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+
+    refcount = IDXGISwapChain1_Release(swapchain);
+    ok(!refcount, "Swapchain has %lu references left.\n", refcount);
+    ok(get_thread_window_count() == window_count, "Got %u windows, expected %u.\n",
+            get_thread_window_count(), window_count);
+
+    IDXGIFactory2_Release(factory2);
+}
+
 static void run_on_d3d10(void (*test_func)(IUnknown *device, BOOL is_d3d12))
 {
     IDXGIDevice *device;
@@ -9238,6 +9377,7 @@ START_TEST(dxgi)
     run_on_d3d10(test_resize_target_wndproc);
     run_on_d3d10(test_swapchain_window_messages);
     run_on_d3d10(test_zero_size);
+    run_on_d3d10(test_composition_swapchain);
 
     if (!(d3d12_module = LoadLibraryA("d3d12.dll")))
     {
@@ -9274,6 +9414,7 @@ START_TEST(dxgi)
     run_on_d3d12(test_resize_target_wndproc);
     run_on_d3d12(test_swapchain_window_messages);
     run_on_d3d12(test_zero_size);
+    run_on_d3d12(test_composition_swapchain);
 
     FreeLibrary(d3d12_module);
 }
