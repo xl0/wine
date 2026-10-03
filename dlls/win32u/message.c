@@ -2962,7 +2962,6 @@ static int peek_message( MSG *msg, const struct peek_message_filter *filter )
     HWND hwnd = filter->hwnd;
     UINT first = filter->first, last = filter->last, flags = filter->flags;
     struct user_thread_info *thread_info = get_user_thread_info();
-    HANDLE idle_event = thread_info->idle_event;
     struct received_message_info info;
     unsigned int hw_id = 0;  /* id of previous hardware message */
     unsigned char buffer_init[1024];
@@ -3031,7 +3030,7 @@ static int peek_message( MSG *msg, const struct peek_message_filter *filter )
             if (buffer != buffer_init) free( buffer );
             if (res == STATUS_PENDING)
             {
-                if (hwnd == (HWND)-1 && idle_event) NtSetEvent( idle_event, NULL );
+                if (hwnd == (HWND)-1 && thread_info->idle_event) NtSetEvent( thread_info->idle_event, NULL );
                 return 0;
             }
             if (res != STATUS_BUFFER_OVERFLOW)
@@ -3233,7 +3232,7 @@ static int peek_message( MSG *msg, const struct peek_message_filter *filter )
             }
             if (info.msg.message == WM_TIMER || info.msg.message == WM_SYSTIMER)
             {
-                if (!(flags & PM_NOYIELD) && idle_event) NtSetEvent( idle_event, NULL );
+                if (!(flags & PM_NOYIELD) && thread_info->idle_event) NtSetEvent( thread_info->idle_event, NULL );
             }
             *msg = info.msg;
             msg->pt = point_phys_to_win_dpi( info.msg.hwnd, info.msg.pt );
@@ -3296,6 +3295,21 @@ static HANDLE get_server_queue_handle(void)
         if (!(ret = thread_info->server_queue)) ERR( "Cannot get server thread queue\n" );
     }
     return ret;
+}
+
+/***********************************************************************
+ *           disable_thread_input_idle
+ *
+ * Message waits of a Wine internal thread must not make the process input idle.
+ */
+static void disable_thread_input_idle(void)
+{
+    struct user_thread_info *thread_info = get_user_thread_info();
+
+    get_server_queue_handle();  /* make sure that the idle event is not retrieved later */
+    if (!thread_info->idle_event) return;
+    NtClose( thread_info->idle_event );
+    thread_info->idle_event = 0;
 }
 
 static BOOL is_queue_signaled(void)
@@ -4789,6 +4803,7 @@ LRESULT WINAPI NtUserMessageCall( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
         return send_message_callback( hwnd, msg, wparam, lparam, result_info, ansi );
 
     case NtUserClipboardWindowProc:
+        if (msg == WM_NCCREATE) disable_thread_input_idle();
         return user_driver->pClipboardWindowProc( hwnd, msg, wparam, lparam );
 
     case NtUserGetDispatchParams:
