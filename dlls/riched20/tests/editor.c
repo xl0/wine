@@ -1467,6 +1467,17 @@ static void _send_paste(unsigned int line, HWND wnd)
     }
 }
 
+static DWORD get_char_effects(HWND hwnd, int pos)
+{
+    CHARFORMAT2W cf;
+
+    SendMessageW(hwnd, EM_SETSEL, pos, pos + 1);
+    memset(&cf, 0, sizeof(cf));
+    cf.cbSize = sizeof(cf);
+    SendMessageW(hwnd, EM_GETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+    return cf.dwEffects;
+}
+
 static void test_EM_SETCHARFORMAT_word(void)
 {
     HWND hwnd = new_richeditW(NULL);
@@ -7102,6 +7113,42 @@ static void test_EN_LINK(void)
     DestroyWindow(parent);
 }
 
+static void test_undo_char_format(void)
+{
+    HWND hwnd = new_richeditW(NULL);
+    CHARFORMAT2W cf;
+    DWORD effects;
+    int i, ret;
+
+    SendMessageW(hwnd, WM_SETTEXT, 0, (LPARAM)L"one two");
+    SendMessageW(hwnd, EM_EMPTYUNDOBUFFER, 0, 0);
+
+    /* The format of the final paragraph mark is restored as well. */
+    for (i = 7; i >= 6; i--)
+    {
+        winetest_push_context("%d", i);
+        SendMessageW(hwnd, EM_SETSEL, i, 8);
+        memset(&cf, 0, sizeof(cf));
+        cf.cbSize = sizeof(cf);
+        cf.dwMask = CFM_ITALIC;
+        cf.dwEffects = CFE_ITALIC;
+        ret = SendMessageW(hwnd, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+        ok(ret == 1, "got %d\n", ret);
+        effects = get_char_effects(hwnd, 7);
+        ok(effects & CFE_ITALIC, "got effects %#lx\n", effects);
+
+        ret = SendMessageW(hwnd, EM_UNDO, 0, 0);
+        ok(ret == 1, "got %d\n", ret);
+        effects = get_char_effects(hwnd, 6);
+        ok(!(effects & CFE_ITALIC), "got effects %#lx\n", effects);
+        effects = get_char_effects(hwnd, 7);
+        ok(!(effects & CFE_ITALIC), "got effects %#lx\n", effects);
+        winetest_pop_context();
+    }
+
+    DestroyWindow(hwnd);
+}
+
 static void test_undo_coalescing(void)
 {
     HWND hwnd;
@@ -9552,6 +9599,7 @@ START_TEST( editor )
   test_EM_AUTOURLDETECT();
   test_eventMask();
   test_undo_coalescing();
+  test_undo_char_format();
   test_word_movement();
   test_word_movement_multiline();
   test_EM_CHARFROMPOS();
