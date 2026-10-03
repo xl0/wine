@@ -1480,7 +1480,7 @@ static void test_EM_SETCHARFORMAT_word(void)
     SendMessageW(hwnd, EM_SETSEL, 4, 4);
     SendMessageW(hwnd, EM_POSFROMCHAR, (WPARAM)&pos, 5);
 
-    /* The word is laid out again at once. */
+    /* The word is laid out again at once and the caret follows. */
     memset(&cf, 0, sizeof(cf));
     cf.cbSize = sizeof(cf);
     SendMessageW(hwnd, EM_GETCHARFORMAT, SCF_DEFAULT, (LPARAM)&cf);
@@ -1490,6 +1490,9 @@ static void test_EM_SETCHARFORMAT_word(void)
     ok(ret == 1, "got %d\n", ret);
     SendMessageW(hwnd, EM_POSFROMCHAR, (WPARAM)&new_pos, 5);
     ok(new_pos.x > pos.x, "got %ld, was %ld\n", new_pos.x, pos.x);
+    SendMessageW(hwnd, EM_POSFROMCHAR, (WPARAM)&pos, 4);
+    GetCaretPos(&caret);
+    ok(caret.x == pos.x, "got %ld, expected %ld\n", caret.x, pos.x);
 
     SendMessageW(hwnd, EM_SETSEL, 5, 5);
     GetCaretPos(&caret);

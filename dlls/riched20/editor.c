@@ -3305,6 +3305,7 @@ static LRESULT handle_EM_SETCHARFORMAT( ME_TextEditor *editor, WPARAM flags, con
     {
         ME_WrapMarkedParagraphs( editor );
         ME_UpdateScrollBar( editor );
+        update_caret( editor );
     }
     return 1;
 }
