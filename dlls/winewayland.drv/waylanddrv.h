@@ -291,6 +291,8 @@ struct wayland_surface
             struct xdg_surface *xdg_surface;
             struct xdg_toplevel *xdg_toplevel;
             struct xdg_toplevel_icon_v1 *xdg_toplevel_icon;
+            /* window whose toplevel has been set as parent (if any) */
+            HWND parent_hwnd;
         };
         struct
         {
@@ -334,6 +336,7 @@ void wayland_surface_clear_role(struct wayland_surface *surface);
 void wayland_surface_attach_shm(struct wayland_surface *surface,
                                 struct wayland_shm_buffer *shm_buffer,
                                 HRGN surface_damage_region);
+void wayland_surface_mapped(struct wayland_surface *surface);
 BOOL wayland_surface_reconfigure(struct wayland_surface *surface);
 BOOL wayland_surface_config_is_compatible(struct wayland_surface_config *conf, RECT rect,
                                           enum wayland_surface_config_state state);
@@ -374,6 +377,8 @@ struct wayland_win_data
     struct rb_entry entry;
     /* hwnd that this private data belongs to */
     HWND hwnd;
+    /* root window of the owner (if any) */
+    HWND owner;
     /* last buffer that was set as window contents */
     struct wayland_shm_buffer *window_contents;
     /* wayland surface (if any) for this window */
@@ -395,6 +400,7 @@ struct wayland_client_surface *get_client_surface(HWND hwnd);
 void set_client_surface(HWND hwnd, struct wayland_client_surface *client);
 BOOL set_window_surface_contents(HWND hwnd, struct wayland_shm_buffer *shm_buffer, HRGN damage_region);
 struct wayland_shm_buffer *get_window_surface_contents(HWND hwnd);
+void update_owned_toplevels(HWND hwnd);
 void wayland_window_init(void);
 
 /**********************************************************************

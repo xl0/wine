@@ -237,6 +237,67 @@ static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *dat
     return TRUE;
 }
 
+/* Only mapped toplevels can be the parent of another toplevel. */
+static struct wayland_surface *get_mapped_toplevel(HWND hwnd)
+{
+    struct wayland_surface *surface;
+    struct rb_entry *entry;
+
+    if (!hwnd || !(entry = rb_get(&win_data_rb, hwnd))) return NULL;
+    surface = RB_ENTRY_VALUE(entry, struct wayland_win_data, entry)->wayland_surface;
+    if (!surface || !wayland_surface_is_toplevel(surface) || !surface->content_width) return NULL;
+    return surface;
+}
+
+static void wayland_win_data_update_parent(struct wayland_win_data *data)
+{
+    struct wayland_surface *surface = data->wayland_surface, *parent, *iter, *next;
+    HWND parent_hwnd;
+
+    if (!surface || !wayland_surface_is_toplevel(surface)) return;
+
+    parent = get_mapped_toplevel(data->owner);
+    parent_hwnd = parent ? parent->hwnd : NULL;
+    if (surface->parent_hwnd == parent_hwnd) return;
+
+    TRACE("hwnd=%p parent=%p=>%p\n", data->hwnd, surface->parent_hwnd, parent_hwnd);
+
+    /* A toplevel which hasn't been updated yet for its new owner may still
+     * be a child of this one. Unset its parent, a loop is a protocol error. */
+    for (iter = parent; iter; iter = next)
+    {
+        if ((next = get_mapped_toplevel(iter->parent_hwnd)) != surface) continue;
+        xdg_toplevel_set_parent(iter->xdg_toplevel, NULL);
+        iter->parent_hwnd = NULL;
+        break;
+    }
+
+    xdg_toplevel_set_parent(surface->xdg_toplevel, parent ? parent->xdg_toplevel : NULL);
+    surface->parent_hwnd = parent_hwnd;
+}
+
+/***********************************************************************
+ *           update_owned_toplevels
+ *
+ * Update the parent of the toplevels owned by a window, after it has been
+ * mapped or unmapped.
+ */
+void update_owned_toplevels(HWND hwnd)
+{
+    struct wayland_win_data *data;
+    struct wayland_surface *surface;
+
+    pthread_mutex_lock(&win_data_mutex);
+    RB_FOR_EACH_ENTRY(data, &win_data_rb, struct wayland_win_data, entry)
+    {
+        if (data->owner == hwnd) wayland_win_data_update_parent(data);
+        else if ((surface = data->wayland_surface) && wayland_surface_is_toplevel(surface) &&
+                 surface->parent_hwnd == hwnd)
+            wayland_win_data_update_parent(data);
+    }
+    pthread_mutex_unlock(&win_data_mutex);
+}
+
 static void wayland_surface_update_state_toplevel(struct wayland_surface *surface)
 {
     BOOL processing_config = surface->processing.serial &&
@@ -434,7 +495,7 @@ BOOL WAYLAND_WindowPosChanging(HWND hwnd, UINT swp_flags, BOOL shaped, const str
 void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UINT swp_flags,
                               const struct window_rects *new_rects, struct window_surface *surface)
 {
-    HWND owner = NtUserGetAncestor(hwnd, GA_ROOT);
+    HWND owner = NtUserGetAncestor(hwnd, GA_ROOT), win_owner = NtUserGetWindowRelative(hwnd, GW_OWNER);
     struct wayland_surface *owner_surface;
     struct wayland_win_data *data, *owner_data;
     BOOL managed, fullscreen = swp_flags & WINE_SWP_FULLSCREEN;
@@ -445,6 +506,7 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
      * may need to query win_data information about other HWNDs and thus
      * acquire the lock itself internally. */
     if (!(managed = is_window_managed(hwnd, swp_flags, fullscreen)) && surface) owner = owner_hint;
+    if (win_owner) win_owner = NtUserGetAncestor(win_owner, GA_ROOT);
 
     if (!(data = wayland_win_data_get(hwnd))) return;
     owner_data = owner && owner != hwnd ? wayland_win_data_get(owner) : NULL;
@@ -454,6 +516,7 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
     data->is_fullscreen = fullscreen;
     data->resizeable = swp_flags & WINE_SWP_RESIZABLE;
     data->managed = managed;
+    data->owner = win_owner != hwnd ? win_owner : NULL;
 
     if (!surface)
     {
@@ -465,6 +528,7 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
     }
     else if (wayland_win_data_create_wayland_surface(data, owner_surface))
     {
+        wayland_win_data_update_parent(data);
         wayland_win_data_update_wayland_state(data);
     }
 
@@ -849,8 +913,11 @@ BOOL set_window_surface_contents(HWND hwnd, struct wayland_shm_buffer *shm_buffe
     {
         if (wayland_surface_reconfigure(wayland_surface))
         {
+            BOOL mapped = wayland_surface->content_width;
+
             wayland_surface_attach_shm(wayland_surface, shm_buffer, damage_region);
             wl_surface_commit(wayland_surface->wl_surface);
+            if (!mapped) wayland_surface_mapped(wayland_surface);
             committed = TRUE;
         }
         else

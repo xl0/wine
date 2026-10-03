@@ -448,6 +448,10 @@ void wayland_surface_clear_role(struct wayland_surface *surface)
         {
             xdg_toplevel_destroy(surface->xdg_toplevel);
             surface->xdg_toplevel = NULL;
+            surface->parent_hwnd = NULL;
+            /* Unset the parent of the owned toplevels explicitly, rather
+             * than depending on what the compositor does with them. */
+            update_owned_toplevels(surface->hwnd);
         }
 
         if (surface->xdg_surface)
@@ -541,6 +545,19 @@ void wayland_surface_attach_shm(struct wayland_surface *surface,
 
     surface->content_width = win_width;
     surface->content_height = win_height;
+}
+
+/**********************************************************************
+ *          wayland_surface_mapped
+ *
+ * Called after the first contents of a surface have been committed.
+ */
+void wayland_surface_mapped(struct wayland_surface *surface)
+{
+    if (!wayland_surface_is_toplevel(surface)) return;
+
+    /* The toplevel can now be the parent of the windows it owns. */
+    update_owned_toplevels(surface->hwnd);
 }
 
 /**********************************************************************
@@ -1351,7 +1368,7 @@ void wayland_surface_ensure_contents(struct wayland_surface *surface)
     struct wayland_shm_buffer *dummy_shm_buffer;
     HRGN damage;
     int width, height;
-    BOOL needs_contents;
+    BOOL needs_contents, mapped = surface->content_width;
 
     width = surface->window.rect.right - surface->window.rect.left;
     height = surface->window.rect.bottom - surface->window.rect.top;
@@ -1381,6 +1398,7 @@ void wayland_surface_ensure_contents(struct wayland_surface *surface)
     {
         wayland_surface_attach_shm(surface, dummy_shm_buffer, damage);
         wl_surface_commit(surface->wl_surface);
+        if (!mapped) wayland_surface_mapped(surface);
     }
 
     wayland_shm_buffer_unref(dummy_shm_buffer);
