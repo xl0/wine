@@ -398,7 +398,7 @@ static HRESULT STDMETHODCALLTYPE DECLSPEC_HOTPATCH d3d11_swapchain_SetFullscreen
 
     TRACE("iface %p, fullscreen %#x, target %p.\n", iface, fullscreen, target);
 
-    if (!fullscreen && target)
+    if ((!fullscreen && target) || !d3d11_swapchain_get_hwnd(swapchain))
     {
         WARN("Invalid call.\n");
         return DXGI_ERROR_INVALID_CALL;
@@ -584,9 +584,16 @@ static HRESULT STDMETHODCALLTYPE d3d11_swapchain_ResizeBuffers(IDXGISwapChain4 *
             return DXGI_ERROR_INVALID_CALL;
         }
     }
+    if ((!width || !height) && !wined3d_desc.device_window)
+    {
+        WARN("Swapchain has no window.\n");
+        wined3d_mutex_unlock();
+        return E_INVALIDARG;
+    }
     if (format != DXGI_FORMAT_UNKNOWN)
         wined3d_desc.backbuffer_format = wined3dformat_from_dxgi_format(format);
-    wined3d_desc.flags = wined3d_swapchain_flags_from_dxgi(flags);
+    wined3d_desc.flags = wined3d_swapchain_flags_from_dxgi(flags)
+            | (wined3d_desc.flags & WINED3D_SWAPCHAIN_WINDOWLESS);
     hr = wined3d_swapchain_resize_buffers(swapchain->wined3d_swapchain, buffer_count, width, height,
             wined3d_desc.backbuffer_format, wined3d_desc.multisample_type,
             wined3d_desc.multisample_quality, wined3d_desc.flags);
@@ -609,6 +616,12 @@ static HRESULT STDMETHODCALLTYPE d3d11_swapchain_ResizeTarget(IDXGISwapChain4 *i
 
     TRACE("iface %p, target_mode_desc %p.\n", iface, target_mode_desc);
 
+    if (!d3d11_swapchain_get_hwnd(swapchain))
+    {
+        WARN("Swapchain has no window.\n");
+        return DXGI_ERROR_INVALID_CALL;
+    }
+
     state = wined3d_swapchain_get_state(swapchain->wined3d_swapchain);
 
     return dxgi_swapchain_resize_target(state, target_mode_desc);
@@ -627,7 +640,12 @@ static HRESULT STDMETHODCALLTYPE d3d11_swapchain_GetContainingOutput(IDXGISwapCh
         return S_OK;
     }
 
-    window = d3d11_swapchain_get_hwnd(swapchain);
+    if (!(window = d3d11_swapchain_get_hwnd(swapchain)))
+    {
+        WARN("Swapchain has no window.\n");
+        *output = NULL;
+        return DXGI_ERROR_UNSUPPORTED;
+    }
     return dxgi_get_output_from_window(swapchain->factory, window, output);
 }
 
@@ -703,6 +721,12 @@ static HRESULT STDMETHODCALLTYPE d3d11_swapchain_GetFullscreenDesc(IDXGISwapChai
         return E_INVALIDARG;
     }
 
+    if (!d3d11_swapchain_get_hwnd(swapchain))
+    {
+        WARN("Swapchain has no window.\n");
+        return DXGI_ERROR_INVALID_CALL;
+    }
+
     wined3d_mutex_lock();
     state = wined3d_swapchain_get_state(swapchain->wined3d_swapchain);
     windowed = wined3d_swapchain_state_is_windowed(state);
@@ -726,7 +750,11 @@ static HRESULT STDMETHODCALLTYPE d3d11_swapchain_GetHwnd(IDXGISwapChain4 *iface,
         return DXGI_ERROR_INVALID_CALL;
     }
 
-    *hwnd = d3d11_swapchain_get_hwnd(swapchain);
+    if (!(*hwnd = d3d11_swapchain_get_hwnd(swapchain)))
+    {
+        WARN("Swapchain has no window.\n");
+        return DXGI_ERROR_INVALID_CALL;
+    }
     return S_OK;
 }
 
@@ -2068,6 +2096,9 @@ static HRESULT d3d12_swapchain_create_vulkan_resources(struct d3d12_swapchain *s
 {
     HRESULT hr;
 
+    if (!swapchain->window)
+        return S_OK;
+
     if (FAILED(hr = d3d12_swapchain_create_vulkan_swapchain(swapchain)))
         return hr;
 
@@ -2380,6 +2411,10 @@ static HRESULT d3d12_swapchain_op_present_execute(struct d3d12_swapchain *swapch
     VkResult vr;
     HRESULT hr;
 
+    /* A composition swapchain has no window to present to. */
+    if (!swapchain->window)
+        goto done;
+
     if (FAILED(hr = d3d12_swapchain_set_sync_interval(swapchain, op->present.sync_interval)))
         return hr;
 
@@ -2402,6 +2437,7 @@ static HRESULT d3d12_swapchain_op_present_execute(struct d3d12_swapchain *swapch
         return hresult_from_vk_result(vr);
     }
 
+done:
     if (!ReleaseSemaphore(swapchain->frame_latency_semaphore, 1, NULL))
     {
         ERR("Failed to release frame latency semaphore, last error %ld.\n", GetLastError());
@@ -2512,7 +2548,7 @@ static HRESULT STDMETHODCALLTYPE DECLSPEC_HOTPATCH d3d12_swapchain_SetFullscreen
 
     TRACE("iface %p, fullscreen %#x, target %p.\n", iface, fullscreen, target);
 
-    if (!fullscreen && target)
+    if ((!fullscreen && target) || !window)
     {
         WARN("Invalid call.\n");
         return DXGI_ERROR_INVALID_CALL;
@@ -2700,6 +2736,12 @@ static HRESULT d3d12_swapchain_resize_buffers(struct d3d12_swapchain *swapchain,
     {
         RECT client_rect;
 
+        if (!swapchain->window)
+        {
+            WARN("Swapchain has no window.\n");
+            return E_INVALIDARG;
+        }
+
         if (!GetClientRect(swapchain->window, &client_rect))
         {
             WARN("Failed to get client rect, last error %#lx.\n", GetLastError());
@@ -2775,6 +2817,12 @@ static HRESULT STDMETHODCALLTYPE d3d12_swapchain_ResizeTarget(IDXGISwapChain4 *i
 
     TRACE("iface %p, target_mode_desc %p.\n", iface, target_mode_desc);
 
+    if (!swapchain->window)
+    {
+        WARN("Swapchain has no window.\n");
+        return DXGI_ERROR_INVALID_CALL;
+    }
+
     return dxgi_swapchain_resize_target(swapchain->state, target_mode_desc);
 }
 
@@ -2793,6 +2841,13 @@ static HRESULT STDMETHODCALLTYPE d3d12_swapchain_GetContainingOutput(IDXGISwapCh
     {
         IDXGIOutput_AddRef(*output = swapchain->target);
         return S_OK;
+    }
+
+    if (!swapchain->window)
+    {
+        WARN("Swapchain has no window.\n");
+        *output = NULL;
+        return DXGI_ERROR_UNSUPPORTED;
     }
 
     device_parent = vkd3d_get_device_parent(swapchain->device);
@@ -2868,6 +2923,12 @@ static HRESULT STDMETHODCALLTYPE d3d12_swapchain_GetFullscreenDesc(IDXGISwapChai
         return E_INVALIDARG;
     }
 
+    if (!swapchain->window)
+    {
+        WARN("Swapchain has no window.\n");
+        return DXGI_ERROR_INVALID_CALL;
+    }
+
     wined3d_mutex_lock();
     windowed = wined3d_swapchain_state_is_windowed(swapchain->state);
     wined3d_mutex_unlock();
@@ -2889,7 +2950,11 @@ static HRESULT STDMETHODCALLTYPE d3d12_swapchain_GetHwnd(IDXGISwapChain4 *iface,
         return DXGI_ERROR_INVALID_CALL;
     }
 
-    *hwnd = swapchain->window;
+    if (!(*hwnd = swapchain->window))
+    {
+        WARN("Swapchain has no window.\n");
+        return DXGI_ERROR_INVALID_CALL;
+    }
     return S_OK;
 }
 
@@ -3311,7 +3376,7 @@ static HRESULT d3d12_swapchain_init(struct d3d12_swapchain *swapchain, IWineDXGI
     struct dxgi_factory *dxgi_factory;
     VkFenceCreateInfo fence_desc;
     uint32_t queue_family_index;
-    VkSurfaceKHR vk_surface;
+    VkSurfaceKHR vk_surface = VK_NULL_HANDLE;
     VkInstance vk_instance;
     IDXGIOutput *output;
     VkBool32 supported;
@@ -3436,7 +3501,7 @@ static HRESULT d3d12_swapchain_init(struct d3d12_swapchain *swapchain, IWineDXGI
     surface_desc.flags = 0;
     surface_desc.hinstance = GetModuleHandleA("dxgi.dll");
     surface_desc.hwnd = window;
-    if ((vr = vk_funcs->p_vkCreateWin32SurfaceKHR(vk_instance, &surface_desc, NULL, &vk_surface)) < 0)
+    if (window && (vr = vk_funcs->p_vkCreateWin32SurfaceKHR(vk_instance, &surface_desc, NULL, &vk_surface)) < 0)
     {
         WARN("Failed to create Vulkan surface, vr %d.\n", vr);
         d3d12_swapchain_destroy(swapchain);
@@ -3445,8 +3510,8 @@ static HRESULT d3d12_swapchain_init(struct d3d12_swapchain *swapchain, IWineDXGI
     swapchain->vk_surface = vk_surface;
 
     queue_family_index = vkd3d_get_vk_queue_family_index(queue);
-    if ((vr = vk_funcs->p_vkGetPhysicalDeviceSurfaceSupportKHR(vk_physical_device,
-            queue_family_index, vk_surface, &supported)) < 0 || !supported)
+    if (window && ((vr = vk_funcs->p_vkGetPhysicalDeviceSurfaceSupportKHR(vk_physical_device,
+            queue_family_index, vk_surface, &supported)) < 0 || !supported))
     {
         FIXME("Queue family does not support presentation, vr %d.\n", vr);
         d3d12_swapchain_destroy(swapchain);
@@ -3525,6 +3590,9 @@ HRESULT d3d12_swapchain_create(IWineDXGIFactory *factory, ID3D12CommandQueue *qu
     HRESULT hr;
 
     if (swapchain_desc->Format == DXGI_FORMAT_UNKNOWN)
+        return DXGI_ERROR_INVALID_CALL;
+
+    if (!window && (swapchain_desc->Flags & DXGI_SWAP_CHAIN_FLAG_GDI_COMPATIBLE))
         return DXGI_ERROR_INVALID_CALL;
 
     queue_desc = ID3D12CommandQueue_GetDesc(queue);

@@ -267,7 +267,8 @@ static BOOL STDMETHODCALLTYPE dxgi_factory_IsWindowedStereoEnabled(IWineDXGIFact
     return FALSE;
 }
 
-static HRESULT STDMETHODCALLTYPE dxgi_factory_CreateSwapChainForHwnd(IWineDXGIFactory *iface,
+/* A composition swapchain has no window. */
+static HRESULT dxgi_factory_create_swapchain(IWineDXGIFactory *iface,
         IUnknown *device, HWND window, const DXGI_SWAP_CHAIN_DESC1 *desc,
         const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *fullscreen_desc,
         IDXGIOutput *output, IDXGISwapChain1 **swapchain)
@@ -277,10 +278,7 @@ static HRESULT STDMETHODCALLTYPE dxgi_factory_CreateSwapChainForHwnd(IWineDXGIFa
     ID3D12CommandQueue *command_queue;
     HRESULT hr;
 
-    TRACE("iface %p, device %p, window %p, desc %p, fullscreen_desc %p, output %p, swapchain %p.\n",
-            iface, device, window, desc, fullscreen_desc, output, swapchain);
-
-    if (!device || !window || !desc || !swapchain)
+    if (!device || !desc || !swapchain)
     {
         WARN("Invalid pointer.\n");
         return DXGI_ERROR_INVALID_CALL;
@@ -323,6 +321,23 @@ static HRESULT STDMETHODCALLTYPE dxgi_factory_CreateSwapChainForHwnd(IWineDXGIFa
 
     ERR("This is not the device we're looking for.\n");
     return DXGI_ERROR_UNSUPPORTED;
+}
+
+static HRESULT STDMETHODCALLTYPE dxgi_factory_CreateSwapChainForHwnd(IWineDXGIFactory *iface,
+        IUnknown *device, HWND window, const DXGI_SWAP_CHAIN_DESC1 *desc,
+        const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *fullscreen_desc,
+        IDXGIOutput *output, IDXGISwapChain1 **swapchain)
+{
+    TRACE("iface %p, device %p, window %p, desc %p, fullscreen_desc %p, output %p, swapchain %p.\n",
+            iface, device, window, desc, fullscreen_desc, output, swapchain);
+
+    if (!window)
+    {
+        WARN("Invalid window.\n");
+        return DXGI_ERROR_INVALID_CALL;
+    }
+
+    return dxgi_factory_create_swapchain(iface, device, window, desc, fullscreen_desc, output, swapchain);
 }
 
 static HRESULT STDMETHODCALLTYPE dxgi_factory_CreateSwapChainForCoreWindow(IWineDXGIFactory *iface,
@@ -390,13 +405,19 @@ static void STDMETHODCALLTYPE dxgi_factory_UnregisterOcclusionStatus(IWineDXGIFa
 static HRESULT STDMETHODCALLTYPE dxgi_factory_CreateSwapChainForComposition(IWineDXGIFactory *iface,
         IUnknown *device, const DXGI_SWAP_CHAIN_DESC1 *desc, IDXGIOutput *output, IDXGISwapChain1 **swapchain)
 {
-    HWND hwnd;
-
-    FIXME("iface %p, device %p, desc %p, output %p, swapchain %p stub!\n",
+    TRACE("iface %p, device %p, desc %p, output %p, swapchain %p.\n",
             iface, device, desc, output, swapchain);
 
-    hwnd = CreateWindowA("static", NULL, WS_POPUP, 0, 0, desc->Width, desc->Height, 0, 0, 0, NULL);
-    return dxgi_factory_CreateSwapChainForHwnd(iface, device, hwnd, desc, NULL, output, swapchain);
+    if (desc && (!desc->Width || !desc->Height || desc->Scaling != DXGI_SCALING_STRETCH
+            || desc->AlphaMode == DXGI_ALPHA_MODE_STRAIGHT
+            || (desc->SwapEffect != DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL
+            && desc->SwapEffect != DXGI_SWAP_EFFECT_FLIP_DISCARD)))
+    {
+        WARN("Invalid swapchain desc.\n");
+        return DXGI_ERROR_INVALID_CALL;
+    }
+
+    return dxgi_factory_create_swapchain(iface, device, NULL, desc, NULL, output, swapchain);
 }
 
 static UINT STDMETHODCALLTYPE dxgi_factory_GetCreationFlags(IWineDXGIFactory *iface)

@@ -526,7 +526,7 @@ unsigned int dxgi_swapchain_flags_from_wined3d(unsigned int wined3d_flags)
 {
     unsigned int flags = 0;
 
-    wined3d_flags &= ~DXGI_WINED3D_SWAPCHAIN_FLAGS;
+    wined3d_flags &= ~(DXGI_WINED3D_SWAPCHAIN_FLAGS | WINED3D_SWAPCHAIN_WINDOWLESS);
 
     if (wined3d_flags & WINED3D_SWAPCHAIN_ALLOW_MODE_SWITCH)
     {
@@ -636,6 +636,9 @@ HRESULT wined3d_swapchain_desc_from_dxgi(struct wined3d_swapchain_desc *wined3d_
     wined3d_desc->enable_auto_depth_stencil = FALSE;
     wined3d_desc->auto_depth_stencil_format = 0;
     wined3d_desc->flags = wined3d_swapchain_flags_from_dxgi(dxgi_desc->Flags);
+    /* Composition swapchains have no window. */
+    if (!window)
+        wined3d_desc->flags |= WINED3D_SWAPCHAIN_WINDOWLESS;
     wined3d_desc->refresh_rate = dxgi_fullscreen_desc ? dxgi_rational_to_uint(&dxgi_fullscreen_desc->RefreshRate) : 0;
     wined3d_desc->auto_restore_display_mode = TRUE;
 
