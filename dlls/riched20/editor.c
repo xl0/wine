@@ -3291,7 +3291,7 @@ static LRESULT handle_EM_SETCHARFORMAT( ME_TextEditor *editor, WPARAM flags, con
             ME_MoveCursorWords( editor, &start, -1 );
             ME_SetCharFormat( editor, &start, &end, &fmt );
         }
-        changed = ME_IsSelection( editor );
+        changed = ME_IsSelection( editor ) || (flags & SCF_WORD);
         ME_SetSelectionCharFormat( editor, &fmt );
         if (changed) editor->nModifyStep = 1;
     }

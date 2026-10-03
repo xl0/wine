@@ -1467,6 +1467,37 @@ static void _send_paste(unsigned int line, HWND wnd)
     }
 }
 
+static void test_EM_SETCHARFORMAT_word(void)
+{
+    HWND hwnd = new_richeditW(NULL);
+    CHARFORMAT2W cf;
+    POINTL pos, new_pos;
+    POINT caret;
+    int ret;
+
+    SendMessageW(hwnd, WM_SETTEXT, 0, (LPARAM)L"ab cd");
+    SetFocus(hwnd);
+    SendMessageW(hwnd, EM_SETSEL, 4, 4);
+    SendMessageW(hwnd, EM_POSFROMCHAR, (WPARAM)&pos, 5);
+
+    /* The word is laid out again at once. */
+    memset(&cf, 0, sizeof(cf));
+    cf.cbSize = sizeof(cf);
+    SendMessageW(hwnd, EM_GETCHARFORMAT, SCF_DEFAULT, (LPARAM)&cf);
+    cf.dwMask = CFM_SIZE;
+    cf.yHeight *= 3;
+    ret = SendMessageW(hwnd, EM_SETCHARFORMAT, SCF_WORD | SCF_SELECTION, (LPARAM)&cf);
+    ok(ret == 1, "got %d\n", ret);
+    SendMessageW(hwnd, EM_POSFROMCHAR, (WPARAM)&new_pos, 5);
+    ok(new_pos.x > pos.x, "got %ld, was %ld\n", new_pos.x, pos.x);
+
+    SendMessageW(hwnd, EM_SETSEL, 5, 5);
+    GetCaretPos(&caret);
+    ok(caret.x == new_pos.x, "got %ld, expected %ld\n", caret.x, new_pos.x);
+
+    DestroyWindow(hwnd);
+}
+
 static void test_EM_SETTEXTMODE(void)
 {
   HWND hwndRichEdit = new_richedit(NULL);
@@ -9484,6 +9515,7 @@ START_TEST( editor )
   test_WM_SETTEXT();
   test_EM_LINELENGTH();
   test_EM_SETCHARFORMAT();
+  test_EM_SETCHARFORMAT_word();
   test_EM_SETTEXTMODE();
   test_TM_PLAINTEXT();
   test_EM_SETOPTIONS();
