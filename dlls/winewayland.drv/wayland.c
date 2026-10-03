@@ -215,6 +215,16 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
         process_wayland.wp_fractional_scale_manager_v1 =
             wl_registry_bind(registry, id, &wp_fractional_scale_manager_v1_interface, 1);
     }
+    else if (strcmp(interface, "zxdg_exporter_v2") == 0)
+    {
+        process_wayland.zxdg_exporter_v2 =
+            wl_registry_bind(registry, id, &zxdg_exporter_v2_interface, 1);
+    }
+    else if (strcmp(interface, "zxdg_importer_v2") == 0)
+    {
+        process_wayland.zxdg_importer_v2 =
+            wl_registry_bind(registry, id, &zxdg_importer_v2_interface, 1);
+    }
 #ifdef WL_FIXES_ACK_GLOBAL_REMOVE
     else if (strcmp(interface, "wl_fixes") == 0)
     {

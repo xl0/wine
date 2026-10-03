@@ -257,7 +257,7 @@ static void wayland_win_data_update_parent(struct wayland_win_data *data)
     if (!surface || !wayland_surface_is_toplevel(surface)) return;
 
     parent = get_mapped_toplevel(data->owner);
-    parent_hwnd = parent ? parent->hwnd : NULL;
+    parent_hwnd = parent ? parent->hwnd : data->foreign_owner ? data->owner : NULL;
     if (surface->parent_hwnd == parent_hwnd) return;
 
     TRACE("hwnd=%p parent=%p=>%p\n", data->hwnd, surface->parent_hwnd, parent_hwnd);
@@ -272,8 +272,14 @@ static void wayland_win_data_update_parent(struct wayland_win_data *data)
         break;
     }
 
-    xdg_toplevel_set_parent(surface->xdg_toplevel, parent ? parent->xdg_toplevel : NULL);
-    surface->parent_hwnd = parent_hwnd;
+    if (surface->parent_hwnd || parent)
+    {
+        wayland_surface_import_parent(surface, NULL);
+        xdg_toplevel_set_parent(surface->xdg_toplevel, parent ? parent->xdg_toplevel : NULL);
+        surface->parent_hwnd = parent ? parent->hwnd : NULL;
+    }
+    /* The toplevel of an owner from another process has to be imported. */
+    if (data->foreign_owner) wayland_surface_import_parent(surface, data->owner);
 }
 
 /***********************************************************************
@@ -418,6 +424,24 @@ static BOOL has_owned_popups(HWND hwnd)
     return ret;
 }
 
+/* Check if a window is owned by a window of another process, whose toplevel
+ * can be imported as the parent of the window. */
+static BOOL is_foreign_owner(HWND hwnd, HWND owner)
+{
+    DWORD pid;
+    UINT i;
+
+    if (!NtUserGetWindowThread(owner, &pid) || pid == GetCurrentProcessId()) return FALSE;
+
+    /* The parents set by other processes are not known here. As owners are
+     * replaced by their root window, the owner may itself be owned by a child
+     * of the window: don't import it then, a parent loop is a protocol error. */
+    for (i = 0; i < 16 && (owner = NtUserGetWindowRelative(owner, GW_OWNER)); i++)
+        if ((owner = NtUserGetAncestor(owner, GA_ROOT)) == hwnd) return FALSE;
+
+    return TRUE;
+}
+
 static inline HWND get_active_window(void)
 {
     GUITHREADINFO info;
@@ -498,7 +522,7 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
     HWND owner = NtUserGetAncestor(hwnd, GA_ROOT), win_owner = NtUserGetWindowRelative(hwnd, GW_OWNER);
     struct wayland_surface *owner_surface;
     struct wayland_win_data *data, *owner_data;
-    BOOL managed, fullscreen = swp_flags & WINE_SWP_FULLSCREEN;
+    BOOL managed, fullscreen = swp_flags & WINE_SWP_FULLSCREEN, foreign_owner;
 
     TRACE("hwnd %p new_rects %s after %p flags %08x\n", hwnd, debugstr_window_rects(new_rects), insert_after, swp_flags);
 
@@ -507,6 +531,7 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
      * acquire the lock itself internally. */
     if (!(managed = is_window_managed(hwnd, swp_flags, fullscreen)) && surface) owner = owner_hint;
     if (win_owner) win_owner = NtUserGetAncestor(win_owner, GA_ROOT);
+    foreign_owner = win_owner && is_foreign_owner(hwnd, win_owner);
 
     if (!(data = wayland_win_data_get(hwnd))) return;
     owner_data = owner && owner != hwnd ? wayland_win_data_get(owner) : NULL;
@@ -517,6 +542,7 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
     data->resizeable = swp_flags & WINE_SWP_RESIZABLE;
     data->managed = managed;
     data->owner = win_owner != hwnd ? win_owner : NULL;
+    data->foreign_owner = foreign_owner;
 
     if (!surface)
     {

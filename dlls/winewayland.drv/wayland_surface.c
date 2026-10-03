@@ -34,6 +34,9 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(waylanddrv);
 
+static const WCHAR exported_handle_prop[] =
+    {'_','_','w','i','n','e','_','w','a','y','l','a','n','d','_','e','x','p','o','r','t','e','d','_','h','a','n','d','l','e',0};
+
 static void xdg_surface_handle_configure(void *private, struct xdg_surface *xdg_surface,
                                          uint32_t serial)
 {
@@ -175,6 +178,61 @@ void wp_fractional_scale_handle_scale(void* user_data,
 static const struct wp_fractional_scale_v1_listener wp_fractional_scale_listener =
 {
     wp_fractional_scale_handle_scale
+};
+
+static void zxdg_exported_v2_handle_handle(void *private, struct zxdg_exported_v2 *zxdg_exported_v2,
+                                           const char *handle)
+{
+    struct wayland_surface *surface;
+    struct wayland_win_data *data;
+    WCHAR name[MAX_ATOM_LEN + 1];
+    HWND hwnd = private;
+    RTL_ATOM atom;
+    DWORD size;
+
+    TRACE("hwnd=%p handle=%s\n", hwnd, debugstr_a(handle));
+
+    if (!(data = wayland_win_data_get(hwnd))) return;
+
+    if ((surface = data->wayland_surface) && wayland_surface_is_toplevel(surface) &&
+        surface->zxdg_exported_v2 == zxdg_exported_v2 &&
+        !RtlUTF8ToUnicodeN(name, sizeof(name) - sizeof(WCHAR), &size, handle, strlen(handle)))
+    {
+        name[size / sizeof(WCHAR)] = 0;
+        /* Share the handle with the other processes as the name of an atom,
+         * which is kept alive by the window property of that name. */
+        if (NtUserSetProp(hwnd, name, (HANDLE)1) && !NtFindAtom(name, size, &atom))
+            NtUserSetProp(hwnd, exported_handle_prop, ULongToHandle(atom));
+    }
+
+    wayland_win_data_release(data);
+}
+
+static const struct zxdg_exported_v2_listener zxdg_exported_v2_listener =
+{
+    zxdg_exported_v2_handle_handle
+};
+
+static void zxdg_imported_v2_handle_destroyed(void *private, struct zxdg_imported_v2 *zxdg_imported_v2)
+{
+    struct wayland_surface *surface;
+    struct wayland_win_data *data;
+    HWND hwnd = private;
+
+    TRACE("hwnd=%p\n", hwnd);
+
+    if (!(data = wayland_win_data_get(hwnd))) return;
+
+    if ((surface = data->wayland_surface) && wayland_surface_is_toplevel(surface) &&
+        surface->zxdg_imported_v2 == zxdg_imported_v2)
+        wayland_surface_import_parent(surface, NULL);
+
+    wayland_win_data_release(data);
+}
+
+static const struct zxdg_imported_v2_listener zxdg_imported_v2_listener =
+{
+    zxdg_imported_v2_handle_destroyed
 };
 
 /**********************************************************************
@@ -444,6 +502,16 @@ void wayland_surface_clear_role(struct wayland_surface *surface)
             surface->xdg_toplevel_icon = NULL;
         }
 
+        wayland_surface_import_parent(surface, NULL);
+
+        if (surface->zxdg_exported_v2)
+        {
+            RTL_ATOM atom = HandleToULong(NtUserRemoveProp(surface->hwnd, exported_handle_prop));
+            if (atom) NtUserRemoveProp(surface->hwnd, MAKEINTRESOURCEW(atom));
+            zxdg_exported_v2_destroy(surface->zxdg_exported_v2);
+            surface->zxdg_exported_v2 = NULL;
+        }
+
         if (surface->xdg_toplevel)
         {
             xdg_toplevel_destroy(surface->xdg_toplevel);
@@ -558,6 +626,50 @@ void wayland_surface_mapped(struct wayland_surface *surface)
 
     /* The toplevel can now be the parent of the windows it owns. */
     update_owned_toplevels(surface->hwnd);
+
+    if (process_wayland.zxdg_exporter_v2)
+    {
+        surface->zxdg_exported_v2 =
+            zxdg_exporter_v2_export_toplevel(process_wayland.zxdg_exporter_v2, surface->wl_surface);
+        zxdg_exported_v2_add_listener(surface->zxdg_exported_v2, &zxdg_exported_v2_listener, surface->hwnd);
+    }
+}
+
+/**********************************************************************
+ *          wayland_surface_import_parent
+ *
+ * Sets the toplevel of a window from another process as the parent of a
+ * toplevel surface, using the handle exported by that process, or unsets
+ * it if parent_hwnd is NULL.
+ */
+void wayland_surface_import_parent(struct wayland_surface *surface, HWND parent_hwnd)
+{
+    char buffer[sizeof(ATOM_BASIC_INFORMATION) + MAX_ATOM_LEN * sizeof(WCHAR)], handle[MAX_ATOM_LEN * 3 + 1];
+    ATOM_BASIC_INFORMATION *info = (ATOM_BASIC_INFORMATION *)buffer;
+    RTL_ATOM atom;
+    DWORD len;
+
+    if (surface->zxdg_imported_v2)
+    {
+        /* Destroying the imported toplevel also unsets the parent. */
+        zxdg_imported_v2_destroy(surface->zxdg_imported_v2);
+        surface->zxdg_imported_v2 = NULL;
+        surface->parent_hwnd = NULL;
+    }
+
+    if (!parent_hwnd || !process_wayland.zxdg_importer_v2) return;
+    if (!(atom = HandleToULong(NtUserGetProp(parent_hwnd, exported_handle_prop)))) return;
+    if (NtQueryInformationAtom(atom, AtomBasicInformation, info, sizeof(buffer), NULL)) return;
+    if (RtlUnicodeToUTF8N(handle, sizeof(handle) - 1, &len, info->Name, info->NameLength)) return;
+    handle[len] = 0;
+
+    TRACE("hwnd=%p parent=%p handle=%s\n", surface->hwnd, parent_hwnd, debugstr_a(handle));
+
+    surface->zxdg_imported_v2 =
+        zxdg_importer_v2_import_toplevel(process_wayland.zxdg_importer_v2, handle);
+    zxdg_imported_v2_add_listener(surface->zxdg_imported_v2, &zxdg_imported_v2_listener, surface->hwnd);
+    zxdg_imported_v2_set_parent_of(surface->zxdg_imported_v2, surface->wl_surface);
+    surface->parent_hwnd = parent_hwnd;
 }
 
 /**********************************************************************

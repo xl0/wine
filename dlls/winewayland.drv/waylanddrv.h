@@ -41,6 +41,7 @@
 #include "pointer-warp-v1-client-protocol.h"
 #include "alpha-modifier-v1-client-protocol.h"
 #include "fractional-scale-v1-client-protocol.h"
+#include "xdg-foreign-unstable-v2-client-protocol.h"
 
 #include "windef.h"
 #include "winbase.h"
@@ -185,6 +186,8 @@ struct wayland
     struct wp_cursor_shape_manager_v1 *wp_cursor_shape_manager_v1;
     struct wp_pointer_warp_v1 *wp_pointer_warp_v1;
     struct wp_alpha_modifier_v1 *wp_alpha_modifier_v1;
+    struct zxdg_exporter_v2 *zxdg_exporter_v2;
+    struct zxdg_importer_v2 *zxdg_importer_v2;
     struct wayland_seat seat;
     struct wayland_keyboard keyboard;
     struct wayland_pointer pointer;
@@ -293,6 +296,10 @@ struct wayland_surface
             struct xdg_toplevel_icon_v1 *xdg_toplevel_icon;
             /* window whose toplevel has been set as parent (if any) */
             HWND parent_hwnd;
+            /* handle to this toplevel for the other processes */
+            struct zxdg_exported_v2 *zxdg_exported_v2;
+            /* parent toplevel from another process */
+            struct zxdg_imported_v2 *zxdg_imported_v2;
         };
         struct
         {
@@ -337,6 +344,7 @@ void wayland_surface_attach_shm(struct wayland_surface *surface,
                                 struct wayland_shm_buffer *shm_buffer,
                                 HRGN surface_damage_region);
 void wayland_surface_mapped(struct wayland_surface *surface);
+void wayland_surface_import_parent(struct wayland_surface *surface, HWND parent_hwnd);
 BOOL wayland_surface_reconfigure(struct wayland_surface *surface);
 BOOL wayland_surface_config_is_compatible(struct wayland_surface_config *conf, RECT rect,
                                           enum wayland_surface_config_state state);
@@ -379,6 +387,8 @@ struct wayland_win_data
     HWND hwnd;
     /* root window of the owner (if any) */
     HWND owner;
+    /* the owner belongs to another process */
+    BOOL foreign_owner;
     /* last buffer that was set as window contents */
     struct wayland_shm_buffer *window_contents;
     /* wayland surface (if any) for this window */
