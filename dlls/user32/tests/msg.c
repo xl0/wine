@@ -19509,9 +19509,45 @@ static DWORD CALLBACK wait_idle_thread( void *arg )
     return 0;
 }
 
+/* WaitForInputIdle fails for console processes, run the children from a GUI subsystem copy of the test */
+static BOOL create_gui_copy( char *path )
+{
+    WORD subsystem = IMAGE_SUBSYSTEM_WINDOWS_GUI;
+    char src[MAX_PATH], temp[MAX_PATH];
+    HANDLE file = INVALID_HANDLE_VALUE;
+    IMAGE_DOS_HEADER dos;
+    DWORD size;
+    BOOL ret;
+
+    GetModuleFileNameA( NULL, src, sizeof(src) );
+    GetTempPathA( sizeof(temp), temp );
+    GetTempFileNameA( temp, "wfi", 0, path );
+    ret = CopyFileA( src, path, FALSE );
+    ok( ret, "CopyFile failed, error %lu\n", GetLastError() );
+    if (ret)
+    {
+        file = CreateFileA( path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL );
+        ok( file != INVALID_HANDLE_VALUE, "CreateFile failed, error %lu\n", GetLastError() );
+        ret = (file != INVALID_HANDLE_VALUE);
+    }
+    if (ret)
+    {
+        /* the subsystem is at the same offset in the 32-bit and 64-bit headers */
+        ret = ReadFile( file, &dos, sizeof(dos), &size, NULL ) && size == sizeof(dos) &&
+              SetFilePointer( file, dos.e_lfanew + FIELD_OFFSET( IMAGE_NT_HEADERS, OptionalHeader.Subsystem ),
+                              NULL, FILE_BEGIN ) != INVALID_SET_FILE_POINTER &&
+              WriteFile( file, &subsystem, sizeof(subsystem), &size, NULL );
+        ok( ret, "failed to change the subsystem, error %lu\n", GetLastError() );
+        CloseHandle( file );
+    }
+    if (!ret) DeleteFileA( path );
+    return ret;
+}
+
 static void test_WaitForInputIdle( char *argv0 )
 {
-    char path[MAX_PATH];
+    char path[MAX_PATH + 40], gui_exe[MAX_PATH];
     PROCESS_INFORMATION pi;
     STARTUPINFOA startup;
     BOOL ret;
@@ -19522,8 +19558,7 @@ static void test_WaitForInputIdle( char *argv0 )
     const IMAGE_NT_HEADERS *nt = (const IMAGE_NT_HEADERS *)((const char *)dos + dos->e_lfanew);
     BOOL console_app = (nt->OptionalHeader.Subsystem != IMAGE_SUBSYSTEM_WINDOWS_GUI);
 
-    if (console_app)  /* build the test with -mwindows for better coverage */
-        trace( "not built as a GUI app, WaitForInputIdle may not be fully tested\n" );
+    if (!create_gui_copy( gui_exe )) return;
 
     start_event = CreateEventA(NULL, 0, 0, "test_WaitForInputIdle_start");
     end_event = CreateEventA(NULL, 0, 0, "test_WaitForInputIdle_end");
@@ -19541,7 +19576,7 @@ static void test_WaitForInputIdle( char *argv0 )
     {
         ResetEvent( start_event );
         ResetEvent( end_event );
-        sprintf( path, "%s msg do_wait_idle_child %u", argv0, i );
+        sprintf( path, "\"%s\" msg do_wait_idle_child %u", gui_exe, i );
         ret = CreateProcessA( NULL, path, NULL, NULL, TRUE, 0, NULL, NULL, &startup, &pi );
         ok( ret, "CreateProcess '%s' failed err %lu.\n", path, GetLastError() );
         if (ret)
@@ -19551,16 +19586,10 @@ static void test_WaitForInputIdle( char *argv0 )
             if (ret == WAIT_OBJECT_0)
             {
                 ret = WaitForInputIdle( pi.hProcess, 1000 );
-                if (ret == WAIT_FAILED)
-                    ok( console_app ||
-                        ret == wait_idle_expect[i].exp ||
-                        broken(ret == wait_idle_expect[i].broken),
-                        "%u: WaitForInputIdle error %08x expected %08lx\n",
-                        i, ret, wait_idle_expect[i].exp );
-                else todo_wine_if (wait_idle_expect[i].todo)
-                    ok( ret == wait_idle_expect[i].exp || broken(ret == wait_idle_expect[i].broken),
-                        "%u: WaitForInputIdle error %08x expected %08lx\n",
-                        i, ret, wait_idle_expect[i].exp );
+                todo_wine_if (wait_idle_expect[i].todo)
+                ok( ret == wait_idle_expect[i].exp || broken(ret == wait_idle_expect[i].broken),
+                    "%u: WaitForInputIdle error %08x expected %08lx\n",
+                    i, ret, wait_idle_expect[i].exp );
                 SetEvent( end_event );
                 WaitForSingleObject( pi.hProcess, 1000 );  /* give it a chance to exit on its own */
             }
@@ -19572,11 +19601,29 @@ static void test_WaitForInputIdle( char *argv0 )
             wait_child_process( &pi );
         }
     }
+
+    if (console_app)  /* a console process never becomes input idle, even with a message loop */
+    {
+        ResetEvent( start_event );
+        ResetEvent( end_event );
+        sprintf( path, "\"%s\" msg do_wait_idle_child 9", argv0 );
+        ret = CreateProcessA( NULL, path, NULL, NULL, TRUE, 0, NULL, NULL, &startup, &pi );
+        ok( ret, "CreateProcess '%s' failed err %lu.\n", path, GetLastError() );
+        ret = WaitForSingleObject( start_event, 5000 );
+        ok( ret == WAIT_OBJECT_0, "WaitForSingleObject failed\n" );
+        ret = WaitForInputIdle( pi.hProcess, 1000 );
+        ok( ret == WAIT_FAILED, "WaitForInputIdle on a console process returned %08x\n", ret );
+        TerminateProcess( pi.hProcess, 0 );
+        wait_child_process( &pi );
+    }
+
     CloseHandle( end_event );
     CloseHandle( start_event );
     PostThreadMessageA( id, WM_QUIT, 0, 0 );
     WaitForSingleObject( thread, 10000 );
     CloseHandle( thread );
+    ret = DeleteFileA( gui_exe );
+    ok( ret, "DeleteFile failed, error %lu\n", GetLastError() );
 }
 
 static const struct message WmSetParentSeq_1[] = {
