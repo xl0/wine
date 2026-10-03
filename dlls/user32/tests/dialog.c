@@ -961,7 +961,7 @@ static void test_IsDialogMessage_hidden_parent(void)
         /* the pane gets hidden during the search */
         { WS_CHILD | WS_VISIBLE, WS_CHILD | WS_VISIBLE, TRUE },
     };
-    HWND main, control, button1, pane, inner, child, button2;
+    HWND main, control, button1, pane, inner, child, button2, button3, box, button4;
     WNDCLASSA cls = {0};
     WPARAM command;
     unsigned int i;
@@ -997,6 +997,15 @@ static void test_IsDialogMessage_hidden_parent(void)
         button2 = CreateWindowA("button", "Button &2", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                                 10, 120, 80, 20, pane, (HMENU)200, g_hinst, 0);
         ok(!!button2, "Failed to create a window, error %#lx.\n", GetLastError());
+        button3 = CreateWindowA("button", "Button &3", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                                10, 250, 80, 20, main, (HMENU)300, g_hinst, 0);
+        ok(!!button3, "Failed to create a window, error %#lx.\n", GetLastError());
+        box = CreateWindowA(cls.lpszClassName, "box", WS_CHILD | WS_VISIBLE,
+                            100, 250, 100, 40, main, NULL, g_hinst, 0);
+        ok(!!box, "Failed to create a window, error %#lx.\n", GetLastError());
+        button4 = CreateWindowA("button", "Button &4", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                                10, 10, 80, 20, box, (HMENU)400, g_hinst, 0);
+        ok(!!button4, "Failed to create a window, error %#lx.\n", GetLastError());
 
         if (tests[i].hide) hidden_parent_hide = pane;
         command = hidden_parent_char(main, child, 'q');
@@ -1011,6 +1020,12 @@ static void test_IsDialogMessage_hidden_parent(void)
 
         /* controls inside of it are not */
         command = hidden_parent_char(main, child, '2');
+        todo_wine ok(!command, "Got unexpected command %#Ix.\n", command);
+
+        /* nothing is searched when the message window is the dialog itself */
+        command = hidden_parent_char(pane, pane, '3');
+        todo_wine ok(!command, "Got unexpected command %#Ix.\n", command);
+        command = hidden_parent_char(box, box, '4');
         todo_wine ok(!command, "Got unexpected command %#Ix.\n", command);
 
         DestroyWindow(main);
