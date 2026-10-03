@@ -194,6 +194,9 @@ void * CDECL wined3d_swapchain_get_parent(const struct wined3d_swapchain *swapch
 
 void CDECL wined3d_swapchain_set_window(struct wined3d_swapchain *swapchain, HWND window)
 {
+    if (swapchain->state.desc.flags & WINED3D_SWAPCHAIN_WINDOWLESS)
+        return;
+
     if (!window)
         window = swapchain->state.device_window;
     if (window == swapchain->win_handle)
@@ -252,7 +255,7 @@ HRESULT CDECL wined3d_swapchain_present(struct wined3d_swapchain *swapchain,
 
     if (!dst_rect)
     {
-        if (!desc->windowed)
+        if (!desc->windowed || (desc->flags & WINED3D_SWAPCHAIN_WINDOWLESS))
             SetRect(&d, 0, 0, desc->backbuffer_width, desc->backbuffer_height);
         else
             GetClientRect(swapchain->win_handle, &d);
@@ -641,7 +644,12 @@ static void swapchain_gl_present(struct wined3d_swapchain *swapchain,
     TRACE("Presenting DC %p.\n", context_gl->dc);
 
     pixel_format = &wined3d_adapter_gl(swapchain->device->adapter)->pixel_formats[context_gl->pixel_format - 1];
-    if (context_gl->dc == wined3d_device_gl(swapchain->device)->backup_dc
+    if (swapchain->state.desc.flags & WINED3D_SWAPCHAIN_WINDOWLESS)
+    {
+        /* Nothing to present to, only rotate the buffers. */
+        wined3d_texture_load_location(back_buffer, 0, context, back_buffer->resource.draw_binding);
+    }
+    else if (context_gl->dc == wined3d_device_gl(swapchain->device)->backup_dc
             || (pixel_format->swap_method != WGL_SWAP_COPY_ARB
             && swapchain_present_is_partial_copy(swapchain, dst_rect)))
     {
@@ -1271,7 +1279,12 @@ static void swapchain_vk_present(struct wined3d_swapchain *swapchain, const RECT
 
     context_vk = wined3d_context_vk(context_acquire(swapchain->device, back_buffer, 0));
 
-    if (!swapchain_vk->vk_swapchain || swapchain_present_is_partial_copy(swapchain, dst_rect))
+    if (swapchain->state.desc.flags & WINED3D_SWAPCHAIN_WINDOWLESS)
+    {
+        /* Nothing to present to, only rotate the buffers. */
+        wined3d_texture_load_location(back_buffer, 0, &context_vk->c, back_buffer->resource.draw_binding);
+    }
+    else if (!swapchain_vk->vk_swapchain || swapchain_present_is_partial_copy(swapchain, dst_rect))
     {
         swapchain_blit_gdi(swapchain, &context_vk->c, src_rect, dst_rect);
     }
@@ -1536,7 +1549,7 @@ static HRESULT wined3d_swapchain_state_init(struct wined3d_swapchain_state *stat
     state->desc.device_window = window;
     state->parent = parent;
 
-    if (desc->flags & WINED3D_SWAPCHAIN_REGISTER_STATE)
+    if ((desc->flags & WINED3D_SWAPCHAIN_REGISTER_STATE) && !(desc->flags & WINED3D_SWAPCHAIN_WINDOWLESS))
         wined3d_swapchain_state_register(state);
 
     return hr;
@@ -1652,7 +1665,10 @@ static HRESULT wined3d_swapchain_init(struct wined3d_swapchain *swapchain, struc
         goto err;
     }
 
-    if (!(swapchain->dc = GetDCEx(swapchain->win_handle, 0, DCX_USESTYLE | DCX_CACHE)))
+    /* A windowless swapchain, like a DXGI composition swapchain, has nothing
+     * to present to. */
+    if (!(desc->flags & WINED3D_SWAPCHAIN_WINDOWLESS)
+            && !(swapchain->dc = GetDCEx(swapchain->win_handle, 0, DCX_USESTYLE | DCX_CACHE)))
         WARN("Failed to retrieve device context, trying swapchain backup.\n");
 
     if (!swapchain->state.desc.windowed)
@@ -1829,6 +1845,9 @@ HRESULT wined3d_swapchain_vk_init(struct wined3d_swapchain_vk *swapchain_vk, str
 
     if (FAILED(hr = wined3d_swapchain_init(&swapchain_vk->s, device, desc, state_parent, parent,
             parent_ops, &swapchain_vk_ops)))
+        return hr;
+
+    if (desc->flags & WINED3D_SWAPCHAIN_WINDOWLESS)
         return hr;
 
     if (swapchain_vk->s.win_handle == GetDesktopWindow())

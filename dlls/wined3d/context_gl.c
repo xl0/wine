@@ -1293,7 +1293,8 @@ static void context_restore_gl_context(const struct wined3d_gl_info *gl_info, HD
 
 static void wined3d_context_gl_update_window(struct wined3d_context_gl *context_gl)
 {
-    if (!context_gl->c.swapchain)
+    /* A windowless swapchain isn't presented, any drawable will do. */
+    if (!context_gl->c.swapchain || (context_gl->c.swapchain->state.desc.flags & WINED3D_SWAPCHAIN_WINDOWLESS))
         return;
 
     if (context_gl->window == context_gl->c.swapchain->win_handle &&
