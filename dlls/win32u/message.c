@@ -3427,7 +3427,6 @@ static DWORD wait_message( DWORD count, const HANDLE *handles, DWORD timeout, DW
     LARGE_INTEGER time, start, now, freq, *timeout_ptr;
     void *ret_ptr;
     ULONG ret_len;
-    HANDLE event;
     LONGLONG rel = 0;
     DWORD ret;
 
@@ -3447,7 +3446,6 @@ static DWORD wait_message( DWORD count, const HANDLE *handles, DWORD timeout, DW
     }
 
     process_driver_events( QS_ALLINPUT, wake_mask, changed_mask );
-    if (!(changed_mask & QS_SMRESULT) && (event = get_user_thread_info()->idle_event)) NtSetEvent( event, NULL );
 
     for (;;)
     {
@@ -3478,13 +3476,17 @@ static DWORD wait_message( DWORD count, const HANDLE *handles, DWORD timeout, DW
  *           wait_objects
  *
  * Wait for multiple objects including the server queue, with specific queue masks.
+ * The process is input idle while a thread waits here.
  */
 static DWORD wait_objects( DWORD count, const HANDLE *handles, DWORD timeout,
                            DWORD wake_mask, DWORD changed_mask, DWORD flags )
 {
+    HANDLE idle_event = get_user_thread_info()->idle_event;
+
     assert( count );  /* we must have at least the server queue */
 
     flush_window_surfaces( TRUE );
+    if (idle_event) NtSetEvent( idle_event, NULL );
 
     return wait_message( count, handles, timeout, wake_mask, changed_mask, flags );
 }
@@ -3530,7 +3532,7 @@ DWORD WINAPI NtUserMsgWaitForMultipleObjectsEx( DWORD count, const HANDLE *handl
 DWORD WINAPI NtUserWaitForInputIdle( HANDLE process, DWORD timeout, BOOL wow )
 {
     DWORD start_time, elapsed, ret;
-    HANDLE handles[2];
+    HANDLE handles[3];
 
     handles[0] = process;
     SERVER_START_REQ( get_process_idle_event )
@@ -3541,6 +3543,7 @@ DWORD WINAPI NtUserWaitForInputIdle( HANDLE process, DWORD timeout, BOOL wow )
     }
     SERVER_END_REQ;
     if (!handles[1]) return WAIT_FAILED;  /* no event to wait on */
+    handles[2] = get_server_queue_handle();
 
     start_time = NtGetTickCount();
     elapsed = 0;
@@ -3549,7 +3552,9 @@ DWORD WINAPI NtUserWaitForInputIdle( HANDLE process, DWORD timeout, BOOL wow )
 
     for (;;)
     {
-        ret = NtUserMsgWaitForMultipleObjectsEx( 2, handles, timeout - elapsed, QS_SENDMESSAGE, 0 );
+        /* not wait_objects(): the caller isn't input idle while it waits for another process */
+        flush_window_surfaces( TRUE );
+        ret = wait_message( 3, handles, timeout - elapsed, 0, QS_SENDMESSAGE, 0 );
         if (ret == WAIT_OBJECT_0 + 2)
         {
             process_sent_messages();

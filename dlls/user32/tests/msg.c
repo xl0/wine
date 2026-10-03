@@ -19317,6 +19317,8 @@ static const struct
          { WAIT_TIMEOUT, 0,            FALSE },
          { WAIT_TIMEOUT, 0,            FALSE },
 /* 20 */ { WAIT_TIMEOUT, 0,            FALSE },
+         { WAIT_TIMEOUT, WAIT_TIMEOUT, FALSE },
+         { 0,            0,            FALSE },
 };
 
 static DWORD CALLBACK do_wait_idle_child_thread( void *arg )
@@ -19476,6 +19478,36 @@ static void do_wait_idle_child( int arg )
         SetEvent( start_event );
         Sleep( 200 );
         PeekMessageA( &msg, GetDesktopWindow(), 0, 0, PM_NOREMOVE );
+        break;
+    case 21:  /* waiting for another process to become idle */
+    {
+        char path[MAX_PATH], cmdline[MAX_PATH + 40];
+        STARTUPINFOA startup = { sizeof(startup) };
+        PROCESS_INFORMATION pi;
+        BOOL ret;
+
+        /* The grandchild is never idle (there is no case 100): it only waits for end_event and
+         * exits. That consumes the end_event set by the parent and ends our wait, so return
+         * instead of waiting for end_event too, for the parent to get our results. */
+        GetModuleFileNameA( NULL, path, sizeof(path) );
+        sprintf( cmdline, "\"%s\" msg do_wait_idle_child 100", path );
+        ret = CreateProcessA( NULL, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &startup, &pi );
+        ok( ret, "CreateProcess '%s' failed err %lu.\n", cmdline, GetLastError() );
+        SetEvent( start_event );
+        if (!ret) return;
+        ret = WaitForInputIdle( pi.hProcess, 5000 );
+        ok( !ret, "WaitForInputIdle on the grandchild returned %08x\n", ret );
+        TerminateProcess( pi.hProcess, 0 );
+        WaitForSingleObject( pi.hProcess, 10000 );
+        CloseHandle( pi.hThread );
+        CloseHandle( pi.hProcess );
+        return;
+    }
+    case 22:  /* all the mask bits, including the undocumented 0x8000 */
+        SetEvent( start_event );
+        Sleep( 200 );
+        PeekMessageA( &msg, 0, 0, 0, PM_NOREMOVE );
+        MsgWaitForMultipleObjects( 0, NULL, FALSE, 100, 0xffff );
         break;
     }
     WaitForSingleObject( end_event, 2000 );
