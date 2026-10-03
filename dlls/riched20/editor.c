@@ -3286,9 +3286,19 @@ static LRESULT handle_EM_SETCHARFORMAT( ME_TextEditor *editor, WPARAM flags, con
         if (flags & SCF_WORD)
         {
             end = editor->pCursors[0];
-            ME_MoveCursorWords( editor, &end, +1 );
-            start = end;
-            ME_MoveCursorWords( editor, &start, -1 );
+            if (!ME_IsSelection( editor ) && (end.run->nFlags & MERF_ENDPARA))
+            {
+                /* In front of a paragraph mark it is the mark that gets the format. */
+                start = end;
+                start.nOffset = 0;
+                end.nOffset = end.run->len;
+            }
+            else
+            {
+                ME_MoveCursorWords( editor, &end, +1 );
+                start = end;
+                ME_MoveCursorWords( editor, &start, -1 );
+            }
             ME_SetCharFormat( editor, &start, &end, &fmt );
         }
         changed = ME_IsSelection( editor ) || (flags & SCF_WORD);

@@ -1480,11 +1480,119 @@ static DWORD get_char_effects(HWND hwnd, int pos)
 
 static void test_EM_SETCHARFORMAT_word(void)
 {
+    /* What riched20.dll does. msftedit.dll differs in two places: with the caret between a word's
+     * letters and the spaces after it nothing is formatted, and formatting a paragraph mark sets
+     * the modify flag and can be undone. In front of a paragraph mark Wine formats the mark like
+     * both, with the modify flag and the undo item of msftedit.dll. */
+    static const struct
+    {
+        const WCHAR *text;
+        int from, to;
+        const char *italic; /* per character, the last one is the final paragraph mark */
+        const char *todo;   /* x: Wine differs */
+        BOOL changed;       /* modify flag set and an undo item */
+        BOOL todo_changed;
+    }
+    tests[] =
+    {
+        /* The word the caret is inside of or at the end of, with the spaces after it if the caret
+         * is at or among them. Nothing at the start of a word. */
+        { L"one two  three",  0,  0, "---------------", "xxxx-----------", FALSE, TRUE },
+        { L"one two  three",  1,  1, "III------------", "---x-----------", TRUE, FALSE },
+        { L"one two  three",  2,  2, "III------------", "---x-----------", TRUE, FALSE },
+        { L"one two  three",  3,  3, "IIII-----------", "---------------", TRUE, FALSE },
+        { L"one two  three",  4,  4, "---------------", "----xxxxx------", FALSE, TRUE },
+        { L"one two  three",  5,  5, "----III--------", "-------xx------", TRUE, FALSE },
+        { L"one two  three",  6,  6, "----III--------", "-------xx------", TRUE, FALSE },
+        { L"one two  three",  7,  7, "----IIIII------", "---------------", TRUE, FALSE },
+        { L"one two  three",  8,  8, "----IIIII------", "---------------", TRUE, FALSE },
+        { L"one two  three",  9,  9, "---------------", "---------xxxxx-", FALSE, TRUE },
+        { L"one two  three", 10, 10, "---------IIIII-", "---------------", TRUE, FALSE },
+        { L"one two  three", 11, 11, "---------IIIII-", "---------------", TRUE, FALSE },
+        { L"one two  three", 12, 12, "---------IIIII-", "---------------", TRUE, FALSE },
+        { L"one two  three", 13, 13, "---------IIIII-", "---------------", TRUE, FALSE },
+        { L"one two  three", 14, 14, "--------------I", "---------------", FALSE, TRUE },
+
+        /* In front of a paragraph mark it is the mark. */
+        { L"",  0,  0, "I", "-", FALSE, TRUE },
+        { L"<<>>",  0,  0, "-----", "xxxx-", FALSE, TRUE },
+        { L"<<>>",  1,  1, "IIII-", "-----", TRUE, FALSE },
+        { L"<<>>",  2,  2, "IIII-", "-----", TRUE, FALSE },
+        { L"<<>>",  3,  3, "IIII-", "-----", TRUE, FALSE },
+        { L"<<>>",  4,  4, "----I", "-----", FALSE, TRUE },
+        { L"x\ryz\r\r q",  0,  0, "---------", "x--------", FALSE, TRUE },
+        { L"x\ryz\r\r q",  1,  1, "-I-------", "---------", FALSE, TRUE },
+        { L"x\ryz\r\r q",  2,  2, "---------", "--xx-----", FALSE, TRUE },
+        { L"x\ryz\r\r q",  3,  3, "--II-----", "---------", TRUE, FALSE },
+        { L"x\ryz\r\r q",  4,  4, "----I----", "---------", FALSE, TRUE },
+        { L"x\ryz\r\r q",  5,  5, "-----I---", "---------", FALSE, TRUE },
+        { L"x\ryz\r\r q",  6,  6, "---------", "------x--", FALSE, TRUE },
+        { L"x\ryz\r\r q",  7,  7, "---------", "-------x-", FALSE, TRUE },
+        { L"x\ryz\r\r q",  8,  8, "--------I", "---------", FALSE, TRUE },
+
+        /* Punctuation makes words of its own. */
+        { L"ab, cd.",  0,  0, "--------", "xxxx----", FALSE, TRUE },
+        { L"ab, cd.",  1,  1, "II------", "--xx----", TRUE, FALSE },
+        { L"ab, cd.",  2,  2, "--------", "xxxx----", FALSE, TRUE },
+        { L"ab, cd.",  3,  3, "--II----", "xx------", TRUE, FALSE },
+        { L"ab, cd.",  4,  4, "--------", "----xxx-", FALSE, TRUE },
+        { L"ab, cd.",  5,  5, "----II--", "------x-", TRUE, FALSE },
+        { L"ab, cd.",  6,  6, "--------", "----xxx-", FALSE, TRUE },
+        { L"ab, cd.",  7,  7, "-------I", "--------", FALSE, TRUE },
+
+        /* Nothing but the selection if there is one. */
+        { L"one two  three",  1,  2, "-I-------------", "x-xx-----------", TRUE, FALSE },
+        { L"one two  three",  0,  3, "III------------", "---x-----------", TRUE, FALSE },
+        { L"one two  three",  1,  5, "-IIII----------", "-----xxxx------", TRUE, FALSE },
+        { L"one two  three",  3,  4, "---I-----------", "----xxxxx------", TRUE, FALSE },
+        { L"one two  three",  4,  7, "----III--------", "-------xx------", TRUE, FALSE },
+        { L"one two  three",  5, 11, "-----IIIIII----", "-----------xxx-", TRUE, FALSE },
+        { L"one two  three",  7,  9, "-------II------", "---------xxxxx-", TRUE, FALSE },
+        { L"one two  three", 12, 14, "------------II-", "---------xxx---", TRUE, FALSE },
+        { L"one two  three", 12, 15, "------------III", "---------xxx---", TRUE, FALSE },
+        { L"one two  three",  0, -1, "IIIIIIIIIIIIIII", "---------------", TRUE, FALSE },
+    };
     HWND hwnd = new_richeditW(NULL);
     CHARFORMAT2W cf;
     POINTL pos, new_pos;
     POINT caret;
-    int ret;
+    DWORD effects;
+    int i, j, ret;
+
+    for (i = 0; i < ARRAY_SIZE(tests); i++)
+    {
+        winetest_push_context("%d", i);
+        SendMessageW(hwnd, WM_SETTEXT, 0, (LPARAM)tests[i].text);
+        memset(&cf, 0, sizeof(cf));
+        cf.cbSize = sizeof(cf);
+        cf.dwMask = CFM_ITALIC;
+        SendMessageW(hwnd, EM_SETSEL, 0, -1);
+        SendMessageW(hwnd, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+        SendMessageW(hwnd, EM_SETSEL, tests[i].from, tests[i].to);
+        SendMessageW(hwnd, EM_SETMODIFY, FALSE, 0);
+        SendMessageW(hwnd, EM_EMPTYUNDOBUFFER, 0, 0);
+
+        cf.dwEffects = CFE_ITALIC;
+        ret = SendMessageW(hwnd, EM_SETCHARFORMAT, SCF_WORD | SCF_SELECTION, (LPARAM)&cf);
+        ok(ret == 1, "got %d\n", ret);
+        ret = SendMessageW(hwnd, EM_GETMODIFY, 0, 0);
+        todo_wine_if(tests[i].todo_changed) ok(!ret == !tests[i].changed, "got modify %d\n", ret);
+        ret = SendMessageW(hwnd, EM_CANUNDO, 0, 0);
+        todo_wine_if(tests[i].todo_changed) ok(!ret == !tests[i].changed, "got can undo %d\n", ret);
+
+        for (j = 0; j <= lstrlenW(tests[i].text); j++)
+        {
+            effects = get_char_effects(hwnd, j);
+            todo_wine_if(tests[i].todo[j] == 'x')
+            ok(!(effects & CFE_ITALIC) == (tests[i].italic[j] != 'I'), "char %d: got effects %#lx\n", j, effects);
+        }
+        winetest_pop_context();
+    }
+
+    /* New text doesn't get the format that the final paragraph mark had. */
+    SendMessageW(hwnd, WM_SETTEXT, 0, (LPARAM)L"a");
+    effects = get_char_effects(hwnd, 1);
+    todo_wine ok(!(effects & CFE_ITALIC), "got effects %#lx\n", effects);
 
     SendMessageW(hwnd, WM_SETTEXT, 0, (LPARAM)L"ab cd");
     SetFocus(hwnd);
