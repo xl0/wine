@@ -180,13 +180,11 @@ static const struct wp_fractional_scale_v1_listener wp_fractional_scale_listener
     wp_fractional_scale_handle_scale
 };
 
-static void zxdg_exported_v2_handle_handle(void *private, struct zxdg_exported_v2 *zxdg_exported_v2,
-                                           const char *handle)
+static void exported_handle(HWND hwnd, void *exported, const char *handle)
 {
     struct wayland_surface *surface;
     struct wayland_win_data *data;
     WCHAR name[MAX_ATOM_LEN + 1];
-    HWND hwnd = private;
     RTL_ATOM atom;
     DWORD size;
 
@@ -195,7 +193,7 @@ static void zxdg_exported_v2_handle_handle(void *private, struct zxdg_exported_v
     if (!(data = wayland_win_data_get(hwnd))) return;
 
     if ((surface = data->wayland_surface) && wayland_surface_is_toplevel(surface) &&
-        surface->zxdg_exported_v2 == zxdg_exported_v2 &&
+        (surface->zxdg_exported_v2 == exported || surface->zxdg_exported_v1 == exported) &&
         !RtlUTF8ToUnicodeN(name, sizeof(name) - sizeof(WCHAR), &size, handle, strlen(handle)))
     {
         name[size / sizeof(WCHAR)] = 0;
@@ -208,31 +206,62 @@ static void zxdg_exported_v2_handle_handle(void *private, struct zxdg_exported_v
     wayland_win_data_release(data);
 }
 
+static void zxdg_exported_v2_handle_handle(void *private, struct zxdg_exported_v2 *zxdg_exported_v2,
+                                           const char *handle)
+{
+    exported_handle(private, zxdg_exported_v2, handle);
+}
+
 static const struct zxdg_exported_v2_listener zxdg_exported_v2_listener =
 {
     zxdg_exported_v2_handle_handle
 };
 
-static void zxdg_imported_v2_handle_destroyed(void *private, struct zxdg_imported_v2 *zxdg_imported_v2)
+static void zxdg_exported_v1_handle_handle(void *private, struct zxdg_exported_v1 *zxdg_exported_v1,
+                                           const char *handle)
+{
+    exported_handle(private, zxdg_exported_v1, handle);
+}
+
+static const struct zxdg_exported_v1_listener zxdg_exported_v1_listener =
+{
+    zxdg_exported_v1_handle_handle
+};
+
+static void imported_destroyed(HWND hwnd, void *imported)
 {
     struct wayland_surface *surface;
     struct wayland_win_data *data;
-    HWND hwnd = private;
 
     TRACE("hwnd=%p\n", hwnd);
 
     if (!(data = wayland_win_data_get(hwnd))) return;
 
     if ((surface = data->wayland_surface) && wayland_surface_is_toplevel(surface) &&
-        surface->zxdg_imported_v2 == zxdg_imported_v2)
+        (surface->zxdg_imported_v2 == imported || surface->zxdg_imported_v1 == imported))
         wayland_surface_import_parent(surface, NULL);
 
     wayland_win_data_release(data);
 }
 
+static void zxdg_imported_v2_handle_destroyed(void *private, struct zxdg_imported_v2 *zxdg_imported_v2)
+{
+    imported_destroyed(private, zxdg_imported_v2);
+}
+
 static const struct zxdg_imported_v2_listener zxdg_imported_v2_listener =
 {
     zxdg_imported_v2_handle_destroyed
+};
+
+static void zxdg_imported_v1_handle_destroyed(void *private, struct zxdg_imported_v1 *zxdg_imported_v1)
+{
+    imported_destroyed(private, zxdg_imported_v1);
+}
+
+static const struct zxdg_imported_v1_listener zxdg_imported_v1_listener =
+{
+    zxdg_imported_v1_handle_destroyed
 };
 
 /**********************************************************************
@@ -504,12 +533,14 @@ void wayland_surface_clear_role(struct wayland_surface *surface)
 
         wayland_surface_import_parent(surface, NULL);
 
-        if (surface->zxdg_exported_v2)
+        if (surface->zxdg_exported_v2 || surface->zxdg_exported_v1)
         {
             RTL_ATOM atom = HandleToULong(NtUserRemoveProp(surface->hwnd, exported_handle_prop));
             if (atom) NtUserRemoveProp(surface->hwnd, MAKEINTRESOURCEW(atom));
-            zxdg_exported_v2_destroy(surface->zxdg_exported_v2);
+            if (surface->zxdg_exported_v2) zxdg_exported_v2_destroy(surface->zxdg_exported_v2);
+            if (surface->zxdg_exported_v1) zxdg_exported_v1_destroy(surface->zxdg_exported_v1);
             surface->zxdg_exported_v2 = NULL;
+            surface->zxdg_exported_v1 = NULL;
         }
 
         if (surface->xdg_toplevel)
@@ -633,6 +664,12 @@ void wayland_surface_mapped(struct wayland_surface *surface)
             zxdg_exporter_v2_export_toplevel(process_wayland.zxdg_exporter_v2, surface->wl_surface);
         zxdg_exported_v2_add_listener(surface->zxdg_exported_v2, &zxdg_exported_v2_listener, surface->hwnd);
     }
+    else if (process_wayland.zxdg_exporter_v1)
+    {
+        surface->zxdg_exported_v1 =
+            zxdg_exporter_v1_export(process_wayland.zxdg_exporter_v1, surface->wl_surface);
+        zxdg_exported_v1_add_listener(surface->zxdg_exported_v1, &zxdg_exported_v1_listener, surface->hwnd);
+    }
 }
 
 /**********************************************************************
@@ -649,15 +686,18 @@ void wayland_surface_import_parent(struct wayland_surface *surface, HWND parent_
     RTL_ATOM atom;
     DWORD len;
 
-    if (surface->zxdg_imported_v2)
+    if (surface->zxdg_imported_v2 || surface->zxdg_imported_v1)
     {
         /* Destroying the imported toplevel also unsets the parent. */
-        zxdg_imported_v2_destroy(surface->zxdg_imported_v2);
+        if (surface->zxdg_imported_v2) zxdg_imported_v2_destroy(surface->zxdg_imported_v2);
+        if (surface->zxdg_imported_v1) zxdg_imported_v1_destroy(surface->zxdg_imported_v1);
         surface->zxdg_imported_v2 = NULL;
+        surface->zxdg_imported_v1 = NULL;
         surface->parent_hwnd = NULL;
     }
 
-    if (!parent_hwnd || !process_wayland.zxdg_importer_v2) return;
+    if (!parent_hwnd) return;
+    if (!process_wayland.zxdg_importer_v2 && !process_wayland.zxdg_importer_v1) return;
     if (!(atom = HandleToULong(NtUserGetProp(parent_hwnd, exported_handle_prop)))) return;
     if (NtQueryInformationAtom(atom, AtomBasicInformation, info, sizeof(buffer), NULL)) return;
     if (RtlUnicodeToUTF8N(handle, sizeof(handle) - 1, &len, info->Name, info->NameLength)) return;
@@ -665,10 +705,20 @@ void wayland_surface_import_parent(struct wayland_surface *surface, HWND parent_
 
     TRACE("hwnd=%p parent=%p handle=%s\n", surface->hwnd, parent_hwnd, debugstr_a(handle));
 
-    surface->zxdg_imported_v2 =
-        zxdg_importer_v2_import_toplevel(process_wayland.zxdg_importer_v2, handle);
-    zxdg_imported_v2_add_listener(surface->zxdg_imported_v2, &zxdg_imported_v2_listener, surface->hwnd);
-    zxdg_imported_v2_set_parent_of(surface->zxdg_imported_v2, surface->wl_surface);
+    if (process_wayland.zxdg_importer_v2)
+    {
+        surface->zxdg_imported_v2 =
+            zxdg_importer_v2_import_toplevel(process_wayland.zxdg_importer_v2, handle);
+        zxdg_imported_v2_add_listener(surface->zxdg_imported_v2, &zxdg_imported_v2_listener, surface->hwnd);
+        zxdg_imported_v2_set_parent_of(surface->zxdg_imported_v2, surface->wl_surface);
+    }
+    else
+    {
+        surface->zxdg_imported_v1 =
+            zxdg_importer_v1_import(process_wayland.zxdg_importer_v1, handle);
+        zxdg_imported_v1_add_listener(surface->zxdg_imported_v1, &zxdg_imported_v1_listener, surface->hwnd);
+        zxdg_imported_v1_set_parent_of(surface->zxdg_imported_v1, surface->wl_surface);
+    }
     surface->parent_hwnd = parent_hwnd;
 }
 

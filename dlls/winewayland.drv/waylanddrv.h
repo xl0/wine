@@ -41,6 +41,7 @@
 #include "pointer-warp-v1-client-protocol.h"
 #include "alpha-modifier-v1-client-protocol.h"
 #include "fractional-scale-v1-client-protocol.h"
+#include "xdg-foreign-unstable-v1-client-protocol.h"
 #include "xdg-foreign-unstable-v2-client-protocol.h"
 
 #include "windef.h"
@@ -188,6 +189,8 @@ struct wayland
     struct wp_alpha_modifier_v1 *wp_alpha_modifier_v1;
     struct zxdg_exporter_v2 *zxdg_exporter_v2;
     struct zxdg_importer_v2 *zxdg_importer_v2;
+    struct zxdg_exporter_v1 *zxdg_exporter_v1;
+    struct zxdg_importer_v1 *zxdg_importer_v1;
     struct wayland_seat seat;
     struct wayland_keyboard keyboard;
     struct wayland_pointer pointer;
@@ -298,8 +301,10 @@ struct wayland_surface
             HWND parent_hwnd;
             /* handle to this toplevel for the other processes */
             struct zxdg_exported_v2 *zxdg_exported_v2;
+            struct zxdg_exported_v1 *zxdg_exported_v1;
             /* parent toplevel from another process */
             struct zxdg_imported_v2 *zxdg_imported_v2;
+            struct zxdg_imported_v1 *zxdg_imported_v1;
         };
         struct
         {
