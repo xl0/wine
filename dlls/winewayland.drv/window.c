@@ -714,6 +714,19 @@ LRESULT WAYLAND_WindowMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         wayland_configure_window(hwnd);
         return 0;
     case WM_WAYLAND_SET_FOREGROUND:
+        /* A disabled window still gets the keyboard focus from the compositor,
+         * e.g. when the owner of a modal dialog is clicked. Bring its last
+         * active popup to the foreground instead, or the active window of
+         * the thread. */
+        if (NtUserGetWindowLongW(hwnd, GWL_STYLE) & WS_DISABLED)
+        {
+            HWND popup = NtUserGetLastActivePopup(hwnd);
+
+            if (popup != hwnd && (NtUserGetWindowLongW(popup, GWL_STYLE) & (WS_VISIBLE | WS_DISABLED)) == WS_VISIBLE)
+                hwnd = popup;
+            else if ((popup = get_active_window()))
+                hwnd = popup;
+        }
         NtUserSetForegroundWindowInternal(hwnd);
         return 0;
     default:
