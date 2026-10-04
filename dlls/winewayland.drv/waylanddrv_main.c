@@ -24,6 +24,8 @@
 
 #include "config.h"
 
+#include <errno.h>
+#include <poll.h>
 #include <stdlib.h>
 
 #include "ntstatus.h"
@@ -106,9 +108,38 @@ err:
 
 static NTSTATUS waylanddrv_unix_read_events(void *arg)
 {
-    while (wl_display_dispatch_queue(process_wayland.wl_display,
-                                     process_wayland.wl_event_queue) != -1)
-        continue;
+    struct wl_event_queue *queue = process_wayland.wl_event_queue;
+    struct wl_display *display = process_wayland.wl_display;
+    struct pollfd fd;
+    int ret;
+
+    /* This is wl_display_dispatch_queue(), with a poll() of our own so that
+     * the thread can wait for other things too. */
+    for (;;)
+    {
+        while (wl_display_prepare_read_queue(display, queue) == -1)
+            if (wl_display_dispatch_queue_pending(display, queue) == -1) return STATUS_UNSUCCESSFUL;
+
+        fd.fd = wl_display_get_fd(display);
+        fd.events = POLLIN;
+        /* If the compositor doesn't take all the requests now, send the
+         * rest when it does. A closed connection is reported by the read. */
+        if (wl_display_flush(display) == -1)
+        {
+            if (errno == EAGAIN) fd.events |= POLLOUT;
+            else if (errno != EPIPE)
+            {
+                wl_display_cancel_read(display);
+                break;
+            }
+        }
+
+        while ((ret = poll(&fd, 1, -1)) == -1 && errno == EINTR) continue;
+
+        if (ret == -1 || !(fd.revents & ~POLLOUT)) wl_display_cancel_read(display);
+        else if (wl_display_read_events(display) == -1) break;
+        if (ret == -1 || wl_display_dispatch_queue_pending(display, queue) == -1) break;
+    }
     /* This function only returns on a fatal error, e.g., if our connection
      * to the Wayland server is lost. */
     return STATUS_UNSUCCESSFUL;
