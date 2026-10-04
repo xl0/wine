@@ -244,10 +244,6 @@ static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *dat
 
     wayland_win_data_get_config(data, style, &surface->window);
 
-    /* Size/position changes affect the effective pointer constraint, so update
-     * it as needed. */
-    if (data->hwnd == NtUserGetForegroundWindow()) reapply_cursor_clipping();
-
     TRACE("hwnd=%p surface=%p=>%p\n", data->hwnd, data->wayland_surface, surface);
     data->wayland_surface = surface;
     return TRUE;
@@ -613,6 +609,10 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
 
     /* the client surfaces shown for other processes follow the windows */
     wayland_remote_sinks_update(toplevel);
+
+    /* Size/position changes affect the effective pointer constraint, so update
+     * it as needed. */
+    if (surface && hwnd == NtUserGetForegroundWindow()) reapply_cursor_clipping();
 }
 
 static void wayland_configure_window(HWND hwnd)
