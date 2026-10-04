@@ -232,24 +232,23 @@ BOOL WAYLAND_SetIMECompositionRect(HWND hwnd, RECT rect)
 
     TRACE("hwnd %p, rect %s.\n", hwnd, wine_dbgstr_rect(&rect));
 
-    pthread_mutex_lock(&text_input->mutex);
-
-    if (!text_input->zwp_text_input_v3 || hwnd != text_input->focused_hwnd)
-        goto err;
-
-    if (!(data = wayland_win_data_get(hwnd)))
-        goto err;
+    /* The window data is locked before the text input, when a surface is destroyed. */
+    if (!(data = wayland_win_data_get(hwnd))) return FALSE;
 
     if (!(surface = data->wayland_surface))
     {
         wayland_win_data_release(data);
-        goto err;
+        return FALSE;
     }
-
 
     OffsetRect(&rect, -surface->window.rect.left, -surface->window.rect.top);
     surface_rect = map_rect_to_surface(surface, rect);
     wayland_win_data_release(data);
+
+    pthread_mutex_lock(&text_input->mutex);
+
+    if (!text_input->zwp_text_input_v3 || hwnd != text_input->focused_hwnd)
+        goto err;
 
     zwp_text_input_v3_set_cursor_rectangle(text_input->zwp_text_input_v3,
             surface_rect.left, surface_rect.top, surface_rect.right - surface_rect.left,
