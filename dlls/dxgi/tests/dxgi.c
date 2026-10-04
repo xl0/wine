@@ -8845,6 +8845,28 @@ static unsigned int get_thread_window_count(void)
     return count;
 }
 
+static void test_swapchain_destroyed_window(IUnknown *device, BOOL is_d3d12)
+{
+    IDXGISwapChain *swapchain;
+    ULONG refcount;
+    HWND window;
+    HRESULT hr;
+
+    window = create_window();
+    swapchain = create_swapchain(device, is_d3d12, window, 0, DXGI_SWAP_EFFECT_DISCARD);
+
+    hr = IDXGISwapChain_Present(swapchain, 0, 0);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+
+    DestroyWindow(window);
+
+    hr = IDXGISwapChain_Present(swapchain, 0, 0);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+
+    refcount = IDXGISwapChain_Release(swapchain);
+    ok(!refcount, "Swapchain has %lu references left.\n", refcount);
+}
+
 static void test_composition_swapchain(IUnknown *device, BOOL is_d3d12)
 {
     DXGI_SWAP_CHAIN_FULLSCREEN_DESC fullscreen_desc;
@@ -9377,6 +9399,7 @@ START_TEST(dxgi)
     run_on_d3d10(test_resize_target_wndproc);
     run_on_d3d10(test_swapchain_window_messages);
     run_on_d3d10(test_zero_size);
+    run_on_d3d10(test_swapchain_destroyed_window);
     run_on_d3d10(test_composition_swapchain);
 
     if (!(d3d12_module = LoadLibraryA("d3d12.dll")))
