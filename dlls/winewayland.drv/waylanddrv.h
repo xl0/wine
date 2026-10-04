@@ -308,6 +308,8 @@ struct wayland_surface
             /* parent toplevel from another process */
             struct zxdg_imported_v2 *zxdg_imported_v2;
             struct zxdg_imported_v1 *zxdg_imported_v1;
+            /* the title has been set since the toplevel was created */
+            BOOL has_title;
         };
         struct
         {

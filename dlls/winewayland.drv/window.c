@@ -150,14 +150,12 @@ void wayland_win_data_unlock(void)
     pthread_mutex_unlock(&win_data_mutex);
 }
 
-static void wayland_win_data_get_config(struct wayland_win_data *data,
+static void wayland_win_data_get_config(struct wayland_win_data *data, DWORD style,
                                         struct wayland_window_config *conf)
 {
     enum wayland_surface_config_state window_state = 0;
-    DWORD style;
 
     conf->rect = data->rects.visible;
-    style = NtUserGetWindowLongW(data->hwnd, GWL_STYLE);
 
     TRACE("window=%s style=%#x\n", wine_dbgstr_rect(&conf->rect), style);
 
@@ -190,17 +188,17 @@ static void reapply_cursor_clipping(void)
     NtUserSetThreadDpiAwarenessContext(context);
 }
 
-static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *data, struct wayland_surface *owner_surface)
+static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *data, struct wayland_surface *owner_surface,
+                                                    DWORD style, DWORD exstyle)
 {
     struct wayland_surface *surface;
     enum wayland_surface_role role;
     BOOL visible;
-    DWORD exstyle = NtUserGetWindowLongW(data->hwnd, GWL_EXSTYLE);
     struct wl_region *input_region;
 
     TRACE("hwnd=%p\n", data->hwnd);
 
-    visible = ((NtUserGetWindowLongW(data->hwnd, GWL_STYLE) & WS_VISIBLE) == WS_VISIBLE) &&
+    visible = ((style & WS_VISIBLE) == WS_VISIBLE) &&
                (!(exstyle & WS_EX_LAYERED) || data->layered_attribs_set);
 
     if (!visible) role = WAYLAND_SURFACE_ROLE_NONE;
@@ -244,7 +242,7 @@ static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *dat
         break;
     }
 
-    wayland_win_data_get_config(data, &surface->window);
+    wayland_win_data_get_config(data, style, &surface->window);
 
     /* Size/position changes affect the effective pointer constraint, so update
      * it as needed. */
@@ -540,9 +538,10 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
                               const struct window_rects *new_rects, struct window_surface *surface)
 {
     HWND toplevel = NtUserGetAncestor(hwnd, GA_ROOT), owner = toplevel, win_owner = NtUserGetWindowRelative(hwnd, GW_OWNER);
-    struct wayland_surface *owner_surface;
+    struct wayland_surface *owner_surface, *wayland_surface;
     struct wayland_win_data *data, *owner_data;
-    BOOL managed, fullscreen = swp_flags & WINE_SWP_FULLSCREEN, foreign_owner;
+    BOOL managed, fullscreen = swp_flags & WINE_SWP_FULLSCREEN, foreign_owner, set_title = FALSE;
+    DWORD style, exstyle;
 
     TRACE("hwnd %p new_rects %s after %p flags %08x\n", hwnd, debugstr_window_rects(new_rects), insert_after, swp_flags);
 
@@ -552,6 +551,12 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
     if (!(managed = is_window_managed(hwnd, swp_flags, fullscreen)) && surface) owner = owner_hint;
     if (win_owner) win_owner = NtUserGetAncestor(win_owner, GA_ROOT);
     foreign_owner = win_owner && is_foreign_owner(hwnd, win_owner);
+
+    /* Likewise for the window styles: win32u flushes the window surfaces
+     * with its user lock held, so it must never be acquired with win_data
+     * locked. */
+    style = NtUserGetWindowLongW(hwnd, GWL_STYLE);
+    exstyle = NtUserGetWindowLongW(hwnd, GWL_EXSTYLE);
 
     if (!(data = wayland_win_data_get(hwnd)))
     {
@@ -576,14 +581,35 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
             data->wayland_surface = NULL;
         }
     }
-    else if (wayland_win_data_create_wayland_surface(data, owner_surface))
+    else if (wayland_win_data_create_wayland_surface(data, owner_surface, style, exstyle))
     {
         wayland_win_data_update_parent(data);
         wayland_win_data_update_wayland_state(data);
+        wayland_surface = data->wayland_surface;
+        set_title = wayland_surface_is_toplevel(wayland_surface) && !wayland_surface->has_title;
     }
 
     if (owner_data) wayland_win_data_release(owner_data);
     wayland_win_data_release(data);
+
+    /* The window text needs the user lock as well. A new toplevel gets its
+     * title here, unless the text has been set in the meantime. */
+    if (set_title)
+    {
+        WCHAR text[1024];
+
+        if (!NtUserInternalGetWindowText(hwnd, text, ARRAY_SIZE(text))) text[0] = 0;
+        if ((data = wayland_win_data_get(hwnd)))
+        {
+            if ((wayland_surface = data->wayland_surface) && wayland_surface_is_toplevel(wayland_surface) &&
+                !wayland_surface->has_title)
+            {
+                wayland_surface_set_title(wayland_surface, text);
+                wl_display_flush(process_wayland.wl_display);
+            }
+            wayland_win_data_release(data);
+        }
+    }
 
     /* the client surfaces shown for other processes follow the windows */
     wayland_remote_sinks_update(toplevel);

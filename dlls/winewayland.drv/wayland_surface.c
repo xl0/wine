@@ -416,8 +416,6 @@ static void wayland_surface_init_fractional_scale(struct wayland_surface *surfac
  */
 void wayland_surface_make_toplevel(struct wayland_surface *surface)
 {
-    WCHAR text[1024];
-
     TRACE("surface=%p\n", surface);
 
     assert(!surface->role || surface->role == WAYLAND_SURFACE_ROLE_TOPLEVEL);
@@ -437,10 +435,6 @@ void wayland_surface_make_toplevel(struct wayland_surface *surface)
 
     if (process_name)
         xdg_toplevel_set_app_id(surface->xdg_toplevel, process_name);
-
-    if (!NtUserInternalGetWindowText(surface->hwnd, text, ARRAY_SIZE(text)))
-        text[0] = 0;
-    wayland_surface_set_title(surface, text);
 
     wayland_surface_assign_icon(surface);
 
@@ -549,6 +543,7 @@ void wayland_surface_clear_role(struct wayland_surface *surface)
         {
             xdg_toplevel_destroy(surface->xdg_toplevel);
             surface->xdg_toplevel = NULL;
+            surface->has_title = FALSE;
             surface->parent_hwnd = NULL;
             /* Unset the parent of the owned toplevels explicitly, rather
              * than depending on what the compositor does with them. */
@@ -1607,6 +1602,7 @@ void wayland_surface_set_title(struct wayland_surface *surface, LPCWSTR text)
     {
         RtlUnicodeToUTF8N(utf8, utf8_count, &utf8_count, text, text_len);
         xdg_toplevel_set_title(surface->xdg_toplevel, utf8);
+        surface->has_title = TRUE;
     }
 
     free(utf8);
