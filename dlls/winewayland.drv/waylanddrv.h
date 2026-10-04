@@ -263,6 +263,8 @@ struct wayland_client_surface
     struct wl_surface *wl_surface;
     struct wl_subsurface *wl_subsurface;
     struct wp_viewport *wp_viewport;
+    /* shows the surface in the toplevel window of another process (if any) */
+    struct remote_source *remote;
 };
 
 extern struct wayland_client_surface *impl_from_client_surface(struct client_surface *client);
@@ -376,6 +378,11 @@ static inline BOOL wayland_surface_is_toplevel(struct wayland_surface *surface)
 
 struct pollfd;
 
+void wayland_client_surface_set_remote(struct wayland_client_surface *client, HWND toplevel,
+                                       const RECT *rect, BOOL visible);
+BOOL wayland_client_surface_lock_remote_buffer(struct wayland_client_surface *client, UINT width,
+                                               UINT height, void **pixels);
+void wayland_client_surface_unlock_remote_buffer(struct wayland_client_surface *client, BOOL present);
 void wayland_remote_sink_create(HWND toplevel, HWND hwnd, UINT handle);
 void wayland_remote_sinks_detach(HWND hwnd);
 void wayland_remote_sinks_update(HWND hwnd);

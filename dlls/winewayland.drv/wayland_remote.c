@@ -124,6 +124,257 @@ struct remote_shared
 };
 
 /**********************************************************************
+ *          Source, in the process which presents
+ */
+
+struct remote_source
+{
+    HWND toplevel;                  /* toplevel window, in the sink process */
+    struct remote_shared *shared;
+    HANDLE shared_handle;
+    HANDLE wake_handle;             /* sink end of the wake socket, until the sink has it */
+    int wake_fd;
+    HANDLE section;                 /* section of the buffers */
+    BYTE *data;
+    SIZE_T buffer_size;
+    UINT generation;
+    UINT width, height;             /* size of the buffers */
+    RECT rect;                      /* last position in the toplevel window */
+    BOOL visible;
+    UINT free;                      /* mask of the buffers that may be drawn to */
+    int locked;                     /* buffer being drawn to */
+};
+
+static pthread_mutex_t source_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void remote_source_wake(struct remote_source *source)
+{
+    char c = 0;
+    send(source->wake_fd, &c, 1, MSG_DONTWAIT | MSG_NOSIGNAL);
+}
+
+static void remote_source_destroy(struct remote_source *source)
+{
+    TRACE("source=%p\n", source);
+
+    /* closing the socket tells the sink */
+    if (source->wake_fd != -1) close(source->wake_fd);
+    if (source->wake_handle) NtClose(source->wake_handle);
+    if (source->data) NtUnmapViewOfSection(GetCurrentProcess(), source->data);
+    if (source->section) NtClose(source->section);
+    if (source->shared) NtUnmapViewOfSection(GetCurrentProcess(), source->shared);
+    if (source->shared_handle) NtClose(source->shared_handle);
+    free(source);
+}
+
+static struct remote_source *remote_source_create(HWND hwnd, HWND toplevel)
+{
+    LARGE_INTEGER size = {.QuadPart = sizeof(struct remote_shared)};
+    struct remote_source *source;
+    SIZE_T view_size = 0;
+    int fds[2];
+
+    if (!(source = calloc(1, sizeof(*source)))) return NULL;
+    source->toplevel = toplevel;
+    source->wake_fd = -1;
+
+    if (NtCreateSection(&source->shared_handle, GENERIC_READ | SECTION_MAP_READ | SECTION_MAP_WRITE,
+                        NULL, &size, PAGE_READWRITE, SEC_COMMIT, 0))
+        goto err;
+    if (NtMapViewOfSection(source->shared_handle, GetCurrentProcess(), (void **)&source->shared, 0, 0,
+                           NULL, &view_size, ViewUnmap, 0, PAGE_READWRITE))
+    {
+        source->shared = NULL;
+        goto err;
+    }
+
+    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds)) goto err;
+    source->wake_fd = fds[0];
+    /* the server keeps the other end for the sink */
+    if (wine_server_fd_to_handle(fds[1], GENERIC_READ | SYNCHRONIZE, 0, &source->wake_handle))
+        source->wake_handle = 0;
+    close(fds[1]);
+    if (!source->wake_handle) goto err;
+
+    source->shared->magic = REMOTE_MAGIC;
+    source->shared->hwnd = HandleToULong(hwnd);
+    source->shared->wake = HandleToULong(source->wake_handle);
+
+    TRACE("hwnd=%p toplevel=%p source=%p\n", hwnd, toplevel, source);
+    return source;
+
+err:
+    ERR("Failed to create a source for window %p\n", hwnd);
+    remote_source_destroy(source);
+    return NULL;
+}
+
+/* (re)create the buffers of a source */
+static BOOL remote_source_set_size(struct remote_source *source, UINT width, UINT height)
+{
+    UINT64 buffer_size = (UINT64)width * height * WINEWAYLAND_BYTES_PER_PIXEL;
+    LARGE_INTEGER size = {.QuadPart = buffer_size * REMOTE_BUFFER_COUNT};
+    struct remote_shared *shared = source->shared;
+    SIZE_T view_size = 0;
+    HANDLE section;
+    BYTE *data = NULL;
+
+    if (!width || width > REMOTE_MAX_SIZE || !height || height > REMOTE_MAX_SIZE) return FALSE;
+
+    if (NtCreateSection(&section, GENERIC_READ | SECTION_MAP_READ | SECTION_MAP_WRITE,
+                        NULL, &size, PAGE_READWRITE, SEC_COMMIT, 0))
+        return FALSE;
+    if (NtMapViewOfSection(section, GetCurrentProcess(), (void **)&data, 0, 0, NULL, &view_size,
+                           ViewUnmap, 0, PAGE_READWRITE))
+    {
+        NtClose(section);
+        return FALSE;
+    }
+
+    TRACE("source=%p %ux%u\n", source, width, height);
+
+    if (!(source->generation = (source->generation + 1) & REMOTE_GENERATION_MASK)) source->generation = 1;
+
+    InterlockedIncrement(&shared->seq);
+    shared->section = HandleToULong(section);
+    shared->generation = source->generation;
+    shared->width = width;
+    shared->height = height;
+    InterlockedIncrement(&shared->seq);
+
+    /* the sink closes its side when it sees the new generation */
+    if (source->data) NtUnmapViewOfSection(GetCurrentProcess(), source->data);
+    if (source->section) NtClose(source->section);
+    source->section = section;
+    source->data = data;
+    source->buffer_size = buffer_size;
+    source->width = width;
+    source->height = height;
+    source->free = REMOTE_BUFFER_MASK;
+    return TRUE;
+}
+
+/**********************************************************************
+ *          wayland_client_surface_set_remote
+ *
+ * Present a client surface through the process of a toplevel window, or stop
+ * doing it if toplevel is NULL.
+ */
+void wayland_client_surface_set_remote(struct wayland_client_surface *client, HWND toplevel,
+                                       const RECT *rect, BOOL visible)
+{
+    struct remote_source *source;
+    struct remote_shared *shared;
+    HANDLE handle = 0;
+
+    pthread_mutex_lock(&source_mutex);
+
+    if ((source = client->remote) && source->toplevel != toplevel)
+    {
+        remote_source_destroy(source);
+        client->remote = source = NULL;
+    }
+    if (!source && toplevel && (source = client->remote = remote_source_create(client->client.hwnd, toplevel)))
+        handle = source->shared_handle;
+
+    if (source)
+    {
+        shared = source->shared;
+
+        if (source->wake_handle && ReadNoFence(&shared->attached))
+        {
+            NtClose(source->wake_handle);
+            source->wake_handle = 0;
+        }
+
+        if (!EqualRect(&source->rect, rect) || source->visible != visible)
+        {
+            /* the sink gets the new state of the window from the server */
+            source->rect = *rect;
+            source->visible = visible;
+            InterlockedExchangeAdd(&shared->seq, 2);
+            remote_source_wake(source);
+        }
+    }
+
+    pthread_mutex_unlock(&source_mutex);
+
+    /* Only this first message depends on the message loop of the window. */
+    if (handle) NtUserPostMessage(toplevel, WM_WAYLAND_REMOTE_SURFACE, (WPARAM)client->client.hwnd, HandleToULong(handle));
+}
+
+/**********************************************************************
+ *          wayland_client_surface_lock_remote_buffer
+ *
+ * Get the buffer for the next frame of a client surface that is shown by
+ * another process. Returns FALSE if the client surface is not. If there is
+ * a buffer it must be unlocked.
+ */
+BOOL wayland_client_surface_lock_remote_buffer(struct wayland_client_surface *client, UINT width,
+                                               UINT height, void **pixels)
+{
+    struct remote_source *source;
+    struct remote_shared *shared;
+    LONG value;
+
+    *pixels = NULL;
+
+    pthread_mutex_lock(&source_mutex);
+
+    if (!(source = client->remote))
+    {
+        pthread_mutex_unlock(&source_mutex);
+        return FALSE;
+    }
+    shared = source->shared;
+
+    if ((source->width != width || source->height != height) && !remote_source_set_size(source, width, height))
+    {
+        WARN("Failed to create %ux%u buffers\n", width, height);
+        pthread_mutex_unlock(&source_mutex);
+        return TRUE;
+    }
+
+    value = InterlockedExchange(&shared->released, mailbox_value(source->generation, 0));
+    source->free |= mailbox_get(value, source->generation) & REMOTE_BUFFER_MASK;
+    /* take back the frame that the sink has not used */
+    if (!source->free)
+        source->free |= mailbox_get_buffer(InterlockedExchange(&shared->ready, 0), source->generation);
+    if (!source->free)
+    {
+        WARN("No free buffer\n");
+        pthread_mutex_unlock(&source_mutex);
+        return TRUE;
+    }
+
+    for (source->locked = 0; !(source->free & (1u << source->locked)); source->locked++) {}
+    *pixels = source->data + source->locked * source->buffer_size;
+    return TRUE;
+}
+
+/**********************************************************************
+ *          wayland_client_surface_unlock_remote_buffer
+ *
+ * Give the locked buffer to the sink if it has a frame.
+ */
+void wayland_client_surface_unlock_remote_buffer(struct wayland_client_surface *client, BOOL present)
+{
+    struct remote_source *source = client->remote;
+    LONG value;
+
+    if (present)
+    {
+        value = InterlockedExchange(&source->shared->ready, mailbox_value(source->generation, source->locked + 1));
+        source->free &= ~(1u << source->locked);
+        /* the previous frame, if the sink has not taken it */
+        source->free |= mailbox_get_buffer(value, source->generation);
+        remote_source_wake(source);
+    }
+
+    pthread_mutex_unlock(&source_mutex);
+}
+
+/**********************************************************************
  *          Sink, in the process of the toplevel window
  *
  * The sinks are protected by the window data lock. Their buffers have

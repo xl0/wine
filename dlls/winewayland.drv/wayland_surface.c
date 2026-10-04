@@ -1337,6 +1337,8 @@ static void wayland_client_surface_destroy(struct client_surface *client)
 
     TRACE("%s\n", debugstr_client_surface(client));
 
+    wayland_client_surface_set_remote(surface, NULL, NULL, FALSE);
+
     if (surface->wp_viewport)
         wp_viewport_destroy(surface->wp_viewport);
     if (surface->wl_subsurface)
@@ -1349,6 +1351,8 @@ static void wayland_client_surface_detach(struct client_surface *client)
 {
     struct wayland_client_surface *surface = impl_from_client_surface(client);
     struct wayland_win_data *data;
+
+    wayland_client_surface_set_remote(surface, NULL, NULL, FALSE);
 
     if ((data = wayland_win_data_get(client->hwnd)))
     {
@@ -1363,13 +1367,22 @@ static void wayland_client_surface_update(struct client_surface *client)
     struct wayland_client_surface *surface = impl_from_client_surface(client);
     HWND hwnd = client->hwnd, toplevel = client->toplevel;
     struct wayland_win_data *data;
-    BOOL visible = FALSE;
+    BOOL visible = FALSE, remote = FALSE;
+    DWORD pid;
 
     TRACE("%s\n", debugstr_client_surface(client));
-    if(toplevel) visible = NtUserIsWindowVisible(hwnd);
+    if (toplevel)
+    {
+        visible = NtUserIsWindowVisible(hwnd);
+        /* The surface of the toplevel is in the process which owns the
+         * window, and that process only shows the surfaces of our windows. */
+        remote = NtUserGetWindowThread(toplevel, &pid) && pid != GetCurrentProcessId() &&
+                 NtUserGetWindowThread(hwnd, &pid) && pid == GetCurrentProcessId();
+    }
+    wayland_client_surface_set_remote(surface, remote ? toplevel : NULL, &client->monitor_rect, visible);
     if (!(data = wayland_win_data_get(hwnd))) return;
 
-    if (toplevel && visible)
+    if (toplevel && visible && !remote)
         wayland_client_surface_attach(surface, toplevel, &client->monitor_rect);
     else
         wayland_client_surface_attach(surface, NULL, NULL);
@@ -1424,6 +1437,10 @@ struct client_surface *WAYLAND_CreateClientSurface(HWND hwnd, int pixel_format, 
 {
     struct wayland_client_surface *client;
     struct wl_region *empty_region;
+    DWORD pid;
+
+    if (NtUserGetWindowThread(hwnd, &pid) && pid != GetCurrentProcessId())
+        WARN("Window %p belongs to another process, its client surface will not be shown\n", hwnd);
 
     if (!(client = client_surface_create(&wayland_client_surface_funcs, hwnd, pixel_format, raw))) return NULL;
 
