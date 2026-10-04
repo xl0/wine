@@ -120,14 +120,19 @@ static void wined3d_swapchain_vk_destroy_vulkan_swapchain(struct wined3d_swapcha
     if ((vr = VK_CALL(vkQueueWaitIdle(device_vk->graphics_queue.vk_queue))) < 0)
         ERR("Failed to wait on queue, vr %s.\n", wined3d_debug_vkresult(vr));
     free(swapchain_vk->vk_images);
+    swapchain_vk->vk_images = NULL;
     for (i = 0; i < swapchain_vk->image_count; ++i)
     {
         VK_CALL(vkDestroySemaphore(device_vk->vk_device, swapchain_vk->vk_semaphores[i].available, NULL));
         VK_CALL(vkDestroySemaphore(device_vk->vk_device, swapchain_vk->vk_semaphores[i].presentable, NULL));
     }
     free(swapchain_vk->vk_semaphores);
+    swapchain_vk->vk_semaphores = NULL;
+    swapchain_vk->image_count = 0;
     VK_CALL(vkDestroySwapchainKHR(device_vk->vk_device, swapchain_vk->vk_swapchain, NULL));
+    swapchain_vk->vk_swapchain = VK_NULL_HANDLE;
     VK_CALL(vkDestroySurfaceKHR(vk_info->instance, swapchain_vk->vk_surface, NULL));
+    swapchain_vk->vk_surface = VK_NULL_HANDLE;
 }
 
 static void wined3d_swapchain_vk_destroy_object(void *object)
@@ -1040,14 +1045,16 @@ static HRESULT wined3d_swapchain_vk_create_vulkan_swapchain(struct wined3d_swapc
         ERR("Failed to create Vulkan swapchain, vr %s.\n", wined3d_debug_vkresult(vr));
         goto fail;
     }
-    swapchain_vk->vk_swapchain = vk_swapchain;
 
     if (!wined3d_swapchain_vk_create_vulkan_swapchain_images(swapchain_vk, vk_swapchain))
     {
         VK_CALL(vkDestroySwapchainKHR(device_vk->vk_device, vk_swapchain, NULL));
+        swapchain_vk->vk_images = NULL;
+        swapchain_vk->vk_semaphores = NULL;
         goto fail;
     }
 
+    swapchain_vk->vk_swapchain = vk_swapchain;
     swapchain_vk->width = width;
     swapchain_vk->height = height;
 
@@ -1109,6 +1116,8 @@ static VkResult wined3d_swapchain_vk_blit(struct wined3d_swapchain_vk *swapchain
             swapchain_vk, context_vk, wine_dbgstr_rect(src_rect), wine_dbgstr_rect(dst_rect), swap_interval);
 
     wined3d_swapchain_vk_set_swap_interval(swapchain_vk, swap_interval);
+    if (!swapchain_vk->vk_swapchain)
+        return VK_ERROR_SURFACE_LOST_KHR;
 
     present_idx = swapchain_vk->current++ % swapchain_vk->image_count;
     wined3d_context_vk_wait_command_buffer(context_vk, swapchain_vk->vk_semaphores[present_idx].command_buffer_id);
