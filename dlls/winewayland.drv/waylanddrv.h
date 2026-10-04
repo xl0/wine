@@ -376,6 +376,18 @@ static inline BOOL wayland_surface_is_toplevel(struct wayland_surface *surface)
     return surface->role == WAYLAND_SURFACE_ROLE_TOPLEVEL && surface->xdg_toplevel;
 }
 
+static inline BOOL wayland_surface_is_subsurface(struct wayland_surface *surface)
+{
+    return surface->role == WAYLAND_SURFACE_ROLE_SUBSURFACE && surface->wl_subsurface;
+}
+
+/* a surface without a role, or whose role has been cleared, is not shown */
+static inline BOOL wayland_surface_has_role(struct wayland_surface *surface)
+{
+    return (surface->role == WAYLAND_SURFACE_ROLE_TOPLEVEL && surface->xdg_surface) ||
+           wayland_surface_is_subsurface(surface);
+}
+
 /**********************************************************************
  *          Wayland client surfaces shown by another process
  */
@@ -422,6 +434,8 @@ struct wayland_win_data
     BOOL foreign_owner;
     /* last buffer that was set as window contents */
     struct wayland_shm_buffer *window_contents;
+    /* the window contents were not committed, as the wayland surface had no role */
+    BOOL contents_skipped;
     /* wayland surface (if any) for this window */
     struct wayland_surface *wayland_surface;
     /* wayland client surface (if any) for this window */

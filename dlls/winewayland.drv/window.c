@@ -535,7 +535,7 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
     HWND toplevel = NtUserGetAncestor(hwnd, GA_ROOT), owner = toplevel, win_owner = NtUserGetWindowRelative(hwnd, GW_OWNER);
     struct wayland_surface *owner_surface, *wayland_surface;
     struct wayland_win_data *data, *owner_data;
-    BOOL managed, fullscreen = swp_flags & WINE_SWP_FULLSCREEN, foreign_owner, set_title = FALSE;
+    BOOL managed, fullscreen = swp_flags & WINE_SWP_FULLSCREEN, foreign_owner, set_title = FALSE, expose = FALSE;
     DWORD style, exstyle;
 
     TRACE("hwnd %p new_rects %s after %p flags %08x\n", hwnd, debugstr_window_rects(new_rects), insert_after, swp_flags);
@@ -582,6 +582,9 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
         wayland_win_data_update_wayland_state(data);
         wayland_surface = data->wayland_surface;
         set_title = wayland_surface_is_toplevel(wayland_surface) && !wayland_surface->has_title;
+        /* A toplevel is flushed when it gets its first configure event, a
+         * subsurface has to be flushed here. */
+        expose = data->contents_skipped && wayland_surface_is_subsurface(wayland_surface);
     }
 
     if (owner_data) wayland_win_data_release(owner_data);
@@ -605,6 +608,8 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
             wayland_win_data_release(data);
         }
     }
+
+    if (expose) NtUserExposeWindowSurface(hwnd, 0, NULL);
 
     /* the client surfaces shown for other processes follow the windows */
     wayland_remote_sinks_update(toplevel);
@@ -1016,13 +1021,21 @@ BOOL set_window_surface_contents(HWND hwnd, struct wayland_shm_buffer *shm_buffe
 
     if ((wayland_surface = data->wayland_surface))
     {
-        if (wayland_surface_reconfigure(wayland_surface))
+        if (!wayland_surface_has_role(wayland_surface))
+        {
+            /* The surface is not shown and must not get a buffer. The window
+             * surface is flushed again when the surface is given a role. */
+            data->contents_skipped = TRUE;
+            committed = TRUE;
+        }
+        else if (wayland_surface_reconfigure(wayland_surface))
         {
             BOOL mapped = wayland_surface->content_width;
 
             wayland_surface_attach_shm(wayland_surface, shm_buffer, damage_region);
             wl_surface_commit(wayland_surface->wl_surface);
             if (!mapped) wayland_surface_mapped(wayland_surface);
+            data->contents_skipped = FALSE;
             committed = TRUE;
         }
         else

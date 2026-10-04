@@ -983,16 +983,18 @@ BOOL wayland_surface_reconfigure(struct wayland_surface *surface)
           wine_dbgstr_rect(&surface->processing.rect), surface->processing.state,
           wine_dbgstr_rect(&surface->current.rect), surface->current.state);
 
+    /* A surface without a role is not shown, and it must not have a buffer
+     * when it is given the toplevel role (again). */
+    if (!wayland_surface_has_role(surface)) return FALSE;
+
     switch (surface->role)
     {
     case WAYLAND_SURFACE_ROLE_NONE:
         break;
     case WAYLAND_SURFACE_ROLE_TOPLEVEL:
-        if (!surface->xdg_surface) break; /* surface role has been cleared */
         if (!wayland_surface_reconfigure_xdg(surface, rect)) return FALSE;
         break;
     case WAYLAND_SURFACE_ROLE_SUBSURFACE:
-        if (!surface->wl_subsurface) break; /* surface role has been cleared */
         wayland_surface_reconfigure_subsurface(surface);
         break;
     }
@@ -1553,7 +1555,7 @@ void wayland_surface_ensure_contents(struct wayland_surface *surface)
 
     width = surface->window.rect.right - surface->window.rect.left;
     height = surface->window.rect.bottom - surface->window.rect.top;
-    needs_contents = surface->window.visible &&
+    needs_contents = surface->window.visible && wayland_surface_has_role(surface) &&
                      (surface->content_width != width ||
                       surface->content_height != height);
 
