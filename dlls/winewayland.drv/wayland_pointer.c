@@ -365,13 +365,19 @@ static void relative_pointer_v1_relative_motion(void *private,
     INPUT input = { .type = INPUT_MOUSE };
     HWND hwnd;
     struct wayland_win_data *data;
+    struct wayland_surface *surface;
     double screen_x = 0.0, screen_y = 0.0;
     struct wayland_pointer *pointer = &process_wayland.pointer;
 
     if (!(hwnd = wayland_pointer_get_focused_hwnd())) return;
     if (!(data = wayland_win_data_get(hwnd))) return;
+    if (!(surface = data->wayland_surface))
+    {
+        wayland_win_data_release(data);
+        return;
+    }
 
-    wayland_motion_delta_to_window(data->wayland_surface,
+    wayland_motion_delta_to_window(surface,
                                    wl_fixed_to_double(dx),
                                    wl_fixed_to_double(dy),
                                    &screen_x, &screen_y);
