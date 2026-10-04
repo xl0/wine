@@ -49,6 +49,8 @@ struct wayland_gl_drawable
 {
     struct opengl_drawable base;
     struct wl_egl_window *wl_egl_window;
+    /* context reading the frames which are shown by another process */
+    EGLContext remote_context;
 };
 
 static struct wayland_gl_drawable *impl_from_opengl_drawable(struct opengl_drawable *base)
@@ -59,6 +61,7 @@ static struct wayland_gl_drawable *impl_from_opengl_drawable(struct opengl_drawa
 static void wayland_drawable_destroy(struct opengl_drawable *base)
 {
     struct wayland_gl_drawable *gl = impl_from_opengl_drawable(base);
+    if (gl->remote_context) funcs->p_eglDestroyContext(egl->display, gl->remote_context);
     if (gl->wl_egl_window) wl_egl_window_destroy(gl->wl_egl_window);
 }
 
@@ -131,12 +134,49 @@ static void wayland_drawable_flush(struct opengl_drawable *base, UINT flags)
     if (flags & GL_FLUSH_UPDATED) wl_egl_window_resize(gl->wl_egl_window, size.cx, size.cy, 0, 0);
 }
 
+/* Copy the back buffer to the process of the toplevel window, if the client
+ * surface is shown by another process. The surface of the drawable is never
+ * mapped then, and its buffers are not swapped. */
+static BOOL wayland_drawable_present_remote(struct wayland_gl_drawable *gl)
+{
+    struct wayland_client_surface *surface = impl_from_client_surface(gl->base.client);
+    EGLSurface draw = funcs->p_eglGetCurrentSurface(EGL_DRAW), read = funcs->p_eglGetCurrentSurface(EGL_READ);
+    EGLContext context = funcs->p_eglGetCurrentContext();
+    EGLint width = 0, height = 0;
+    BOOL ret = FALSE;
+    void *pixels;
+
+    funcs->p_eglQuerySurface(egl->display, gl->base.surface, EGL_WIDTH, &width);
+    funcs->p_eglQuerySurface(egl->display, gl->base.surface, EGL_HEIGHT, &height);
+    if (!wayland_client_surface_lock_remote_buffer(surface, width, height, &pixels)) return FALSE;
+    if (!pixels) return TRUE;
+
+    /* Read from a context of our own, the state of the client context is
+     * not known, and there may be none. */
+    if (!gl->remote_context)
+    {
+        funcs->p_eglBindAPI(EGL_OPENGL_API);
+        gl->remote_context = funcs->p_eglCreateContext(egl->display, EGL_NO_CONFIG_KHR, EGL_NO_CONTEXT, NULL);
+    }
+    if (context) funcs->p_glFinish();
+    if (gl->remote_context && funcs->p_eglMakeCurrent(egl->display, gl->base.surface, gl->base.surface, gl->remote_context))
+    {
+        funcs->p_glReadPixels(0, 0, width, height, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+        funcs->p_eglMakeCurrent(egl->display, draw, read, context);
+        ret = TRUE;
+    }
+    else ERR("Failed to read the frame of %s\n", debugstr_opengl_drawable(&gl->base));
+
+    wayland_client_surface_unlock_remote_buffer(surface, ret);
+    return TRUE;
+}
+
 static BOOL wayland_drawable_swap(struct opengl_drawable *base)
 {
     struct wayland_gl_drawable *gl = impl_from_opengl_drawable(base);
 
     client_surface_present(base->client);
-    funcs->p_eglSwapBuffers(egl->display, gl->base.surface);
+    if (!wayland_drawable_present_remote(gl)) funcs->p_eglSwapBuffers(egl->display, gl->base.surface);
 
     return TRUE;
 }
