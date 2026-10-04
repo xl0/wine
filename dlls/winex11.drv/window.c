@@ -2609,14 +2609,15 @@ void set_window_visual( struct x11drv_win_data *data, const XVisualInfo *vis, BO
  */
 void X11DRV_SetWindowText( HWND hwnd, LPCWSTR text )
 {
-    Window win;
+    struct x11drv_win_data *data;
 
-    if ((win = X11DRV_get_whole_window( hwnd )) && win != DefaultRootWindow(gdi_display))
+    if (!(data = get_win_data( hwnd ))) return;
+    if (data->whole_window && data->whole_window != DefaultRootWindow(gdi_display))
     {
-        Display *display = thread_init_display();
-        sync_window_text( display, win, text );
-        XFlush( display );
+        sync_window_text( data->display, data->whole_window, text );
+        XFlush( data->display );
     }
+    release_win_data( data );
 }
 
 
