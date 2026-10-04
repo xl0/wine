@@ -162,6 +162,7 @@ void wp_fractional_scale_handle_scale(void* user_data,
 
     /* reattach client surfaces as their rects have changed */
     update_client_surfaces(hwnd);
+    wayland_remote_sinks_update(hwnd);
 
     /* the subsurface rect has changed */
     if (surface->role == WAYLAND_SURFACE_ROLE_SUBSURFACE)
@@ -349,6 +350,7 @@ void wayland_surface_destroy(struct wayland_surface *surface)
     pthread_mutex_unlock(&process_wayland.text_input.mutex);
 
     wayland_surface_clear_role(surface);
+    wayland_remote_sinks_detach(surface->hwnd);
 
     if (surface->wp_alpha_modifier_surface_v1)
     {

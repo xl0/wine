@@ -72,6 +72,7 @@ enum wayland_window_message
     WM_WAYLAND_INIT_DISPLAY_DEVICES = WM_WINE_FIRST_DRIVER_MSG,
     WM_WAYLAND_CONFIGURE,
     WM_WAYLAND_SET_FOREGROUND,
+    WM_WAYLAND_REMOTE_SURFACE,
 };
 
 enum wayland_surface_config_state
@@ -370,6 +371,20 @@ static inline BOOL wayland_surface_is_toplevel(struct wayland_surface *surface)
 }
 
 /**********************************************************************
+ *          Wayland client surfaces shown by another process
+ */
+
+struct pollfd;
+
+void wayland_remote_sink_create(HWND toplevel, HWND hwnd, UINT handle);
+void wayland_remote_sinks_detach(HWND hwnd);
+void wayland_remote_sinks_update(HWND hwnd);
+void wayland_remote_window_changed(HWND hwnd);
+void wayland_remote_sinks_destroy(HWND hwnd);
+struct pollfd *wayland_remote_get_poll_fds(int *count);
+void wayland_remote_process_events(const struct pollfd *fds, int count);
+
+/**********************************************************************
  *          Wayland SHM buffer
  */
 
@@ -410,6 +425,8 @@ struct wayland_win_data
 
 struct wayland_win_data *wayland_win_data_get(HWND hwnd);
 void wayland_win_data_release(struct wayland_win_data *data);
+void wayland_win_data_lock(void);
+void wayland_win_data_unlock(void);
 
 struct wayland_client_surface *get_client_surface(HWND hwnd);
 void set_client_surface(HWND hwnd, struct wayland_client_surface *client);
@@ -481,6 +498,7 @@ BOOL WAYLAND_SetIMECompositionRect(HWND hwnd, RECT rect);
 void WAYLAND_SetCursor(HWND hwnd, HCURSOR hcursor);
 BOOL WAYLAND_SetCursorPos(INT x, INT y);
 void WAYLAND_SetLayeredWindowAttributes(HWND hwnd, COLORREF key, BYTE alpha, DWORD flags);
+void WAYLAND_SetParent(HWND hwnd, HWND parent, HWND old_parent);
 void WAYLAND_SetWindowIcons(HWND hwnd, HICON icon, const ICONINFO *ii, HICON icon_small, const ICONINFO *ii_small);
 void WAYLAND_SetWindowStyle(HWND hwnd, INT offset, STYLESTRUCT *style);
 void WAYLAND_SetWindowText(HWND hwnd, LPCWSTR text);

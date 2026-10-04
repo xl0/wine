@@ -132,6 +132,24 @@ void wayland_win_data_release(struct wayland_win_data *data)
     pthread_mutex_unlock(&win_data_mutex);
 }
 
+/***********************************************************************
+ *           wayland_win_data_lock
+ *
+ * Lock the window data, for the data which is not of a single window.
+ */
+void wayland_win_data_lock(void)
+{
+    pthread_mutex_lock(&win_data_mutex);
+}
+
+/***********************************************************************
+ *           wayland_win_data_unlock
+ */
+void wayland_win_data_unlock(void)
+{
+    pthread_mutex_unlock(&win_data_mutex);
+}
+
 static void wayland_win_data_get_config(struct wayland_win_data *data,
                                         struct wayland_window_config *conf)
 {
@@ -493,6 +511,8 @@ void WAYLAND_DestroyWindow(HWND hwnd)
 
     TRACE("%p\n", hwnd);
 
+    wayland_remote_sinks_destroy(hwnd);
+
     if (!(data = wayland_win_data_get(hwnd))) return;
     wayland_win_data_destroy(data);
 }
@@ -519,7 +539,7 @@ BOOL WAYLAND_WindowPosChanging(HWND hwnd, UINT swp_flags, BOOL shaped, const str
 void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UINT swp_flags,
                               const struct window_rects *new_rects, struct window_surface *surface)
 {
-    HWND owner = NtUserGetAncestor(hwnd, GA_ROOT), win_owner = NtUserGetWindowRelative(hwnd, GW_OWNER);
+    HWND toplevel = NtUserGetAncestor(hwnd, GA_ROOT), owner = toplevel, win_owner = NtUserGetWindowRelative(hwnd, GW_OWNER);
     struct wayland_surface *owner_surface;
     struct wayland_win_data *data, *owner_data;
     BOOL managed, fullscreen = swp_flags & WINE_SWP_FULLSCREEN, foreign_owner;
@@ -533,7 +553,11 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
     if (win_owner) win_owner = NtUserGetAncestor(win_owner, GA_ROOT);
     foreign_owner = win_owner && is_foreign_owner(hwnd, win_owner);
 
-    if (!(data = wayland_win_data_get(hwnd))) return;
+    if (!(data = wayland_win_data_get(hwnd)))
+    {
+        wayland_remote_sinks_update(toplevel);
+        return;
+    }
     owner_data = owner && owner != hwnd ? wayland_win_data_get(owner) : NULL;
     owner_surface = owner_data ? owner_data->wayland_surface : NULL;
 
@@ -560,6 +584,9 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
 
     if (owner_data) wayland_win_data_release(owner_data);
     wayland_win_data_release(data);
+
+    /* the client surfaces shown for other processes follow the windows */
+    wayland_remote_sinks_update(toplevel);
 }
 
 static void wayland_configure_window(HWND hwnd)
@@ -713,6 +740,9 @@ LRESULT WAYLAND_WindowMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_WAYLAND_CONFIGURE:
         wayland_configure_window(hwnd);
         return 0;
+    case WM_WAYLAND_REMOTE_SURFACE:
+        wayland_remote_sink_create(hwnd, (HWND)wp, lp);
+        return 0;
     case WM_WAYLAND_SET_FOREGROUND:
         /* A disabled window still gets the keyboard focus from the compositor,
          * e.g. when the owner of a modal dialog is clicked. Bring its last
@@ -812,6 +842,8 @@ void WAYLAND_SetWindowStyle(HWND hwnd, INT offset, STYLESTRUCT *style)
     DWORD changed = style->styleNew ^ style->styleOld;
 
     if (hwnd == NtUserGetDesktopWindow()) return;
+    if (offset == GWL_STYLE && (changed & (WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN)))
+        wayland_remote_window_changed(hwnd);
     if (!(data = wayland_win_data_get(hwnd))) return;
 
     /* Changing WS_EX_LAYERED resets attributes */
@@ -823,6 +855,15 @@ void WAYLAND_SetWindowStyle(HWND hwnd, INT offset, STYLESTRUCT *style)
     }
 
     wayland_win_data_release(data);
+}
+
+/*****************************************************************
+ *		WAYLAND_SetParent
+ */
+void WAYLAND_SetParent(HWND hwnd, HWND parent, HWND old_parent)
+{
+    /* the window has left the toplevel window of its old parent */
+    wayland_remote_window_changed(old_parent == NtUserGetDesktopWindow() ? hwnd : old_parent);
 }
 
 /*****************************************************************
