@@ -259,6 +259,7 @@ struct wayland_client_surface
 {
     struct client_surface client;
     HWND toplevel;
+    UINT toplevel_serial; /* of the surface of the toplevel it is attached to */
     RECT rect;
     struct wl_surface *wl_surface;
     struct wl_subsurface *wl_subsurface;
@@ -285,6 +286,7 @@ struct wayland_shm_buffer
 struct wayland_surface
 {
     HWND hwnd;
+    UINT serial; /* unique, to tell the surface from the previous ones of the window */
 
     struct wl_surface *wl_surface;
     struct wp_viewport *wp_viewport;

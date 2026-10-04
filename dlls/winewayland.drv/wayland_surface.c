@@ -160,10 +160,6 @@ void wp_fractional_scale_handle_scale(void* user_data,
 
     surface->window.scale = scale;
 
-    /* reattach client surfaces as their rects have changed */
-    update_client_surfaces(hwnd);
-    wayland_remote_sinks_update(hwnd);
-
     /* the subsurface rect has changed */
     if (surface->role == WAYLAND_SURFACE_ROLE_SUBSURFACE)
     {
@@ -172,6 +168,10 @@ void wp_fractional_scale_handle_scale(void* user_data,
     }
 
     wayland_win_data_release(data);
+
+    /* reattach client surfaces as their rects have changed */
+    update_client_surfaces(hwnd);
+    wayland_remote_sinks_update(hwnd);
 
     NtUserExposeWindowSurface(hwnd, 0, NULL);
 }
@@ -272,6 +272,7 @@ static const struct zxdg_imported_v1_listener zxdg_imported_v1_listener =
  */
 struct wayland_surface *wayland_surface_create(HWND hwnd)
 {
+    static LONG last_serial;
     struct wayland_surface *surface;
 
     surface = calloc(1, sizeof(*surface));
@@ -284,6 +285,7 @@ struct wayland_surface *wayland_surface_create(HWND hwnd)
     TRACE("surface=%p\n", surface);
 
     surface->hwnd = hwnd;
+    surface->serial = InterlockedIncrement(&last_serial);
     surface->wl_surface = wl_compositor_create_surface(process_wayland.wl_compositor);
     if (!surface->wl_surface)
     {
@@ -952,7 +954,8 @@ static void wayland_surface_reconfigure_subsurface(struct wayland_surface *surfa
         TRACE("hwnd=%p rect=%s\n", surface->hwnd, wine_dbgstr_rect(&rect));
 
         wl_subsurface_set_position(surface->wl_subsurface, rect.left, rect.top);
-        if (owner_data->client_surface && owner_data->client_surface->wl_subsurface)
+        if (owner_data->client_surface && owner_data->client_surface->wl_subsurface &&
+            owner_data->client_surface->toplevel_serial == owner_surface->serial)
             wl_subsurface_place_above(surface->wl_subsurface, owner_data->client_surface->wl_surface);
         else
             wl_subsurface_place_above(surface->wl_subsurface, owner_surface->wl_surface);
@@ -1497,7 +1500,8 @@ void wayland_client_surface_attach(struct wayland_client_surface *client, HWND t
         return wayland_client_surface_attach(client, NULL, NULL);
     }
 
-    if (client->toplevel != toplevel)
+    /* the surface of the toplevel may have been replaced, e.g. to change its role */
+    if (client->toplevel != toplevel || client->toplevel_serial != surface->serial)
     {
         wayland_client_surface_attach(client, NULL, NULL);
 
@@ -1511,6 +1515,7 @@ void wayland_client_surface_attach(struct wayland_client_surface *client, HWND t
         wl_subsurface_set_desync(client->wl_subsurface);
 
         client->toplevel = toplevel;
+        client->toplevel_serial = surface->serial;
     }
 
     wayland_surface_reconfigure_client(surface, client, rect);
