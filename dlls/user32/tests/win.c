@@ -9660,6 +9660,119 @@ done:
     DeleteObject( cls.hbrBackground );
 }
 
+struct layered_threads_data
+{
+    HWND hwnd;
+    HANDLE ready, start, done;
+    LONG stop;
+};
+
+static DWORD WINAPI layered_owner_thread( void *arg )
+{
+    struct layered_threads_data *data = arg;
+    BOOL ret;
+    int i;
+
+    data->hwnd = CreateWindowExA( WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, "static", NULL,
+                                  WS_POPUP | WS_VISIBLE, 100, 100, 100, 100, 0, 0, 0, NULL );
+    SetEvent( data->ready );
+    /* no message is processed here while the main thread updates the window */
+    WaitForSingleObject( data->start, INFINITE );
+
+    for (i = 0; i < 500 && !data->stop; i++)
+    {
+        ret = SetWindowPos( data->hwnd, 0, 0, 0, (i & 1) ? 100 : 300, (i & 1) ? 100 : 300,
+                            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE );
+        ok( ret == TRUE, "%u: SetWindowPos returned %#x, error %lu\n", i, ret, GetLastError() );
+        if (ret != TRUE) break;
+    }
+
+    InterlockedExchange( &data->stop, 1 );
+    WaitForSingleObject( data->done, INFINITE );
+    DestroyWindow( data->hwnd );
+    return 0;
+}
+
+static DWORD WINAPI layered_paint_thread( void *arg )
+{
+    struct layered_threads_data *data = arg;
+    RECT rect = {0, 0, 800, 600};
+    HWND hwnd;
+    HDC hdc;
+    MSG msg;
+
+    hwnd = CreateWindowExA( WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, "static", NULL, WS_POPUP | WS_VISIBLE,
+                            100, 100, 800, 600, 0, 0, 0, NULL );
+    SetEvent( data->ready );
+    while (!data->stop)
+    {
+        hdc = GetDC( hwnd );
+        FillRect( hdc, &rect, GetStockObject( WHITE_BRUSH ) );
+        ReleaseDC( hwnd, hdc );
+        while (PeekMessageA( &msg, 0, 0, 0, PM_REMOVE )) DispatchMessageA( &msg );
+    }
+    DestroyWindow( hwnd );
+    return 0;
+}
+
+static void test_layered_window_threads(void)
+{
+    BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+    BITMAPINFO info = {{sizeof(info.bmiHeader), 300, -300, 1, 32, BI_RGB}};
+    POINT src = {0, 0}, pos = {150, 120};
+    struct layered_threads_data data = {0};
+    RECT rect, expect = {150, 120, 270, 200};
+    SIZE size = {120, 80};
+    HANDLE threads[2];
+    HBITMAP bitmap;
+    DWORD *bits, res, end;
+    BOOL ret;
+    HDC hdc;
+
+    hdc = CreateCompatibleDC( 0 );
+    bitmap = CreateDIBSection( hdc, &info, DIB_RGB_COLORS, (void **)&bits, NULL, 0 );
+    memset( bits, 0x80, 300 * 300 * 4 );
+    SelectObject( hdc, bitmap );
+
+    data.ready = CreateEventA( NULL, FALSE, FALSE, NULL );
+    data.start = CreateEventA( NULL, FALSE, FALSE, NULL );
+    data.done = CreateEventA( NULL, FALSE, FALSE, NULL );
+    threads[0] = CreateThread( NULL, 0, layered_owner_thread, &data, 0, NULL );
+    res = WaitForSingleObject( data.ready, 10000 );
+    ok( res == WAIT_OBJECT_0, "WaitForSingleObject returned %#lx\n", res );
+
+    /* a window of another thread is updated directly, without messages to its thread */
+    ret = UpdateLayeredWindow( data.hwnd, 0, &pos, &size, hdc, &src, 0, &blend, ULW_ALPHA );
+    ok( ret == TRUE, "UpdateLayeredWindow returned %#x, error %lu\n", ret, GetLastError() );
+    GetWindowRect( data.hwnd, &rect );
+    ok( EqualRect( &rect, &expect ), "got rect %s\n", wine_dbgstr_rect( &rect ) );
+
+    /* also while its thread changes the window size and a third one paints */
+    threads[1] = CreateThread( NULL, 0, layered_paint_thread, &data, 0, NULL );
+    res = WaitForSingleObject( data.ready, 10000 );
+    ok( res == WAIT_OBJECT_0, "WaitForSingleObject returned %#lx\n", res );
+    SetEvent( data.start );
+    end = GetTickCount() + 30000;
+    while (!data.stop && (int)(end - GetTickCount()) > 0)
+    {
+        ret = UpdateLayeredWindow( data.hwnd, 0, NULL, NULL, hdc, &src, 0, &blend, ULW_ALPHA );
+        ok( ret == TRUE, "UpdateLayeredWindow returned %#x, error %lu\n", ret, GetLastError() );
+        if (ret != TRUE) break;
+    }
+    InterlockedExchange( &data.stop, 1 );
+
+    SetEvent( data.done );
+    res = WaitForMultipleObjects( 2, threads, TRUE, 10000 );
+    ok( res == WAIT_OBJECT_0, "WaitForMultipleObjects returned %#lx\n", res );
+    CloseHandle( threads[0] );
+    CloseHandle( threads[1] );
+    CloseHandle( data.ready );
+    CloseHandle( data.start );
+    CloseHandle( data.done );
+    DeleteDC( hdc );
+    DeleteObject( bitmap );
+}
+
 static MONITORINFO mi;
 
 static LRESULT CALLBACK fullscreen_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
@@ -15207,6 +15320,7 @@ START_TEST(win)
     test_Expose();
     test_layered_window();
     test_layered_window_alpha();
+    test_layered_window_threads();
 
     test_SetForegroundWindow(hwndMain);
     test_handles( hwndMain );
