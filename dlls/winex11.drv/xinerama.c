@@ -133,10 +133,11 @@ BOOL xinerama_get_fullscreen_monitors( const RECT *rect, unsigned long *generati
     POINT offset;
     INT i;
 
-    pthread_mutex_lock( &xinerama_mutex );
-
     /* Convert window rectangle to root coordinates */
     offset = virtual_screen_to_root( rect->left, rect->top );
+
+    pthread_mutex_lock( &xinerama_mutex );
+
     window_rect.left = offset.x;
     window_rect.top = offset.y;
     window_rect.right = window_rect.left + rect->right - rect->left;
