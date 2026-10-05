@@ -933,6 +933,23 @@ static BOOL X11DRV_UnmapNotify( HWND hwnd, XEvent *event )
 
 
 /***********************************************************************
+ *           get_event_win_data
+ *
+ * Lock and return the window data for an event of a whole window, unless
+ * the X window has been destroyed or replaced meanwhile, from another thread.
+ */
+static struct x11drv_win_data *get_event_win_data( HWND hwnd, Window window )
+{
+    struct x11drv_win_data *data;
+
+    if (!(data = get_win_data( hwnd ))) return NULL;
+    if (data->whole_window == window) return data;
+    release_win_data( data );
+    return NULL;
+}
+
+
+/***********************************************************************
  *           X11DRV_ReparentNotify
  */
 static BOOL X11DRV_ReparentNotify( HWND hwnd, XEvent *xev )
@@ -940,7 +957,7 @@ static BOOL X11DRV_ReparentNotify( HWND hwnd, XEvent *xev )
     XReparentEvent *event = &xev->xreparent;
     struct x11drv_win_data *data;
 
-    if (!(data = get_win_data( hwnd ))) return FALSE;
+    if (!(data = get_event_win_data( hwnd, event->window ))) return FALSE;
     set_window_parent( data, event->parent );
 
     if (!data->embedded)
@@ -980,7 +997,7 @@ static BOOL X11DRV_ConfigureNotify( HWND hwnd, XEvent *xev )
     POINT pos = {event->x, event->y};
 
     if (!hwnd) return FALSE;
-    if (!(data = get_win_data( hwnd ))) return FALSE;
+    if (!(data = get_event_win_data( hwnd, event->window ))) return FALSE;
 
     /* update our view of the window tree for mouse event coordinate mapping */
     if (data->whole_window && data->parent && !data->parent_invalid)
@@ -1017,7 +1034,7 @@ static BOOL X11DRV_GravityNotify( HWND hwnd, XEvent *xev )
     POINT pos = {event->x, event->y};
 
     if (!hwnd) return FALSE;
-    if (!(data = get_win_data( hwnd ))) return FALSE;
+    if (!(data = get_event_win_data( hwnd, event->window ))) return FALSE;
     rect = data->rects.window;
 
     /* update our view of the window tree for mouse event coordinate mapping */
@@ -1121,22 +1138,6 @@ static void get_window_mwm_hints( Display *display, Window window, MwmHints *hin
 }
 
 /***********************************************************************
- *           get_property_win_data
- *
- * Lock and return the window data for a PropertyNotify event, unless the
- * X window has been destroyed or replaced meanwhile, from another thread.
- */
-static struct x11drv_win_data *get_property_win_data( HWND hwnd, XPropertyEvent *event )
-{
-    struct x11drv_win_data *data;
-
-    if (!(data = get_win_data( hwnd ))) return NULL;
-    if (data->whole_window == event->window) return data;
-    release_win_data( data );
-    return NULL;
-}
-
-/***********************************************************************
  *           handle_wm_state_notify
  *
  * Handle a PropertyNotify for WM_STATE.
@@ -1147,7 +1148,7 @@ static void handle_wm_state_notify( HWND hwnd, XPropertyEvent *event )
     UINT value = 0;
     BOOL activate;
 
-    if (!(data = get_property_win_data( hwnd, event ))) return;
+    if (!(data = get_event_win_data( hwnd, event->window ))) return;
     if (event->state == PropertyNewValue) value = get_window_wm_state( event->display, event->window );
     window_wm_state_notify( data, event->serial, value, event->time );
     activate = value == NormalState && !data->wm_state_serial && data->current_state.activate;
@@ -1162,7 +1163,7 @@ static void handle_xembed_info_notify( HWND hwnd, XPropertyEvent *event )
     struct x11drv_win_data *data;
     UINT value = 0;
 
-    if (!(data = get_property_win_data( hwnd, event ))) return;
+    if (!(data = get_event_win_data( hwnd, event->window ))) return;
     if (event->state == PropertyNewValue) value = get_window_xembed_info( event->display, event->window );
     window_wm_state_notify( data, event->serial, value ? NormalState : WithdrawnState, event->time );
     release_win_data( data );
@@ -1173,7 +1174,7 @@ static void handle_net_wm_state_notify( HWND hwnd, XPropertyEvent *event )
     struct x11drv_win_data *data;
     UINT value = 0;
 
-    if (!(data = get_property_win_data( hwnd, event ))) return;
+    if (!(data = get_event_win_data( hwnd, event->window ))) return;
     if (event->state == PropertyNewValue) value = get_window_net_wm_state( event->display, event->window );
     window_net_wm_state_notify( data, event->serial, value );
     release_win_data( data );
@@ -1186,7 +1187,7 @@ static void handle_wm_hints_notify( HWND hwnd, XPropertyEvent *event )
     struct x11drv_win_data *data;
     XWMHints empty = {0}, *hints;
 
-    if (!(data = get_property_win_data( hwnd, event ))) return;
+    if (!(data = get_event_win_data( hwnd, event->window ))) return;
     hints = event->state == PropertyNewValue ? XGetWMHints( event->display, event->window ) : &empty;
     window_wm_hints_notify( data, event->serial, hints );
     if (hints != &empty) XFree( hints );
@@ -1198,7 +1199,7 @@ static void handle_mwm_hints_notify( HWND hwnd, XPropertyEvent *event )
     struct x11drv_win_data *data;
     MwmHints hints = {0};
 
-    if (!(data = get_property_win_data( hwnd, event ))) return;
+    if (!(data = get_event_win_data( hwnd, event->window ))) return;
     if (event->state == PropertyNewValue) get_window_mwm_hints( event->display, event->window, &hints );
     window_mwm_hints_notify( data, event->serial, &hints );
     release_win_data( data );
@@ -1210,7 +1211,7 @@ static void handle_wm_normal_hints_notify( HWND hwnd, XPropertyEvent *event )
     XSizeHints *hints;
     long len = 0;
 
-    if (!(data = get_property_win_data( hwnd, event ))) return;
+    if (!(data = get_event_win_data( hwnd, event->window ))) return;
     if ((hints = XAllocSizeHints()))
     {
         if (event->state == PropertyNewValue) XGetWMNormalHints( event->display, event->window, hints, &len );
