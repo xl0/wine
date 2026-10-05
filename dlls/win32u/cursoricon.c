@@ -564,8 +564,9 @@ BOOL WINAPI NtUserDrawIconEx( HDC hdc, INT x0, INT y0, HICON icon, INT width,
                               INT height, UINT step, HBRUSH brush, UINT flags )
 {
     struct cursoricon_object *obj;
+    struct cursoricon_frame frame;
     HBITMAP offscreen_bitmap = 0;
-    HDC hdc_dest, mem_dc;
+    HDC hdc_dest, mem_dc = 0;
     COLORREF old_fg, old_bg;
     INT x, y, nStretchMode;
     BOOL result = FALSE;
@@ -578,11 +579,20 @@ BOOL WINAPI NtUserDrawIconEx( HDC hdc, INT x0, INT y0, HICON icon, INT width,
         FIXME_(icon)("Error retrieving icon frame %d\n", step);
         return FALSE;
     }
-    if (!(mem_dc = NtGdiCreateCompatibleDC( hdc )))
+    frame = obj->frame;
+    if (get_gdi_object_type( hdc ) != NTGDI_OBJ_MEMDC)
     {
+        /* Drawing on a window DC may have to update it first, which needs the driver window data:
+         * that must not happen with the user lock held. The icon bitmaps are only protected by
+         * that lock, and can only be selected into one DC at a time, so draw from copies. */
+        frame.alpha = (flags & DI_IMAGE) ? copy_bitmap( frame.alpha, NULL ) : 0;
+        frame.color = (flags & DI_IMAGE) ? copy_bitmap( frame.color, NULL ) : 0;
+        frame.mask = copy_bitmap( frame.mask, NULL );
         release_user_handle_ptr( obj );
-        return FALSE;
+        obj = NULL;
     }
+
+    if (!(mem_dc = NtGdiCreateCompatibleDC( hdc ))) goto failed;
 
     if (flags & DI_NOMIRROR)
         FIXME_(icon)("Ignoring flag DI_NOMIRROR\n");
@@ -593,14 +603,14 @@ BOOL WINAPI NtUserDrawIconEx( HDC hdc, INT x0, INT y0, HICON icon, INT width,
         if (flags & DI_DEFAULTSIZE)
             width = get_system_metrics( SM_CXICON );
         else
-            width = obj->frame.width;
+            width = frame.width;
     }
     if (height == 0)
     {
         if (flags & DI_DEFAULTSIZE)
             height = get_system_metrics( SM_CYICON );
         else
-            height = obj->frame.height;
+            height = frame.height;
     }
 
     if (get_gdi_object_type( brush ) == NTGDI_OBJ_BRUSH)
@@ -634,7 +644,7 @@ BOOL WINAPI NtUserDrawIconEx( HDC hdc, INT x0, INT y0, HICON icon, INT width,
     NtGdiGetAndSetDCDword( hdc, NtGdiSetTextColor, RGB(0,0,0), &old_fg );
     NtGdiGetAndSetDCDword( hdc, NtGdiSetBkColor, RGB(255,255,255), &old_bg );
 
-    if (obj->frame.alpha && (flags & DI_IMAGE))
+    if (frame.alpha && (flags & DI_IMAGE))
     {
         BOOL alpha_blend = TRUE;
 
@@ -646,9 +656,9 @@ BOOL WINAPI NtUserDrawIconEx( HDC hdc, INT x0, INT y0, HICON icon, INT width,
         }
         if (alpha_blend)
         {
-            NtGdiSelectBitmap( mem_dc, obj->frame.alpha );
+            NtGdiSelectBitmap( mem_dc, frame.alpha );
             if (NtGdiAlphaBlend( hdc_dest, x, y, width, height, mem_dc,
-                                 0, 0, obj->frame.width, obj->frame.height,
+                                 0, 0, frame.width, frame.height,
                                  MAKEFOURCC( AC_SRC_OVER, 0, 255, AC_SRC_ALPHA ), 0 ))
                 goto done;
         }
@@ -657,27 +667,27 @@ BOOL WINAPI NtUserDrawIconEx( HDC hdc, INT x0, INT y0, HICON icon, INT width,
     if (flags & DI_MASK)
     {
         DWORD rop = (flags & DI_IMAGE) ? SRCAND : SRCCOPY;
-        NtGdiSelectBitmap( mem_dc, obj->frame.mask );
+        NtGdiSelectBitmap( mem_dc, frame.mask );
         NtGdiStretchBlt( hdc_dest, x, y, width, height,
-                         mem_dc, 0, 0, obj->frame.width, obj->frame.height, rop, 0 );
+                         mem_dc, 0, 0, frame.width, frame.height, rop, 0 );
     }
 
     if (flags & DI_IMAGE)
     {
-        if (obj->frame.color)
+        if (frame.color)
         {
             DWORD rop = (flags & DI_MASK) ? SRCINVERT : SRCCOPY;
-            NtGdiSelectBitmap( mem_dc, obj->frame.color );
+            NtGdiSelectBitmap( mem_dc, frame.color );
             NtGdiStretchBlt( hdc_dest, x, y, width, height,
-                             mem_dc, 0, 0, obj->frame.width, obj->frame.height, rop, 0 );
+                             mem_dc, 0, 0, frame.width, frame.height, rop, 0 );
         }
         else
         {
             DWORD rop = (flags & DI_MASK) ? SRCINVERT : SRCCOPY;
-            NtGdiSelectBitmap( mem_dc, obj->frame.mask );
+            NtGdiSelectBitmap( mem_dc, frame.mask );
             NtGdiStretchBlt( hdc_dest, x, y, width, height,
-                             mem_dc, 0, obj->frame.height, obj->frame.width,
-                             obj->frame.height, rop, 0 );
+                             mem_dc, 0, frame.height, frame.width,
+                             frame.height, rop, 0 );
         }
     }
 
@@ -693,7 +703,13 @@ done:
     if (offscreen_bitmap) NtGdiDeleteObjectApp( offscreen_bitmap );
 failed:
     NtGdiDeleteObjectApp( mem_dc );
-    release_user_handle_ptr( obj );
+    if (obj) release_user_handle_ptr( obj );
+    else
+    {
+        NtGdiDeleteObjectApp( frame.alpha );
+        NtGdiDeleteObjectApp( frame.color );
+        NtGdiDeleteObjectApp( frame.mask );
+    }
     return result;
 }
 
