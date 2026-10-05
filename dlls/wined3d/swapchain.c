@@ -1093,7 +1093,8 @@ static void wined3d_swapchain_vk_set_swap_interval(struct wined3d_swapchain_vk *
 }
 
 static VkResult wined3d_swapchain_vk_blit(struct wined3d_swapchain_vk *swapchain_vk,
-        struct wined3d_context_vk *context_vk, const RECT *src_rect, const RECT *dst_rect, unsigned int swap_interval)
+        struct wined3d_context_vk *context_vk, const RECT *src_rect, const RECT *dst_rect,
+        unsigned int swap_interval, bool recreated)
 {
     struct wined3d_texture_vk *back_buffer_vk = wined3d_texture_vk(swapchain_vk->s.back_buffers[0]);
     struct wined3d_device_vk *device_vk = wined3d_device_vk(swapchain_vk->s.device);
@@ -1127,6 +1128,12 @@ static VkResult wined3d_swapchain_vk_blit(struct wined3d_swapchain_vk *swapchain
         WARN("Failed to acquire image, vr %s.\n", wined3d_debug_vkresult(vr));
         return vr;
     }
+
+    /* The swapchain no longer matches the window, e.g. after a resize. An
+     * image of the old size would leave part of the window undefined, and
+     * nothing would replace it until the next present. */
+    if (vr == VK_SUBOPTIMAL_KHR && !recreated)
+        return VK_ERROR_OUT_OF_DATE_KHR;
 
     if (dst_rect->right > swapchain_vk->width || dst_rect->bottom > swapchain_vk->height)
     {
@@ -1301,14 +1308,14 @@ static void swapchain_vk_present(struct wined3d_swapchain *swapchain, const RECT
     {
         wined3d_texture_load_location(back_buffer, 0, &context_vk->c, back_buffer->resource.draw_binding);
 
-        if ((vr = wined3d_swapchain_vk_blit(swapchain_vk, context_vk, src_rect, dst_rect, swap_interval)))
+        if ((vr = wined3d_swapchain_vk_blit(swapchain_vk, context_vk, src_rect, dst_rect, swap_interval, false)))
         {
             if (vr == VK_ERROR_OUT_OF_DATE_KHR || vr == VK_SUBOPTIMAL_KHR)
             {
                 if (FAILED(hr = wined3d_swapchain_vk_recreate(swapchain_vk)))
                     ERR("Failed to recreate swapchain, hr %#lx.\n", hr);
                 else if (vr == VK_ERROR_OUT_OF_DATE_KHR && (vr = wined3d_swapchain_vk_blit(
-                        swapchain_vk, context_vk, src_rect, dst_rect, swap_interval)))
+                        swapchain_vk, context_vk, src_rect, dst_rect, swap_interval, true)) < 0)
                     ERR("Failed to blit image, vr %s.\n", wined3d_debug_vkresult(vr));
             }
             else
