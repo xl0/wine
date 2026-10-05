@@ -706,6 +706,7 @@ struct x11drv_win_data
     UINT        is_fullscreen : 1; /* is the window visible rect fullscreen */
     UINT        is_offscreen : 1; /* has been moved offscreen by the window manager */
     UINT        parent_invalid : 1; /* is the parent host window possibly invalid */
+    UINT        xic_invalid : 1; /* is the input context one of a previous X window */
     UINT        reparenting : 1; /* window is being reparented, likely from a decoration change */
     UINT        is_resizable : 1; /* window is allowed to be resized by the window manager */
     UINT        has_net_wm_desktop : 1; /* has the window manager put the window on a desktop yet? */
@@ -956,6 +957,7 @@ extern void xim_thread_attach( struct x11drv_thread_data *data );
 extern BOOL xim_in_compose_mode(void);
 extern void xim_set_result_string( HWND hwnd, const char *str, UINT count );
 extern XIC X11DRV_get_ic( HWND hwnd );
+extern void xim_destroy_ic( struct x11drv_win_data *data );
 extern void xim_set_focus( HWND hwnd, BOOL focus );
 
 #define XEMBED_MAPPED  (1 << 0)

@@ -2664,27 +2664,29 @@ static void destroy_whole_window( struct x11drv_win_data *data, BOOL already_des
     data->net_wm_icon_serial = 0;
     data->reparenting = 0;
 
-    if (data->xic)
+    /* It's possible that we are in a different thread, when called from
+     * set_window_visual, and about to recreate the window. In this case
+     * just set window flags to indicate the parent and the input context
+     * aren't valid and let the thread eventually replace them with the
+     * proper ones later on.
+     */
+    if (data->display != thread_init_display())
     {
-        XUnsetICFocus( data->xic );
-        XDestroyIC( data->xic );
-        data->xic = 0;
+        data->parent_invalid = 1;
+        if (data->xic) data->xic_invalid = 1;
+    }
+    else
+    {
+        xim_destroy_ic( data );
+        if (data->parent)
+        {
+            host_window_release( data->parent );
+            data->parent = NULL;
+        }
     }
     /* Outlook stops processing messages after destroying a dialog, so we need an explicit flush */
     XFlush( data->display );
     NtUserRemoveProp( data->hwnd, whole_window_prop );
-
-    /* It's possible that we are in a different thread, when called from
-     * set_window_visual, and about to recreate the window. In this case
-     * just set a window flag to indicate the parent isn't valid and let
-     * the thread eventually replace it with the proper one later on.
-     */
-    if (data->display != thread_init_display()) data->parent_invalid = 1;
-    else if (data->parent)
-    {
-        host_window_release( data->parent );
-        data->parent = NULL;
-    }
 }
 
 

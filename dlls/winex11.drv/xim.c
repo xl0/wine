@@ -545,16 +545,34 @@ static XIC xic_create( XIM xim, HWND hwnd, Window win )
     return xic;
 }
 
+/* destroy the input context of a window, only from the thread that owns the window */
+void xim_destroy_ic( struct x11drv_win_data *data )
+{
+    if (data->xic)
+    {
+        XUnsetICFocus( data->xic );
+        XDestroyIC( data->xic );
+        data->xic = 0;
+    }
+    data->xic_invalid = 0;
+}
+
 XIC X11DRV_get_ic( HWND hwnd )
 {
+    struct x11drv_thread_data *thread_data = x11drv_thread_data();
     struct x11drv_win_data *data;
-    XIM xim;
     XIC ret;
 
     if (!(data = get_win_data( hwnd ))) return 0;
-    x11drv_thread_data()->last_xic_hwnd = hwnd;
-    if (!(ret = data->xic) && (xim = x11drv_thread_data()->xim))
-        ret = data->xic = xic_create( xim, hwnd, data->whole_window );
+    thread_data->last_xic_hwnd = hwnd;
+    /* an input context uses the display and the input method of the thread that owns the
+     * window, no other thread may create or destroy it */
+    if (data->display == thread_data->display)
+    {
+        if (data->xic_invalid) xim_destroy_ic( data );
+        if (!data->xic && thread_data->xim) data->xic = xic_create( thread_data->xim, hwnd, data->whole_window );
+    }
+    ret = data->xic;
     release_win_data( data );
 
     return ret;
@@ -580,7 +598,7 @@ BOOL X11DRV_SetIMECompositionRect( HWND hwnd, RECT rect )
     if (!(input_style & XIMPreeditPosition))
         return FALSE;
 
-    if (!(data = get_win_data( hwnd )) || !data->xic)
+    if (!(data = get_win_data( hwnd )) || !data->xic || data->xic_invalid)
     {
         if (data) release_win_data( data );
         return FALSE;
