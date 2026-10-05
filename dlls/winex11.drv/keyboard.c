@@ -2771,6 +2771,7 @@ INT X11DRV_ToUnicodeEx( UINT virtKey, UINT scanCode, const BYTE *lpKeyState,
                         LPWSTR bufW, int bufW_size, UINT flags, HKL hkl )
 {
     Display *display = thread_init_display();
+    struct x11drv_win_data *data;
     XKeyEvent e;
     KeySym keysym = 0;
     INT ret;
@@ -2778,7 +2779,7 @@ INT X11DRV_ToUnicodeEx( UINT virtKey, UINT scanCode, const BYTE *lpKeyState,
     char buf[10];
     char *lpChar = buf;
     HWND focus;
-    XIC xic;
+    XIC xic = 0;
     Status status = 0;
 
     if (scanCode & 0x8000)
@@ -2806,7 +2807,10 @@ INT X11DRV_ToUnicodeEx( UINT virtKey, UINT scanCode, const BYTE *lpKeyState,
         if (!focus) focus = get_active_window();
     }
     e.window = X11DRV_get_whole_window( focus );
-    xic = X11DRV_get_ic( focus );
+    X11DRV_get_ic( focus );
+    /* the window may belong to another thread, which only destroys
+     * its input context with the window data locked */
+    if ((data = get_win_data( focus ))) xic = data->xic;
 
     pthread_mutex_lock( &kbd_mutex );
 
@@ -2880,6 +2884,7 @@ INT X11DRV_ToUnicodeEx( UINT virtKey, UINT scanCode, const BYTE *lpKeyState,
       {
 	WARN_(key)("Unknown virtual key %X !!!\n", virtKey);
         pthread_mutex_unlock( &kbd_mutex );
+        release_win_data( data );
 	return 0;
       }
     else TRACE_(key)("Found keycode %u\n",e.keycode);
@@ -2901,6 +2906,7 @@ INT X11DRV_ToUnicodeEx( UINT virtKey, UINT scanCode, const BYTE *lpKeyState,
             {
                 ERR_(key)("Failed to allocate memory!\n");
                 pthread_mutex_unlock( &kbd_mutex );
+                release_win_data( data );
                 return 0;
             }
             ret = XmbLookupString(xic, &e, lpChar, ret, &keysym, &status);
@@ -3053,6 +3059,7 @@ found:
         free( lpChar );
 
     pthread_mutex_unlock( &kbd_mutex );
+    release_win_data( data );
 
     /* Null-terminate the buffer, if there's room.  MSDN clearly states that the
        caller must not assume this is done, but some programs (e.g. Audiosurf) do. */
