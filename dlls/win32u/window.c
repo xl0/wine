@@ -2495,9 +2495,11 @@ static BOOL apply_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags, stru
         /* a surface owned by another process has to exclude our client surface too */
         if (win->clip_clients && surface_win && !is_current_process_window( surface_win ))
             NtUserPostMessage( surface_win, WM_WINE_UPDATEWINDOWSTATE, 0, 0 );
-        if (((swp_flags & SWP_AGG_NOPOSCHANGE) != SWP_AGG_NOPOSCHANGE) ||
+        /* a DC stops drawing to the window surface when the server gets the pixel format flag */
+        if (((swp_flags & SWP_AGG_NOPOSCHANGE) != SWP_AGG_NOPOSCHANGE) || win->clip_clients == 1 ||
             (swp_flags & (SWP_HIDEWINDOW | SWP_SHOWWINDOW | SWP_STATECHANGED | SWP_FRAMECHANGED)))
             invalidate_dce( win, &old_rects.window );
+        if (win->clip_clients) win->clip_clients = 2;
 
         if (win->dwStyle & WS_VISIBLE && !is_child && !win->has_icons)
         {

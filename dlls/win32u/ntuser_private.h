@@ -70,7 +70,7 @@ typedef struct tagWND
     struct tagDIALOGINFO *dlgInfo;    /* Dialog additional info (dialogs only) */
     int                swap_interval; /* OpenGL surface swap interval */
     int                pixel_format;  /* Pixel format set by the graphics driver */
-    int                clip_clients;  /* Has client surfaces that needs to be clipped out */
+    int                clip_clients;  /* Has client surfaces that needs to be clipped out (2: the server knows) */
 } WND;
 
 /* WND flags values */
