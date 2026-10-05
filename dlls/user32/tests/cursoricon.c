@@ -2340,6 +2340,77 @@ static void check_DrawState_Color(HDC hdc, BOOL maskvalue, UINT32 color, int bpp
         maskvalue, color, (DST_ICON | flags), modern_expected, legacy_expected, result, line);
 }
 
+struct draw_icon_thread_data
+{
+    HICON icon;
+    UINT32 expect[16 * 16];
+    LONG failures;
+};
+
+static DWORD WINAPI draw_icon_thread(void *arg)
+{
+    BITMAPINFO info = {{sizeof(BITMAPINFOHEADER), 16, 16, 1, 32, BI_RGB}};
+    struct draw_icon_thread_data *data = arg;
+    HDC hdc = CreateCompatibleDC(0);
+    HBITMAP dib, old;
+    UINT32 *bits;
+    int i;
+
+    dib = CreateDIBSection(hdc, &info, DIB_RGB_COLORS, (void **)&bits, NULL, 0);
+    old = SelectObject(hdc, dib);
+    for (i = 0; i < 5000; i++)
+    {
+        memset(bits, 0x55, sizeof(data->expect));
+        if (!DrawIconEx(hdc, 0, 0, data->icon, 16, 16, 0, NULL, DI_NORMAL) ||
+            memcmp(bits, data->expect, sizeof(data->expect)))
+            InterlockedIncrement(&data->failures);
+    }
+    SelectObject(hdc, old);
+    DeleteObject(dib);
+    DeleteDC(hdc);
+    return 0;
+}
+
+/* an icon can be drawn by several threads at the same time */
+static void test_DrawIconEx_threads(void)
+{
+    BITMAPINFO info = {{sizeof(BITMAPINFOHEADER), 16, 16, 1, 32, BI_RGB}};
+    static const BYTE mask[16 * 2];
+    struct draw_icon_thread_data data = {0};
+    ICONINFO icon_info = {TRUE};
+    HBITMAP dib, old;
+    HANDLE threads[2];
+    UINT32 *bits;
+    HDC hdc;
+    int i;
+
+    hdc = CreateCompatibleDC(0);
+    icon_info.hbmMask = CreateBitmap(16, 16, 1, 1, mask);
+    icon_info.hbmColor = CreateDIBSection(hdc, &info, DIB_RGB_COLORS, (void **)&bits, NULL, 0);
+    for (i = 0; i < 16 * 16; i++) bits[i] = (i & 1) ? 0xff000000 | (i * 0x010203) : 0x80402010;
+    data.icon = CreateIconIndirect(&icon_info);
+    ok(!!data.icon, "CreateIconIndirect failed, error %lu\n", GetLastError());
+    DeleteObject(icon_info.hbmMask);
+    DeleteObject(icon_info.hbmColor);
+
+    dib = CreateDIBSection(hdc, &info, DIB_RGB_COLORS, (void **)&bits, NULL, 0);
+    old = SelectObject(hdc, dib);
+    memset(bits, 0x55, sizeof(data.expect));
+    ok(DrawIconEx(hdc, 0, 0, data.icon, 16, 16, 0, NULL, DI_NORMAL), "DrawIconEx failed\n");
+    memcpy(data.expect, bits, sizeof(data.expect));
+    ok(bits[0] != 0x55555555 && bits[1] != 0x55555555, "icon not drawn\n");
+    SelectObject(hdc, old);
+    DeleteObject(dib);
+    DeleteDC(hdc);
+
+    for (i = 0; i < ARRAY_SIZE(threads); i++) threads[i] = CreateThread(NULL, 0, draw_icon_thread, &data, 0, NULL);
+    WaitForMultipleObjects(ARRAY_SIZE(threads), threads, TRUE, INFINITE);
+    for (i = 0; i < ARRAY_SIZE(threads); i++) CloseHandle(threads[i]);
+    ok(!data.failures, "%ld of 10000 concurrent draws failed or differ\n", data.failures);
+
+    DestroyIcon(data.icon);
+}
+
 static void test_DrawState(void)
 {
     BITMAPINFO bitmapInfo;
@@ -3141,6 +3212,7 @@ START_TEST(cursoricon)
     test_GetCursorFrameInfo();
     test_DrawIcon();
     test_DrawIconEx();
+    test_DrawIconEx_threads();
     test_DrawState();
     test_SetCursor();
     test_ShowCursor();
