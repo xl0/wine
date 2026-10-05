@@ -357,7 +357,8 @@ static RECT get_client_surface_rects( HWND toplevel, HWND hwnd, RECT *monitor_re
     return rect;
 }
 
-static void client_surface_update_locked( struct client_surface *surface )
+/* returns whether the surface only moved inside of its toplevel */
+static BOOL client_surface_update_locked( struct client_surface *surface )
 {
     RECT virtual_rect = surface->virtual_rect, monitor_rect = surface->monitor_rect;
     LONG offscreen = surface->offscreen;
@@ -381,19 +382,34 @@ static void client_surface_update_locked( struct client_surface *surface )
     surface->updated = surface->updated || surface->toplevel != toplevel ||
                        !EqualRect( &surface->virtual_rect, &virtual_rect ) ||
                        !EqualRect( &surface->monitor_rect, &monitor_rect );
+
+    return surface->toplevel == toplevel &&
+           (surface->monitor_rect.left != monitor_rect.left || surface->monitor_rect.top != monitor_rect.top) &&
+           surface->monitor_rect.right - surface->monitor_rect.left == monitor_rect.right - monitor_rect.left &&
+           surface->monitor_rect.bottom - surface->monitor_rect.top == monitor_rect.bottom - monitor_rect.top;
 }
 
 void update_client_surfaces( HWND hwnd )
 {
     struct client_surface *surface, *next;
     UINT count = 0;
+    HDC hdc;
 
     pthread_mutex_lock( &surfaces_lock );
 
     LIST_FOR_EACH_ENTRY_SAFE( surface, next, &client_surfaces, struct client_surface, entry )
     {
         if (NtUserGetAncestor( surface->hwnd, GA_ROOT ) != hwnd) continue;
-        client_surface_update_locked( surface );
+        if (!client_surface_update_locked( surface ) || !surface->offscreen || !surface->presented) continue;
+
+        /* the toplevel only has a copy of the surface at its old place, show the last image at the
+         * new one and let the window repaint what it has drawn over that image since */
+        if ((hdc = NtUserGetDCEx( surface->hwnd, 0, DCX_CACHE | DCX_USESTYLE )))
+        {
+            surface->funcs->present( surface, hdc );
+            NtUserReleaseDC( surface->hwnd, hdc );
+        }
+        NtUserRedrawWindow( surface->hwnd, NULL, 0, RDW_INVALIDATE );
     }
 
     /* discard extra unused surfaces when updating window */
