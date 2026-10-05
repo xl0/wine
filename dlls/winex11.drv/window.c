@@ -2117,6 +2117,98 @@ void set_net_active_window( HWND hwnd, HWND previous )
                 SubstructureRedirectMask | SubstructureNotifyMask, &xev );
 }
 
+/* check if a window is owned by another one, directly or through other owned windows */
+static BOOL is_owned_by( HWND hwnd, HWND owner )
+{
+    UINT depth;
+
+    /* owners can be child windows, and through their top-level windows the chain can be a loop */
+    for (depth = 0; depth < 32 && (hwnd = NtUserGetWindowRelative( hwnd, GW_OWNER )); depth++)
+        if ((hwnd = NtUserGetAncestor( hwnd, GA_ROOT )) == owner) return TRUE;
+    return FALSE;
+}
+
+/***********************************************************************
+ *              window_net_wm_desktop_notify
+ *
+ * Owned windows are always on the desktop of their owner, and not every
+ * window manager keeps transient windows with their parent: when it moves
+ * a window to another desktop, request the same for the owned windows that
+ * were on the desktop the window comes from.
+ */
+void window_net_wm_desktop_notify( HWND hwnd, Display *display, Window window )
+{
+    unsigned long count, remaining, *value, desktop = 0, old_desktop = 0;
+    struct x11drv_win_data *data;
+    BOOL moved = FALSE;
+    HWND *list;
+    XEvent xev;
+    int format;
+    Atom type;
+    UINT i;
+
+    if (!(data = get_win_data( hwnd ))) return;
+    if (data->whole_window == window &&
+        !XGetWindowProperty( display, window, x11drv_atom(_NET_WM_DESKTOP), 0, 1, False, XA_CARDINAL,
+                             &type, &format, &count, &remaining, (unsigned char **)&value ))
+    {
+        if (type == XA_CARDINAL && format == 32 && count)
+        {
+            /* the property is also written when the window gets its first desktop or keeps the one it has */
+            moved = data->has_net_wm_desktop && data->net_wm_desktop != *value;
+            old_desktop = data->net_wm_desktop;
+            desktop = data->net_wm_desktop = *value;
+            data->has_net_wm_desktop = TRUE;
+        }
+        XFree( value );
+    }
+    release_win_data( data );
+    if (!moved) return;
+
+    xev.xclient.type = ClientMessage;
+    xev.xclient.message_type = x11drv_atom(_NET_WM_DESKTOP);
+    xev.xclient.serial = 0;
+    xev.xclient.display = display;
+    xev.xclient.send_event = True;
+    xev.xclient.format = 32;
+    xev.xclient.data.l[0] = desktop;
+    xev.xclient.data.l[1] = 1; /* source: application */
+    xev.xclient.data.l[2] = 0;
+    xev.xclient.data.l[3] = 0;
+    xev.xclient.data.l[4] = 0;
+
+    if (!(list = build_hwnd_list())) return;
+
+    for (i = 0; list[i] != HWND_BOTTOM; i++)
+    {
+        if (!is_owned_by( list[i], hwnd )) continue;
+
+        if ((data = get_win_data( list[i] )))
+        {
+            xev.xclient.window = 0;
+            if (data->managed && data->pending_state.wm_state != WithdrawnState &&
+                data->has_net_wm_desktop && data->net_wm_desktop == old_desktop)
+            {
+                xev.xclient.window = data->whole_window;
+                /* its own owned windows are requested here too, there's nothing left to do when it follows */
+                data->net_wm_desktop = desktop;
+            }
+            release_win_data( data );
+        }
+        /* the desktop of a window of another process isn't known here, and the
+         * window manager ignores the request if the window isn't managed */
+        else xev.xclient.window = X11DRV_get_whole_window( list[i] );
+
+        if (!xev.xclient.window) continue;
+        TRACE( "window %p/%lx, requesting _NET_WM_DESKTOP %lu of owner %p/%lx\n", list[i], xev.xclient.window,
+               desktop, hwnd, window );
+        XSendEvent( display, DefaultRootWindow( display ), False,
+                    SubstructureRedirectMask | SubstructureNotifyMask, &xev );
+    }
+
+    free( list );
+}
+
 BOOL window_is_reparenting( HWND hwnd )
 {
     struct x11drv_win_data *data;

@@ -535,6 +535,7 @@ enum x11drv_atoms
     XATOM__NET_SYSTEM_TRAY_OPCODE,
     XATOM__NET_SYSTEM_TRAY_S0,
     XATOM__NET_SYSTEM_TRAY_VISUAL,
+    XATOM__NET_WM_DESKTOP,
     XATOM__NET_WM_FULLSCREEN_MONITORS,
     XATOM__NET_WM_ICON,
     XATOM__NET_WM_MOVERESIZE,
@@ -703,6 +704,8 @@ struct x11drv_win_data
     UINT        parent_invalid : 1; /* is the parent host window possibly invalid */
     UINT        reparenting : 1; /* window is being reparented, likely from a decoration change */
     UINT        is_resizable : 1; /* window is allowed to be resized by the window manager */
+    UINT        has_net_wm_desktop : 1; /* has the window manager put the window on a desktop yet? */
+    unsigned long net_wm_desktop; /* last _NET_WM_DESKTOP set by the window manager, or requested to follow the owner */
     Window      embedder;       /* window id of embedder */
     Pixmap         icon_pixmap;
     Pixmap         icon_mask;
@@ -754,6 +757,7 @@ extern BOOL is_net_supported( Atom atom );
 extern Window init_clip_window(void);
 extern void window_set_user_time( struct x11drv_win_data *data, Time time, BOOL init );
 extern UINT get_window_net_wm_state( Display *display, Window window );
+extern void window_net_wm_desktop_notify( HWND hwnd, Display *display, Window window );
 extern void make_window_embedded( struct x11drv_win_data *data );
 extern Window create_client_window( HWND hwnd, RECT client_rect, const XVisualInfo *visual, Colormap colormap );
 extern void detach_client_window( struct x11drv_win_data *data, Window client_window );
