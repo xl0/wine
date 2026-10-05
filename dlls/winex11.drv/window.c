@@ -2851,6 +2851,10 @@ struct x11drv_win_data *get_win_data( HWND hwnd )
  *
  * For the surface flush, where the window data may be locked, by this thread or by one that
  * waits for the surface.
+ *
+ * The flush must never wait for the window data: it runs with the window surface locked, and
+ * win32u may hold its user lock around it, while the window data is locked before both, to
+ * read window styles (user lock) and to set surface shapes (surface lock).
  */
 BOOL try_set_window_hidden( HWND hwnd, BOOL hidden )
 {
