@@ -845,6 +845,7 @@ BOOL X11DRV_StretchBlt( PHYSDEV dst_dev, struct bitblt_coords *dst,
                        physDevDst->dc_rect.left + dst->visrect.left,
                        physDevDst->dc_rect.top + dst->visrect.top );
             physDevDst->exposures++;
+            XFlush( gdi_display ); /* a window isn't flushed like a window surface */
             return TRUE;
         }
         if (physDevSrc->depth == 1)
@@ -869,6 +870,7 @@ BOOL X11DRV_StretchBlt( PHYSDEV dst_dev, struct bitblt_coords *dst,
                         physDevDst->dc_rect.left + dst->visrect.left,
                         physDevDst->dc_rect.top + dst->visrect.top, 1 );
             physDevDst->exposures++;
+            XFlush( gdi_display );
             return TRUE;
         }
     }
@@ -922,6 +924,7 @@ BOOL X11DRV_StretchBlt( PHYSDEV dst_dev, struct bitblt_coords *dst,
 
     XFreePixmap( gdi_display, src_pixmap );
     XFreeGC( gdi_display, gc );
+    XFlush( gdi_display );
     return TRUE;
 }
 
@@ -1294,6 +1297,7 @@ DWORD X11DRV_PutImage( PHYSDEV dev, HRGN clip, BITMAPINFO *info,
 
         if (restore_region) restore_clipping_region( physdev );
         add_device_bounds( physdev, &dst->visrect );
+        XFlush( gdi_display ); /* a window isn't flushed like a window surface */
         image->data = NULL;
     }
 

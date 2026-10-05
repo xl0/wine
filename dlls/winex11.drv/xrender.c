@@ -1785,6 +1785,7 @@ static BOOL xrenderdrv_StretchBlt( PHYSDEV dst_dev, struct bitblt_coords *dst,
     else xrender_stretch_blit( physdev_src, physdev_dst, 0, src, dst );
 
     add_device_bounds( physdev_dst->x11dev, &dst->visrect );
+    XFlush( gdi_display );
     return TRUE;
 
 x11drv_fallback:
@@ -1863,6 +1864,7 @@ static DWORD xrenderdrv_PutImage( PHYSDEV dev, HRGN clip, BITMAPINFO *info,
 
         pXRenderFreePicture( gdi_display, src_pict );
         XFreePixmap( gdi_display, src_pixmap );
+        XFlush( gdi_display );
     }
     return ret;
 
@@ -1937,6 +1939,7 @@ static DWORD xrenderdrv_BlendImage( PHYSDEV dev, BITMAPINFO *info, const struct 
 
         pthread_mutex_unlock( &xrender_mutex );
         add_device_bounds( physdev->x11dev, &dst->visrect );
+        XFlush( gdi_display );
     }
     return ret;
 
@@ -2028,6 +2031,7 @@ static BOOL xrenderdrv_AlphaBlend( PHYSDEV dst_dev, struct bitblt_coords *dst,
 
     pthread_mutex_unlock( &xrender_mutex );
     add_device_bounds( physdev_dst->x11dev, &dst->visrect );
+    XFlush( gdi_display );
     return TRUE;
 }
 
