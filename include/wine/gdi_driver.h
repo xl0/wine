@@ -218,7 +218,7 @@ struct gdi_dc_funcs
 };
 
 /* increment this when you change the DC function table */
-#define WINE_GDI_DRIVER_VERSION 112
+#define WINE_GDI_DRIVER_VERSION 113
 
 #define GDI_PRIORITY_NULL_DRV        0  /* null driver */
 #define GDI_PRIORITY_FONT_DRV      100  /* any font driver */
@@ -272,6 +272,7 @@ struct client_surface
     RECT                               virtual_rect;   /* virtual size and position in the toplevel ancestor, relative to its visible rect */
     RECT                               monitor_rect;   /* raw physical size and position in the toplevel ancestor, relative to its visible rect */
     BOOL                               raw;            /* use the raw physical position and size for the host client surface */
+    BOOL                               presented;      /* the host client surface has an image of its whole area */
 };
 
 W32KAPI void *client_surface_create( const struct client_surface_funcs *funcs, HWND hwnd, int format, BOOL raw );

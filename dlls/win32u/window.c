@@ -360,6 +360,7 @@ static RECT get_client_surface_rects( HWND toplevel, HWND hwnd, RECT *monitor_re
 static void client_surface_update_locked( struct client_surface *surface )
 {
     RECT virtual_rect = surface->virtual_rect, monitor_rect = surface->monitor_rect;
+    LONG offscreen = surface->offscreen;
     HWND toplevel = surface->toplevel;
 
     surface->toplevel = NtUserGetAncestor( surface->hwnd, GA_ROOT );
@@ -368,6 +369,14 @@ static void client_surface_update_locked( struct client_surface *surface )
     TRACE( "updating %s, toplevel %p, virtual_rect %s, monitor_rect %s\n", debugstr_client_surface( surface ), surface->toplevel,
            wine_dbgstr_rect( &surface->virtual_rect ), wine_dbgstr_rect( &surface->monitor_rect ) );
     surface->funcs->update( surface );
+
+    /* what the host surface grew by, or a host surface that changed, has no image until the next present */
+    if (surface->offscreen != offscreen ||
+        surface->virtual_rect.right - surface->virtual_rect.left > virtual_rect.right - virtual_rect.left ||
+        surface->virtual_rect.bottom - surface->virtual_rect.top > virtual_rect.bottom - virtual_rect.top ||
+        surface->monitor_rect.right - surface->monitor_rect.left > monitor_rect.right - monitor_rect.left ||
+        surface->monitor_rect.bottom - surface->monitor_rect.top > monitor_rect.bottom - monitor_rect.top)
+        surface->presented = FALSE;
 
     surface->updated = surface->updated || surface->toplevel != toplevel ||
                        !EqualRect( &surface->virtual_rect, &virtual_rect ) ||
@@ -438,6 +447,7 @@ void client_surface_present( struct client_surface *surface )
         client_surface_update_locked( surface );
         if (surface->offscreen) hdc = NtUserGetDCEx( hwnd, 0, DCX_CACHE | DCX_USESTYLE );
         surface->funcs->present( surface, hdc );
+        surface->presented = TRUE;
         if (hdc) NtUserReleaseDC( hwnd, hdc );
     }
     pthread_mutex_unlock( &surfaces_lock );
@@ -457,7 +467,7 @@ static void present_offscreen_client_surfaces( HWND toplevel, HRGN region )
     pthread_mutex_lock( &surfaces_lock );
     LIST_FOR_EACH_ENTRY( surface, &client_surfaces, struct client_surface, entry )
     {
-        if (!surface->hwnd || surface->toplevel != toplevel || !surface->offscreen) continue;
+        if (!surface->hwnd || surface->toplevel != toplevel || !surface->offscreen || !surface->presented) continue;
         if (!(clip = NtGdiCreateRectRgn( 0, 0, 0, 0 ))) continue;
         NtGdiCombineRgn( clip, region, 0, RGN_COPY );
         NtGdiOffsetRgn( clip, pt.x, pt.y );
