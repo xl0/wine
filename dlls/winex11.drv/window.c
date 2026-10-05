@@ -2285,6 +2285,12 @@ static void sync_window_position( struct x11drv_win_data *data, UINT swp_flags, 
     set_mwm_hints( data, style, ex_style );
     update_net_wm_states( data );
 
+    /* the Win32 side didn't move the window and no request of ours is waiting: if the host rect differs,
+     * the window manager changed it and the Win32 side is about to be told, don't ask for the old rect */
+    if (data->managed && !data->state_locks && EqualRect( &old_rects->visible, &data->rects.visible ) &&
+        EqualRect( &data->desired_state.rect, &data->pending_state.rect ))
+        return;
+
     new_rect = data->rects.visible;
 
     /* if the window has been moved offscreen by the window manager, we didn't tell the Win32 side about it */
