@@ -1209,6 +1209,9 @@ static void handle_mwm_hints_notify( HWND hwnd, XPropertyEvent *event )
     if (event->state == PropertyNewValue) get_window_mwm_hints( event->display, event->window, &hints );
     window_mwm_hints_notify( data, event->serial, &hints );
     release_win_data( data );
+
+    /* host state changes are not given to the Win32 side while the request was pending */
+    NtUserPostMessage( hwnd, WM_WINE_WINDOW_STATE_CHANGED, 0, 0 );
 }
 
 static void handle_wm_normal_hints_notify( HWND hwnd, XPropertyEvent *event )
