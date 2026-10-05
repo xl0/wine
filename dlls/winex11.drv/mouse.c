@@ -1096,9 +1096,9 @@ static Cursor create_xlib_monochrome_cursor( HDC hdc, const ICONINFOEXW *icon, i
     bits.is_copy = TRUE;
     if (!(src_pixmap = create_pixmap_from_image( hdc, &vis, info, &bits, DIB_RGB_COLORS ))) goto done;
 
-    bits_pixmap = XCreatePixmap( gdi_display, root_window, width, height, 1 );
-    mask_pixmap = XCreatePixmap( gdi_display, root_window, width, height, 1 );
-    gc = XCreateGC( gdi_display, src_pixmap, 0, NULL );
+    bits_pixmap = create_pixmap( width, height, 1 );
+    mask_pixmap = create_pixmap( width, height, 1 );
+    gc = create_gc( src_pixmap );
     XSetGraphicsExposures( gdi_display, gc, False );
 
     /* We have to do some magic here, as cursors are not fully

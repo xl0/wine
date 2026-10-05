@@ -75,7 +75,7 @@ static void device_init(void)
 
     palette_size = X11DRV_PALETTE_Init();
 
-    stock_bitmap_pixmap = XCreatePixmap( gdi_display, root_window, 1, 1, 1 );
+    stock_bitmap_pixmap = create_pixmap( 1, 1, 1 );
 }
 
 
@@ -88,7 +88,7 @@ static X11DRV_PDEVICE *create_x11_physdev( Drawable drawable )
     if (!(physDev = calloc( 1, sizeof(*physDev) ))) return NULL;
 
     physDev->drawable = drawable;
-    physDev->gc = XCreateGC( gdi_display, drawable, 0, NULL );
+    physDev->gc = create_gc( drawable );
     XSetGraphicsExposures( gdi_display, physDev->gc, False );
     XSetSubwindowMode( gdi_display, physDev->gc, IncludeInferiors );
     XFlush( gdi_display );
@@ -490,7 +490,7 @@ static INT X11DRV_ExtEscape( PHYSDEV dev, INT escape, INT in_count, LPCVOID in_d
                     physDev->dc_rect = data->dc_rect;
                     physDev->drawable = data->drawable;
                     XFreeGC( gdi_display, physDev->gc );
-                    physDev->gc = XCreateGC( gdi_display, physDev->drawable, 0, NULL );
+                    physDev->gc = create_gc( physDev->drawable );
                     XSetGraphicsExposures( gdi_display, physDev->gc, False );
                     XSetSubwindowMode( gdi_display, physDev->gc, data->mode );
                     TRACE( "SET_DRAWABLE hdc %p drawable %lx dc_rect %s\n",

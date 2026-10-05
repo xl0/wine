@@ -234,6 +234,28 @@ static inline BOOL ignore_error( Display *display, XErrorEvent *event )
 
 
 /***********************************************************************
+ *		create_gc
+ *
+ * Create a GC on the GDI display.
+ */
+GC create_gc( Drawable drawable )
+{
+    return XCreateGC( gdi_display, drawable, 0, NULL );
+}
+
+
+/***********************************************************************
+ *		create_pixmap
+ *
+ * Create a pixmap on the GDI display.
+ */
+Pixmap create_pixmap( int width, int height, int depth )
+{
+    return XCreatePixmap( gdi_display, root_window, width, height, depth );
+}
+
+
+/***********************************************************************
  *		X11DRV_expect_error
  *
  * Setup a callback function that will be called on an X error.  The

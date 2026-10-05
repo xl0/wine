@@ -199,6 +199,12 @@ MAKE_FUNCPTR(XRenderQueryExtension)
 
 static pthread_mutex_t xrender_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+static Picture create_picture( Drawable drawable, XRenderPictFormat *format, unsigned long mask,
+                               XRenderPictureAttributes *attr )
+{
+    return pXRenderCreatePicture( gdi_display, drawable, format, mask, attr );
+}
+
 #define MS_MAKE_TAG( _x1, _x2, _x3, _x4 ) \
           ( ( (ULONG)_x4 << 24 ) |     \
             ( (ULONG)_x3 << 16 ) |     \
@@ -498,8 +504,7 @@ static Picture get_xrender_picture( struct xrender_physdev *dev, HRGN clip_rgn, 
         XRenderPictureAttributes pa;
 
         pa.subwindow_mode = IncludeInferiors;
-        dev->pict = pXRenderCreatePicture( gdi_display, dev->x11dev->drawable,
-                                           dev->pict_format, CPSubwindowMode, &pa );
+        dev->pict = create_picture( dev->x11dev->drawable, dev->pict_format, CPSubwindowMode, &pa );
         TRACE( "Allocing pict=%lx dc=%p drawable=%08lx\n",
                dev->pict, dev->dev.hdc, dev->x11dev->drawable );
         dev->update_clip = (dev->region != 0);
@@ -538,8 +543,8 @@ static Picture get_xrender_picture_source( struct xrender_physdev *dev, BOOL rep
 
         pa.subwindow_mode = IncludeInferiors;
         pa.repeat = repeat ? RepeatNormal : RepeatNone;
-        dev->pict_src = pXRenderCreatePicture( gdi_display, dev->x11dev->drawable,
-                                               dev->pict_format, CPSubwindowMode|CPRepeat, &pa );
+        dev->pict_src = create_picture( dev->x11dev->drawable, dev->pict_format,
+                                        CPSubwindowMode|CPRepeat, &pa );
 
         TRACE("Allocing pict_src=%lx dc=%p drawable=%08lx repeat=%u\n",
               dev->pict_src, dev->dev.hdc, dev->x11dev->drawable, pa.repeat);
@@ -580,11 +585,10 @@ static Picture get_no_alpha_mask(void)
         XRenderPictureAttributes pa;
         XRenderColor col;
 
-        pixmap = XCreatePixmap( gdi_display, root_window, 1, 1, 32 );
+        pixmap = create_pixmap( 1, 1, 32 );
         pa.repeat = RepeatNormal;
         pa.component_alpha = True;
-        pict = pXRenderCreatePicture( gdi_display, pixmap, pict_formats[WXR_FORMAT_A8R8G8B8],
-                                      CPRepeat|CPComponentAlpha, &pa );
+        pict = create_picture( pixmap, pict_formats[WXR_FORMAT_A8R8G8B8], CPRepeat|CPComponentAlpha, &pa );
         col.red = col.green = col.blue = 0xffff;
         col.alpha = 0;
         pXRenderFillRectangle( gdi_display, PictOpSrc, pict, &col, 0, 0, 1, 1 );
@@ -1245,10 +1249,10 @@ static Picture get_tile_pict( enum wxr_format wxr_format, const XRenderColor *co
         XRenderPictureAttributes pa;
         XRenderPictFormat *pict_format = pict_formats[wxr_format];
 
-        tile->xpm = XCreatePixmap(gdi_display, root_window, 1, 1, pict_format->depth);
+        tile->xpm = create_pixmap( 1, 1, pict_format->depth );
 
         pa.repeat = RepeatNormal;
-        tile->pict = pXRenderCreatePicture(gdi_display, tile->xpm, pict_format, CPRepeat, &pa);
+        tile->pict = create_picture( tile->xpm, pict_format, CPRepeat, &pa );
 
         /* init current_color to something different from text_pixel */
         tile->current_color = *color;
@@ -1290,10 +1294,9 @@ static Picture get_mask_pict( int alpha )
     {
         XRenderPictureAttributes pa;
 
-        pixmap = XCreatePixmap( gdi_display, root_window, 1, 1, 32 );
+        pixmap = create_pixmap( 1, 1, 32 );
         pa.repeat = RepeatNormal;
-        pict = pXRenderCreatePicture( gdi_display, pixmap,
-                                      pict_formats[WXR_FORMAT_A8R8G8B8], CPRepeat, &pa );
+        pict = create_picture( pixmap, pict_formats[WXR_FORMAT_A8R8G8B8], CPRepeat, &pa );
         current_alpha = -1;
     }
 
@@ -1457,12 +1460,12 @@ static void multiply_alpha( Picture pict, XRenderPictFormat *format, int alpha,
     Picture src_pict, mask_pict;
     XRenderColor color;
 
-    src_pixmap = XCreatePixmap( gdi_display, root_window, 1, 1, format->depth );
-    mask_pixmap = XCreatePixmap( gdi_display, root_window, 1, 1, format->depth );
+    src_pixmap = create_pixmap( 1, 1, format->depth );
+    mask_pixmap = create_pixmap( 1, 1, format->depth );
     pa.repeat = RepeatNormal;
-    src_pict = pXRenderCreatePicture( gdi_display, src_pixmap, format, CPRepeat, &pa );
+    src_pict = create_picture( src_pixmap, format, CPRepeat, &pa );
     pa.component_alpha = True;
-    mask_pict = pXRenderCreatePicture( gdi_display, mask_pixmap, format, CPRepeat|CPComponentAlpha, &pa );
+    mask_pict = create_picture( mask_pixmap, format, CPRepeat|CPComponentAlpha, &pa );
     color.red = color.green = color.blue = color.alpha = 0xffff;
     pXRenderFillRectangle( gdi_display, PictOpSrc, src_pict, &color, 0, 0, 1, 1 );
     color.alpha = alpha;
@@ -1619,10 +1622,10 @@ static DWORD create_image_pixmap( BITMAPINFO *info, const struct gdi_image_bits 
     *use_repeat = (width == 1 && height == 1);
     pa.repeat = *use_repeat ? RepeatNormal : RepeatNone;
 
-    *pixmap = XCreatePixmap( gdi_display, root_window, width, height, depth );
-    gc = XCreateGC( gdi_display, *pixmap, 0, NULL );
+    *pixmap = create_pixmap( width, height, depth );
+    gc = create_gc( *pixmap );
     XPutImage( gdi_display, *pixmap, gc, image, src->visrect.left, 0, 0, 0, width, height );
-    *pict = pXRenderCreatePicture( gdi_display, *pixmap, pict_formats[format], CPRepeat, &pa );
+    *pict = create_picture( *pixmap, pict_formats[format], CPRepeat, &pa );
     XFreeGC( gdi_display, gc );
 
     /* make coordinates relative to the pixmap */
@@ -1649,7 +1652,7 @@ static void xrender_stretch_blit( struct xrender_physdev *physdev_src, struct xr
     {
         x_dst = dst->x;
         y_dst = dst->y;
-        dst_pict = pXRenderCreatePicture( gdi_display, drawable, physdev_dst->pict_format, 0, NULL );
+        dst_pict = create_picture( drawable, physdev_dst->pict_format, 0, NULL );
     }
     else
     {
@@ -1708,7 +1711,7 @@ static void xrender_put_image( Pixmap src_pixmap, Picture src_pict, Picture mask
         if (clip) clip_data = X11DRV_GetRegionData( clip, 0 );
         x_dst = dst->x;
         y_dst = dst->y;
-        dst_pict = pXRenderCreatePicture( gdi_display, drawable, dst_format, 0, NULL );
+        dst_pict = create_picture( drawable, dst_format, 0, NULL );
         if (clip_data)
             pXRenderSetPictureClipRectangles( gdi_display, dst_pict, 0, 0,
                                               (XRectangle *)clip_data->Buffer, clip_data->rdh.nCount );
@@ -1770,10 +1773,10 @@ static BOOL xrenderdrv_StretchBlt( PHYSDEV dst_dev, struct bitblt_coords *dst,
         tmp.y -= tmp.visrect.top;
         OffsetRect( &tmp.visrect, -tmp.visrect.left, -tmp.visrect.top );
 
-        tmpGC = XCreateGC( gdi_display, physdev_dst->x11dev->drawable, 0, NULL );
+        tmpGC = create_gc( physdev_dst->x11dev->drawable );
         XSetSubwindowMode( gdi_display, tmpGC, IncludeInferiors );
         XSetGraphicsExposures( gdi_display, tmpGC, False );
-        tmp_pixmap = XCreatePixmap( gdi_display, root_window, tmp.visrect.right - tmp.visrect.left,
+        tmp_pixmap = create_pixmap( tmp.visrect.right - tmp.visrect.left,
                                     tmp.visrect.bottom - tmp.visrect.top, physdev_dst->pict_format->depth );
 
         xrender_stretch_blit( physdev_src, physdev_dst, tmp_pixmap, src, &tmp );
@@ -1841,11 +1844,10 @@ static DWORD xrenderdrv_PutImage( PHYSDEV dev, HRGN clip, BITMAPINFO *info,
             tmp.y -= tmp.visrect.top;
             OffsetRect( &tmp.visrect, -tmp.visrect.left, -tmp.visrect.top );
 
-            gc = XCreateGC( gdi_display, physdev->x11dev->drawable, 0, NULL );
+            gc = create_gc( physdev->x11dev->drawable );
             XSetSubwindowMode( gdi_display, gc, IncludeInferiors );
             XSetGraphicsExposures( gdi_display, gc, False );
-            tmp_pixmap = XCreatePixmap( gdi_display, root_window,
-                                        tmp.visrect.right - tmp.visrect.left,
+            tmp_pixmap = create_pixmap( tmp.visrect.right - tmp.visrect.left,
                                         tmp.visrect.bottom - tmp.visrect.top,
                                         physdev->pict_format->depth );
 
@@ -1994,9 +1996,8 @@ static BOOL xrenderdrv_AlphaBlend( PHYSDEV dst_dev, struct bitblt_coords *dst,
         bg.red = bg.green = bg.blue = 0xffff;
         fg.alpha = bg.alpha = 0xffff;
 
-        tmp_pixmap = XCreatePixmap( gdi_display, root_window, width, height,
-                                    physdev_dst->pict_format->depth );
-        tmp_pict = pXRenderCreatePicture( gdi_display, tmp_pixmap, physdev_dst->pict_format, 0, NULL );
+        tmp_pixmap = create_pixmap( width, height, physdev_dst->pict_format->depth );
+        tmp_pict = create_picture( tmp_pixmap, physdev_dst->pict_format, 0, NULL );
 
         xrender_mono_blit( src_pict, tmp_pict, physdev_dst->format, &fg, &bg,
                            src->visrect.left, src->visrect.top, width, height, 0, 0, width, height, 1, 1 );
@@ -2008,8 +2009,8 @@ static BOOL xrenderdrv_AlphaBlend( PHYSDEV dst_dev, struct bitblt_coords *dst,
         if (format != physdev_src->format)
         {
             pa.subwindow_mode = IncludeInferiors;
-            tmp_pict = pXRenderCreatePicture( gdi_display, physdev_src->x11dev->drawable,
-                                              pict_formats[format], CPSubwindowMode, &pa );
+            tmp_pict = create_picture( physdev_src->x11dev->drawable, pict_formats[format],
+                                       CPSubwindowMode, &pa );
         }
     }
 

@@ -714,7 +714,7 @@ void execute_rop( X11DRV_PDEVICE *physdev, Pixmap src_pixmap, GC gc, const RECT 
 
     pixmaps[SRC] = src_pixmap;
     pixmaps[TMP] = 0;
-    pixmaps[DST] = XCreatePixmap( gdi_display, root_window, width, height, physdev->depth );
+    pixmaps[DST] = create_pixmap( width, height, physdev->depth );
 
     if (use_dst) BITBLT_GetDstArea( physdev, pixmaps[DST], gc, visrect );
     null_brush = use_pat && !X11DRV_SetupGCForPatBlt( physdev, gc, TRUE );
@@ -728,7 +728,7 @@ void execute_rop( X11DRV_PDEVICE *physdev, Pixmap src_pixmap, GC gc, const RECT 
         case OP_ARGS(DST,TMP):
         case OP_ARGS(SRC,TMP):
             if (!pixmaps[TMP])
-                pixmaps[TMP] = XCreatePixmap( gdi_display, root_window, width, height, physdev->depth );
+                pixmaps[TMP] = create_pixmap( width, height, physdev->depth );
             /* fall through */
         case OP_ARGS(DST,SRC):
         case OP_ARGS(SRC,DST):
@@ -875,13 +875,13 @@ BOOL X11DRV_StretchBlt( PHYSDEV dst_dev, struct bitblt_coords *dst,
         }
     }
 
-    gc = XCreateGC( gdi_display, physDevDst->drawable, 0, NULL );
+    gc = create_gc( physDevDst->drawable );
     XSetSubwindowMode( gdi_display, gc, IncludeInferiors );
     XSetGraphicsExposures( gdi_display, gc, False );
 
     /* retrieve the source */
 
-    src_pixmap = XCreatePixmap( gdi_display, root_window, width, height, physDevDst->depth );
+    src_pixmap = create_pixmap( width, height, physDevDst->depth );
     if (physDevSrc->depth == 1)
     {
         /* MSDN says if StretchBlt must convert a bitmap from monochrome
@@ -1282,8 +1282,8 @@ DWORD X11DRV_PutImage( PHYSDEV dev, HRGN clip, BITMAPINFO *info,
         }
         else
         {
-            GC gc = XCreateGC( gdi_display, physdev->drawable, 0, NULL );
-            Pixmap src_pixmap = XCreatePixmap( gdi_display, root_window, width, height, vis.depth );
+            GC gc = create_gc( physdev->drawable );
+            Pixmap src_pixmap = create_pixmap( width, height, vis.depth );
 
             XSetSubwindowMode( gdi_display, gc, IncludeInferiors );
             XSetGraphicsExposures( gdi_display, gc, False );
@@ -1378,8 +1378,8 @@ DWORD X11DRV_GetImage( PHYSDEV dev, BITMAPINFO *info,
     if (X11DRV_check_error())
     {
         /* use a temporary pixmap to avoid the BadMatch error */
-        Pixmap pixmap = XCreatePixmap( gdi_display, root_window, width, height, vis.depth );
-        GC gc = XCreateGC( gdi_display, pixmap, 0, NULL );
+        Pixmap pixmap = create_pixmap( width, height, vis.depth );
+        GC gc = create_gc( pixmap );
 
         XSetGraphicsExposures( gdi_display, gc, False );
         XCopyArea( gdi_display, physdev->drawable, pixmap, gc,
@@ -1449,7 +1449,7 @@ static DWORD put_pixmap_image( Pixmap pixmap, const XVisualInfo *vis,
     if (!(ret = copy_image_bits( info, is_r8g8b8(vis), image, bits, &dst_bits, &coords, mapping, ~0u )))
     {
         image->data = dst_bits.ptr;
-        gc = XCreateGC( gdi_display, pixmap, 0, NULL );
+        gc = create_gc( pixmap );
         XPutImage( gdi_display, pixmap, gc, image, 0, 0, 0, 0, coords.width, coords.height );
         XFreeGC( gdi_display, gc );
         image->data = NULL;
@@ -1484,8 +1484,7 @@ Pixmap create_pixmap_from_image( HDC hdc, const XVisualInfo *vis, const BITMAPIN
     DWORD err;
     HBITMAP dib;
 
-    pixmap = XCreatePixmap( gdi_display, root_window,
-                            info->bmiHeader.biWidth, abs(info->bmiHeader.biHeight), vis->depth );
+    pixmap = create_pixmap( info->bmiHeader.biWidth, abs(info->bmiHeader.biHeight), vis->depth );
     if (!pixmap) return 0;
 
     memcpy( src_info, info, get_dib_info_size( info, coloruse ));
@@ -1957,7 +1956,7 @@ static struct window_surface *create_surface( HWND hwnd, Window window, const XV
         surface->image = image;
         surface->byteswap = byteswap;
         surface->window = window;
-        surface->gc = XCreateGC( gdi_display, window, 0, NULL );
+        surface->gc = create_gc( window );
         XSetSubwindowMode( gdi_display, surface->gc, IncludeInferiors );
     }
 
