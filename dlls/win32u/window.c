@@ -5565,6 +5565,7 @@ static void send_destroy_message( HWND hwnd, BOOL winevent )
  */
 static void free_window_handle( HWND hwnd )
 {
+    struct window_surface *surface;
     WND *win;
 
     TRACE( "\n" );
@@ -5578,7 +5579,14 @@ static void free_window_handle( HWND hwnd )
             set_user_handle_ptr( hwnd, NULL );
         }
         SERVER_END_REQ;
+        /* another thread may have set a surface after destroy_window released it */
+        surface = win->surface;
         user_unlock();
+        if (surface)
+        {
+            register_window_surface( surface, NULL );
+            window_surface_release( surface );
+        }
         free( win->pScroll );
         free( win->text );
         free( win );
