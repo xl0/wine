@@ -1862,6 +1862,7 @@ BOOL X11DRV_GetWindowStateUpdates( HWND hwnd, UINT *state_cmd, UINT *swp_flags, 
     if ((data = get_win_data( hwnd )))
     {
         if (!data->state_locks++) TRACE( "Locked window %p/%lx state\n", data->hwnd, data->whole_window );
+        data->update_rect = data->current_state.rect;
         *state_cmd = window_update_client_state( data );
         *swp_flags = window_update_client_config( data );
         *rect = window_rect_from_visible( &data->rects, data->current_state.rect );
@@ -2285,10 +2286,11 @@ static void sync_window_position( struct x11drv_win_data *data, UINT swp_flags, 
     set_mwm_hints( data, style, ex_style );
     update_net_wm_states( data );
 
-    /* the Win32 side didn't move the window and no request of ours is waiting: if the host rect differs,
-     * the window manager changed it and the Win32 side is about to be told, don't ask for the old rect */
-    if (data->managed && !data->state_locks && EqualRect( &old_rects->visible, &data->rects.visible ) &&
-        EqualRect( &data->desired_state.rect, &data->pending_state.rect ))
+    /* the Win32 side didn't move the window, or only to the rect a state update gave it, and no request of
+     * ours is waiting: if the host rect differs, the window manager changed it and the Win32 side is about
+     * to be told, don't ask for the old rect */
+    if (data->managed && EqualRect( &data->desired_state.rect, &data->pending_state.rect ) &&
+        EqualRect( data->state_locks ? &data->update_rect : &old_rects->visible, &data->rects.visible ))
         return;
 
     new_rect = data->rects.visible;

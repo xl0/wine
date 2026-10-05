@@ -729,6 +729,7 @@ struct x11drv_win_data
     unsigned long configure_serial;    /* serial of last pending configure request */
     unsigned long net_wm_icon_serial;  /* serial of last pending _NET_WM_ICON request */
     unsigned long state_locks;         /* X11 state requests lock while updating win32 state */
+    RECT update_rect;                  /* host rect that the win32 state update in progress was given */
 };
 
 extern struct x11drv_win_data *get_win_data( HWND hwnd );
