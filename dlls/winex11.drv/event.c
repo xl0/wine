@@ -999,8 +999,11 @@ static BOOL X11DRV_ConfigureNotify( HWND hwnd, XEvent *xev )
     if (!hwnd) return FALSE;
     if (!(data = get_event_win_data( hwnd, event->window ))) return FALSE;
 
+    /* another thread has recreated the window, it is a child of the root window until it gets reparented */
+    if (data->parent_invalid) set_window_parent( data, root_window );
+
     /* update our view of the window tree for mouse event coordinate mapping */
-    if (data->whole_window && data->parent && !data->parent_invalid)
+    if (data->whole_window && data->parent)
     {
         SetRect( &rect, event->x, event->y, event->x + event->width, event->y + event->height );
         host_window_configure_child( data->parent, data->whole_window, rect, event->send_event );
@@ -1037,8 +1040,11 @@ static BOOL X11DRV_GravityNotify( HWND hwnd, XEvent *xev )
     if (!(data = get_event_win_data( hwnd, event->window ))) return FALSE;
     rect = data->rects.window;
 
+    /* another thread has recreated the window, it is a child of the root window until it gets reparented */
+    if (data->parent_invalid) set_window_parent( data, root_window );
+
     /* update our view of the window tree for mouse event coordinate mapping */
-    if (data->whole_window && data->parent && !data->parent_invalid)
+    if (data->whole_window && data->parent)
     {
         OffsetRect( &rect, event->x - rect.left, event->y - rect.top );
         host_window_configure_child( data->parent, data->whole_window, rect, event->send_event );
