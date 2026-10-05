@@ -44,6 +44,7 @@
 #include "ntstatus.h"
 
 #include "x11drv.h"
+#include <X11/Xlibint.h>
 #include "winreg.h"
 #include "xcomposite.h"
 #include "wine/server.h"
@@ -309,11 +310,13 @@ void X11DRV_expect_error( Display *display, x11drv_error_callback callback, void
 {
     pthread_mutex_lock( &error_mutex );
     XLockDisplay( display );
+    LockDisplay( display );  /* another thread may be in reply_error_handler() */
     err_callback         = callback;
     err_callback_display = display;
     err_callback_arg     = arg;
     err_callback_result  = 0;
     err_serial           = NextRequest(display);
+    UnlockDisplay( display );
 }
 
 
@@ -325,8 +328,12 @@ void X11DRV_expect_error( Display *display, x11drv_error_callback callback, void
  */
 int X11DRV_check_error(void)
 {
-    int res = err_callback_result;
+    int res;
+
+    LockDisplay( err_callback_display );
+    res = err_callback_result;
     err_callback = NULL;
+    UnlockDisplay( err_callback_display );
     XUnlockDisplay( err_callback_display );
     pthread_mutex_unlock( &error_mutex );
     return res;
@@ -334,9 +341,11 @@ int X11DRV_check_error(void)
 
 
 /***********************************************************************
- *		error_handler
+ *		handle_error
+ *
+ * Check if the X error is one we expect or can ignore.
  */
-static int error_handler( Display *display, XErrorEvent *error_evt )
+static BOOL handle_error( Display *display, XErrorEvent *error_evt )
 {
     if (err_callback && display == err_callback_display &&
         (!error_evt->serial || error_evt->serial >= err_serial))
@@ -345,15 +354,67 @@ static int error_handler( Display *display, XErrorEvent *error_evt )
         {
             TRACE( "got expected error %d req %d\n",
                    error_evt->error_code, error_evt->request_code );
-            return 0;
+            return TRUE;
         }
     }
     if (ignore_error( display, error_evt ))
     {
         TRACE( "got ignored error %d req %d\n",
                error_evt->error_code, error_evt->request_code );
-        return 0;
+        return TRUE;
     }
+    return FALSE;
+}
+
+
+/***********************************************************************
+ *		reply_error_handler
+ *
+ * Handle the errors that a thread reads while it waits for a reply, before Xlib calls error_handler().
+ *
+ * Xlib locks the display like XLockDisplay() around the call of the error handler. If another thread
+ * holds that lock and waits for a reply (inside X11DRV_expect_error for instance), the thread that
+ * has read the error waits for the lock forever: it was waiting for a reply before the display got
+ * locked, and replies are returned in the order of the requests. This is called without that lock.
+ */
+static int reply_error_handler( Display *display, xError *error, XExtCodes *codes, int *ret_code )
+{
+    unsigned long last = LastKnownRequestProcessed( display );
+    XErrorEvent event;
+
+    /* some Xlib functions need to see the errors of their requests, they are called after us */
+    if (display->async_handlers) return 0;
+
+    event.type         = X_Error;
+    event.display      = display;
+    event.resourceid   = error->resourceID;
+    event.serial       = (last & ~0xfffful) | error->sequenceNumber;
+    if (event.serial < last) event.serial += 0x10000;
+    event.error_code   = error->errorCode;
+    event.request_code = error->majorCode;
+    event.minor_code   = error->minorCode;
+    *ret_code = 0;
+    return handle_error( display, &event );
+}
+
+
+/***********************************************************************
+ *		set_reply_error_handler
+ */
+static void set_reply_error_handler( Display *display )
+{
+    XExtCodes *codes = XAddExtension( display );
+
+    if (codes) XESetError( display, codes->extension, reply_error_handler );
+}
+
+
+/***********************************************************************
+ *		error_handler
+ */
+static int error_handler( Display *display, XErrorEvent *error_evt )
+{
+    if (handle_error( display, error_evt )) return 0;
     if (TRACE_ON(synchronous))
     {
         ERR( "X protocol error: serial=%ld, request_code=%d - breaking into debugger\n",
@@ -718,6 +779,7 @@ NTSTATUS __wine_unix_lib_init(void)
     root_window = DefaultRootWindow( display );
     gdi_display = display;
     old_error_handler = XSetErrorHandler( error_handler );
+    set_reply_error_handler( display );
 
     pthread_key_create( &x11drv_thread_data_key, NULL );
     init_pixmap_formats( display );
@@ -828,6 +890,7 @@ struct x11drv_thread_data *x11drv_init_thread_data(void)
     }
 
     fcntl( ConnectionNumber(data->display), F_SETFD, 1 ); /* set close on exec flag */
+    set_reply_error_handler( data->display );
 
     XkbUseExtension( data->display, NULL, NULL );
     XkbSetDetectableAutoRepeat( data->display, True, NULL );
