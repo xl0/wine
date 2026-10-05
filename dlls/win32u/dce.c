@@ -855,6 +855,10 @@ static void dump_rdw_flags(UINT flags)
 #undef RDW_FLAGS
 }
 
+/* internal get_dc_ex flag: draw on the host window, only where the window surface
+ * doesn't paint, which is where the driver draws the client surfaces */
+#define DCX_CLIENTSURFACES 0x80000000
+
 /***********************************************************************
  *           update_visible_region
  *
@@ -923,6 +927,28 @@ static void update_visible_region( struct dce *dce )
             if (surface) window_surface_add_ref( surface );
             release_win_ptr( win );
         }
+    }
+
+    if (flags & DCX_CLIENTSURFACES)
+    {
+        HRGN clip = 0;
+
+        /* a host window with another scale doesn't have the bits at the same place */
+        if (surface && surface->funcs != &scaled_surface_funcs)
+        {
+            window_surface_lock( surface );
+            if (surface->clip_region && (clip = NtGdiCreateRectRgn( 0, 0, 0, 0 )))
+            {
+                NtGdiCombineRgn( clip, surface->clip_region, 0, RGN_COPY );
+                NtGdiOffsetRgn( clip, top_rect.left - surface->rect.left, top_rect.top - surface->rect.top );
+            }
+            window_surface_unlock( surface );
+        }
+        if (clip) NtGdiCombineRgn( vis_rgn, vis_rgn, clip, RGN_DIFF );
+        else NtGdiSetRectRgn( vis_rgn, 0, 0, 0, 0 );
+        if (clip) NtGdiDeleteObjectApp( clip );
+        if (surface) window_surface_release( surface );
+        surface = NULL;
     }
 
     if (!surface) SetRectEmpty( &top_rect );
@@ -1302,12 +1328,9 @@ static INT release_dc( HWND hwnd, HDC hdc, BOOL end_paint )
     return ret;
 }
 
-/***********************************************************************
- *           NtUserGetDCEx (win32u.@)
- */
-HDC WINAPI NtUserGetDCEx( HWND hwnd, HRGN clip_rgn, DWORD flags )
+static HDC get_dc_ex( HWND hwnd, HRGN clip_rgn, DWORD flags )
 {
-    const DWORD clip_flags = DCX_PARENTCLIP | DCX_CLIPSIBLINGS | DCX_CLIPCHILDREN | DCX_WINDOW;
+    const DWORD clip_flags = DCX_PARENTCLIP | DCX_CLIPSIBLINGS | DCX_CLIPCHILDREN | DCX_WINDOW | DCX_CLIENTSURFACES;
     const DWORD user_flags = clip_flags | DCX_NORESETATTRS; /* flags that can be set by user */
     BOOL update_vis_rgn = TRUE;
     struct dce *dce;
@@ -1448,6 +1471,14 @@ HDC WINAPI NtUserGetDCEx( HWND hwnd, HRGN clip_rgn, DWORD flags )
     TRACE( "(%p,%p,0x%x): returning %p%s\n", hwnd, clip_rgn, flags, dce->hdc,
            update_vis_rgn ? " (updated)" : "" );
     return dce->hdc;
+}
+
+/***********************************************************************
+ *           NtUserGetDCEx (win32u.@)
+ */
+HDC WINAPI NtUserGetDCEx( HWND hwnd, HRGN clip_rgn, DWORD flags )
+{
+    return get_dc_ex( hwnd, clip_rgn, flags & ~DCX_CLIENTSURFACES );
 }
 
 /***********************************************************************
@@ -1692,6 +1723,18 @@ static BOOL send_erase( HWND hwnd, UINT flags, HRGN client_rgn,
     return need_erase;
 }
 
+/* check if the driver draws client surfaces on the host window of a window, in place of its window surface */
+static BOOL has_client_surfaces( HWND hwnd )
+{
+    WND *win = get_win_ptr( NtUserGetAncestor( hwnd, GA_ROOT ) );
+    BOOL ret;
+
+    if (!win || win == WND_DESKTOP || win == WND_OTHER_PROCESS) return FALSE;
+    ret = user_driver->dc_funcs.pPutImage && win->surface && win->surface->clip_region;
+    release_win_ptr( win );
+    return ret;
+}
+
 /***********************************************************************
  *           move_window_bits
  *
@@ -1704,17 +1747,24 @@ void move_window_bits( HWND hwnd, const struct window_rects *rects, const RECT *
     if (src.left - rects->visible.left != dst.left - rects->visible.left ||
         src.top - rects->visible.top != dst.top - rects->visible.top)
     {
-        UINT flags = UPDATE_NOCHILDREN | UPDATE_CLIPCHILDREN;
-        HRGN rgn = get_update_region( hwnd, &flags, NULL );
-        HDC hdc = NtUserGetDCEx( hwnd, rgn, DCX_CACHE | DCX_WINDOW | DCX_EXCLUDERGN );
+        /* the bits of client surfaces are not in the window surface, the driver that
+         * draws them on the host window has to move them there */
+        UINT i, count = has_client_surfaces( hwnd ) ? 2 : 1;
 
         TRACE( "copying %s -> %s\n", wine_dbgstr_rect( &src ), wine_dbgstr_rect( &dst ));
         OffsetRect( &src, -rects->window.left, -rects->window.top );
         OffsetRect( &dst, -rects->window.left, -rects->window.top );
 
-        NtGdiStretchBlt( hdc, dst.left, dst.top, dst.right - dst.left, dst.bottom - dst.top,
-                         hdc, src.left, src.top, src.right - src.left, src.bottom - src.top, SRCCOPY, 0 );
-        NtUserReleaseDC( hwnd, hdc );
+        for (i = 0; i < count; i++)
+        {
+            UINT flags = UPDATE_NOCHILDREN | UPDATE_CLIPCHILDREN;
+            HRGN rgn = get_update_region( hwnd, &flags, NULL );
+            HDC hdc = get_dc_ex( hwnd, rgn, DCX_CACHE | DCX_WINDOW | DCX_EXCLUDERGN | (i ? DCX_CLIENTSURFACES : 0) );
+
+            NtGdiStretchBlt( hdc, dst.left, dst.top, dst.right - dst.left, dst.bottom - dst.top,
+                             hdc, src.left, src.top, src.right - src.left, src.bottom - src.top, SRCCOPY, 0 );
+            NtUserReleaseDC( hwnd, hdc );
+        }
     }
 }
 
