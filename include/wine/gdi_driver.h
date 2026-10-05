@@ -218,7 +218,7 @@ struct gdi_dc_funcs
 };
 
 /* increment this when you change the DC function table */
-#define WINE_GDI_DRIVER_VERSION 111
+#define WINE_GDI_DRIVER_VERSION 112
 
 #define GDI_PRIORITY_NULL_DRV        0  /* null driver */
 #define GDI_PRIORITY_FONT_DRV      100  /* any font driver */
@@ -306,6 +306,7 @@ struct window_surface
     const struct window_surface_funcs *funcs; /* driver-specific implementations  */
     struct list                        entry; /* entry in global list managed by user32 */
     LONG                               ref;   /* reference count */
+    LONG                               registered; /* registrations minus unregistrations, in the list while positive */
     HWND                               hwnd;  /* window the surface was created for */
     RECT                               rect;  /* constant, no locking needed */
 

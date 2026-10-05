@@ -779,6 +779,9 @@ void window_surface_set_shape( struct window_surface *surface, HRGN shape_region
  *           register_window_surface
  *
  * Register a window surface in the global list, possibly replacing another one.
+ *
+ * The surface of a window is replaced with the window locked, but this is called after
+ * it is released: with several threads the calls for a surface can come in any order.
  */
 void register_window_surface( struct window_surface *old, struct window_surface *new )
 {
@@ -786,8 +789,8 @@ void register_window_surface( struct window_surface *old, struct window_surface 
     if (new == &dummy_surface) new = NULL;
     if (old == new) return;
     pthread_mutex_lock( &surfaces_lock );
-    if (old) list_remove( &old->entry );
-    if (new) list_add_tail( &window_surfaces, &new->entry );
+    if (old && !--old->registered) list_remove( &old->entry );
+    if (new && !new->registered++) list_add_tail( &window_surfaces, &new->entry );
     pthread_mutex_unlock( &surfaces_lock );
 }
 
