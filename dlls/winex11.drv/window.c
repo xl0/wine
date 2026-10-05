@@ -2288,8 +2288,9 @@ static void sync_window_position( struct x11drv_win_data *data, UINT swp_flags, 
 
     /* the Win32 side didn't move the window, or only to the rect a state update gave it, and no request of
      * ours is waiting: if the host rect differs, the window manager changed it and the Win32 side is about
-     * to be told, don't ask for the old rect */
-    if (data->managed && EqualRect( &data->desired_state.rect, &data->pending_state.rect ) &&
+     * to be told (only mapped windows with a WM_STATE are), don't ask for the old rect */
+    if (data->managed && !data->wm_state_serial && data->desired_state.wm_state == NormalState &&
+        EqualRect( &data->desired_state.rect, &data->pending_state.rect ) &&
         EqualRect( data->state_locks ? &data->update_rect : &old_rects->visible, &data->rects.visible ))
         return;
 
