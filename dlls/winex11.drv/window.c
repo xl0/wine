@@ -2387,6 +2387,11 @@ Window get_dummy_parent(void)
         attrib.colormap = default_colormap;
 
         lock_xid_alloc( gdi_display );
+        if (dummy_parent)  /* another thread has created it in the meantime */
+        {
+            unlock_xid_alloc( gdi_display );
+            return dummy_parent;
+        }
 #ifdef HAVE_LIBXSHAPE
         {
             static XRectangle empty_rect;
