@@ -666,6 +666,8 @@ static void sync_window_opacity( Display *display, Window win, BYTE alpha, DWORD
     unsigned long opacity = 0xffffffff;
 
     if (flags & LWA_ALPHA) opacity = (0xffffffff / 0xff) * alpha;
+    /* awesome doesn't copy an opacity of 0 to its frame when it starts managing the window */
+    if (!opacity) opacity = 1;
 
     if (opacity == 0xffffffff)
         XDeleteProperty( display, win, x11drv_atom(_NET_WM_WINDOW_OPACITY) );
