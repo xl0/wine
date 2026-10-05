@@ -299,8 +299,10 @@ int X11DRV_PALETTE_Init(void)
 	    XSetWindowAttributes win_attr;
 
             XFreeColormap( gdi_display, default_colormap );
+            lock_xid_alloc( gdi_display );
 	    default_colormap = XCreateColormap( gdi_display, root_window,
                                                 default_visual.visual, AllocAll );
+            unlock_xid_alloc( gdi_display );
 	    if (default_colormap)
 	    {
 	        X11DRV_PALETTE_PaletteFlags |= X11DRV_PALETTE_PRIVATE;

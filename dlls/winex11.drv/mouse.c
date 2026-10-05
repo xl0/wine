@@ -190,6 +190,7 @@ static Cursor get_empty_cursor(void)
         Pixmap pixmap;
 
         bg.red = bg.green = bg.blue = 0x0000;
+        lock_xid_alloc( gdi_display );
         pixmap = XCreateBitmapFromData( gdi_display, root_window, data, 1, 1 );
         if (pixmap)
         {
@@ -198,6 +199,7 @@ static Cursor get_empty_cursor(void)
                 XFreeCursor( gdi_display, new );
             XFreePixmap( gdi_display, pixmap );
         }
+        unlock_xid_alloc( gdi_display );
     }
     return cursor;
 }
@@ -764,7 +766,9 @@ static Cursor create_xcursor_cursor( HDC hdc, const ICONINFOEXW *iinfo, HANDLE i
     if (!(images = pXcursorImagesCreate( nFrames ))) goto cleanup;
     for (images->nimage = 0; images->nimage < nFrames; images->nimage++)
         images->images[images->nimage] = imgs[images->nimage];
+    lock_xid_alloc( gdi_display );
     cursor = pXcursorImagesLoadCursor( gdi_display, images );
+    unlock_xid_alloc( gdi_display );
     pXcursorImagesDestroy( images ); /* Note: this frees each individual frame (calls XcursorImageDestroy) */
     free( imgs );
     imgs = NULL;
@@ -1032,6 +1036,7 @@ static Cursor create_xcursor_system_cursor( const ICONINFOEXW *info )
 done:
     if (valueA[0])
     {
+        lock_xid_alloc( gdi_display );
 #ifdef SONAME_LIBXCURSOR
         if (pXcursorLibraryLoadCursor)
         {
@@ -1046,6 +1051,7 @@ done:
             int shape = find_fallback_shape( valueA );
             if (shape != -1) cursor = XCreateFontCursor( gdi_display, shape );
         }
+        unlock_xid_alloc( gdi_display );
         if (!cursor) WARN( "no system cursor found for %s mapped to %s\n",
                            debugstr_w(name), debugstr_a(valueA) );
     }
@@ -1136,8 +1142,10 @@ static Cursor create_xlib_monochrome_cursor( HDC hdc, const ICONINFOEXW *icon, i
 
     fg.red = fg.green = fg.blue = 0xffff;
     bg.red = bg.green = bg.blue = 0;
+    lock_xid_alloc( gdi_display );
     cursor = XCreatePixmapCursor( gdi_display, bits_pixmap, mask_pixmap,
                                   &fg, &bg, icon->xHotspot, icon->yHotspot );
+    unlock_xid_alloc( gdi_display );
     XFreePixmap( gdi_display, src_pixmap );
     XFreePixmap( gdi_display, bits_pixmap );
     XFreePixmap( gdi_display, mask_pixmap );
@@ -1325,8 +1333,10 @@ static Cursor create_xlib_color_cursor( HDC hdc, const ICONINFOEXW *icon, int wi
 
     if (mask_pixmap)
     {
+        lock_xid_alloc( gdi_display );
         cursor = XCreatePixmapCursor( gdi_display, xor_pixmap, mask_pixmap,
                                       &fg, &bg, icon->xHotspot, icon->yHotspot );
+        unlock_xid_alloc( gdi_display );
         XFreePixmap( gdi_display, mask_pixmap );
     }
     XFreePixmap( gdi_display, xor_pixmap );

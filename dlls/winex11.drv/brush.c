@@ -173,9 +173,13 @@ static Pixmap BRUSH_DitherMono( COLORREF color )
     };
     int gray = (30 * GetRValue(color) + 59 * GetGValue(color) + 11 * GetBValue(color)) / 100;
     int idx = gray * (ARRAY_SIZE( gray_dither ) + 1)/256 - 1;
+    Pixmap pixmap;
 
     TRACE("color=%s -> gray=%x\n", debugstr_color(color), gray);
-    return XCreateBitmapFromData( gdi_display, root_window, gray_dither[idx], 2, 2 );
+    lock_xid_alloc( gdi_display );
+    pixmap = XCreateBitmapFromData( gdi_display, root_window, gray_dither[idx], 2, 2 );
+    unlock_xid_alloc( gdi_display );
+    return pixmap;
 }
 
 /***********************************************************************
@@ -276,8 +280,10 @@ HBRUSH X11DRV_SelectBrush( PHYSDEV dev, HBRUSH hbrush, const struct brush_patter
       case BS_HATCHED:
 	TRACE("BS_HATCHED\n" );
 	physDev->brush.pixel = X11DRV_PALETTE_ToPhysical( physDev, logbrush.lbColor );
+        lock_xid_alloc( gdi_display );
         physDev->brush.pixmap = XCreateBitmapFromData( gdi_display, root_window,
                                                        HatchBrushes[logbrush.lbHatch], 8, 8 );
+        unlock_xid_alloc( gdi_display );
 	physDev->brush.fillStyle = FillStippled;
 	break;
     }

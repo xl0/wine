@@ -202,7 +202,12 @@ static pthread_mutex_t xrender_mutex = PTHREAD_MUTEX_INITIALIZER;
 static Picture create_picture( Drawable drawable, XRenderPictFormat *format, unsigned long mask,
                                XRenderPictureAttributes *attr )
 {
-    return pXRenderCreatePicture( gdi_display, drawable, format, mask, attr );
+    Picture pict;
+
+    lock_xid_alloc( gdi_display );
+    pict = pXRenderCreatePicture( gdi_display, drawable, format, mask, attr );
+    unlock_xid_alloc( gdi_display );
+    return pict;
 }
 
 #define MS_MAKE_TAG( _x1, _x2, _x3, _x4 ) \
@@ -1128,7 +1133,9 @@ static void UploadGlyph(struct xrender_physdev *physDev, UINT glyph, enum glyph_
         }
 
         formatEntry->font_format = pict_formats[wxr_format];
+        lock_xid_alloc( gdi_display );
         formatEntry->glyphset = pXRenderCreateGlyphSet(gdi_display, formatEntry->font_format);
+        unlock_xid_alloc( gdi_display );
     }
 
 
@@ -2122,7 +2129,9 @@ static BOOL xrenderdrv_GradientFill( PHYSDEV dev, TRIVERTEX *vert_array, ULONG n
 
             dst_pict = get_xrender_picture( physdev, 0, NULL );
 
+            lock_xid_alloc( gdi_display );
             src_pict = pXRenderCreateLinearGradient( gdi_display, &gradient, stops, colors, 2 );
+            unlock_xid_alloc( gdi_display );
             xrender_blit( PictOpSrc, src_pict, 0, dst_pict,
                           0, 0, rc.right - rc.left, rc.bottom - rc.top,
                           physdev->x11dev->dc_rect.left + rc.left,

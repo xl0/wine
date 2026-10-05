@@ -93,6 +93,7 @@ static int err_callback_result;              /* error callback result */
 static unsigned long err_serial;             /* serial number of first request */
 static int (*old_error_handler)( Display *, XErrorEvent * );
 static BOOL use_xim = TRUE;
+static BOOL synchronous_mode;  /* set once, debug channels can change at run time */
 static WCHAR input_style[20];
 
 static pthread_mutex_t error_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -234,13 +235,51 @@ static inline BOOL ignore_error( Display *display, XErrorEvent *event )
 
 
 /***********************************************************************
+ *		lock_xid_alloc
+ *
+ * Lock a display that several threads use, around requests that allocate a resource id.
+ *
+ * Xlib gets the id for the next request when the display gets locked, and may then wait for a reply
+ * with the display unlocked (to synchronize the sequence numbers, once 65000 requests were sent
+ * without reading a reply) before the request takes the id. A thread that creates a resource in the
+ * meantime gets that id, and the first one fails the assertion in _XAllocID(). While the display is
+ * locked by the user the other threads wait, and XUnlockDisplay() gets a new id before they continue.
+ *
+ * Xlib must not have to synchronize while we hold the lock: every thread that uses the display would
+ * wait for that reply with us, and an X error that one of them reads meanwhile waits for the lock in
+ * Xlib, ahead of us in the reply queue. So a reply is read before locking once half of the requests
+ * are used up, and nothing is locked in synchronous mode, where a reply is read after every request.
+ */
+void lock_xid_alloc( Display *display )
+{
+    if (synchronous_mode) return;
+    if (NextRequest( display ) - LastKnownRequestProcessed( display ) > 0x8000) XSync( display, False );
+    XLockDisplay( display );
+}
+
+
+/***********************************************************************
+ *		unlock_xid_alloc
+ */
+void unlock_xid_alloc( Display *display )
+{
+    if (!synchronous_mode) XUnlockDisplay( display );
+}
+
+
+/***********************************************************************
  *		create_gc
  *
  * Create a GC on the GDI display.
  */
 GC create_gc( Drawable drawable )
 {
-    return XCreateGC( gdi_display, drawable, 0, NULL );
+    GC gc;
+
+    lock_xid_alloc( gdi_display );
+    gc = XCreateGC( gdi_display, drawable, 0, NULL );
+    unlock_xid_alloc( gdi_display );
+    return gc;
 }
 
 
@@ -251,7 +290,12 @@ GC create_gc( Drawable drawable )
  */
 Pixmap create_pixmap( int width, int height, int depth )
 {
-    return XCreatePixmap( gdi_display, root_window, width, height, depth );
+    Pixmap pixmap;
+
+    lock_xid_alloc( gdi_display );
+    pixmap = XCreatePixmap( gdi_display, root_window, width, height, depth );
+    unlock_xid_alloc( gdi_display );
+    return pixmap;
 }
 
 
@@ -684,7 +728,8 @@ NTSTATUS __wine_unix_lib_init(void)
 
     init_win_context();
 
-    if (TRACE_ON(synchronous)) XSynchronize( display, True );
+    synchronous_mode = TRACE_ON(synchronous);
+    if (synchronous_mode) XSynchronize( display, True );
 
     xinerama_init( DisplayWidth( display, default_visual.screen ),
                    DisplayHeight( display, default_visual.screen ));
@@ -786,7 +831,7 @@ struct x11drv_thread_data *x11drv_init_thread_data(void)
 
     XkbUseExtension( data->display, NULL, NULL );
     XkbSetDetectableAutoRepeat( data->display, True, NULL );
-    if (TRACE_ON(synchronous)) XSynchronize( data->display, True );
+    if (synchronous_mode) XSynchronize( data->display, True );
 
     set_queue_display_fd( data->display );
     pthread_setspecific( x11drv_thread_data_key, data );

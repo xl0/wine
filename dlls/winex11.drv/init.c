@@ -440,7 +440,12 @@ struct client_surface *X11DRV_CreateClientSurface( HWND hwnd, int format, BOOL r
     if (format && !visual_from_pixel_format( format, &visual )) return NULL;
 
     if (visual.visualid == default_visual.visualid) colormap = default_colormap;
-    else colormap = XCreateColormap( gdi_display, get_dummy_parent(), visual.visual, visual_class_alloc( visual.class ) );
+    else
+    {
+        lock_xid_alloc( gdi_display );
+        colormap = XCreateColormap( gdi_display, get_dummy_parent(), visual.visual, visual_class_alloc( visual.class ) );
+        unlock_xid_alloc( gdi_display );
+    }
     if (!colormap) return NULL;
 
     if (!(surface = client_surface_create( &x11drv_client_surface_funcs, hwnd, format, raw ))) goto failed;

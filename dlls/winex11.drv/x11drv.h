@@ -305,6 +305,8 @@ extern struct format_entry *import_xdnd_selection( Display *display, Window win,
  */
 
 extern Display *gdi_display;  /* display to use for all GDI functions */
+extern void lock_xid_alloc( Display *display );
+extern void unlock_xid_alloc( Display *display );
 extern GC create_gc( Drawable drawable );
 extern Pixmap create_pixmap( int width, int height, int depth );
 

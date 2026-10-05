@@ -380,10 +380,13 @@ static BOOL X11DRV_WineGL_InitOpenglInfo(void)
     if (!ctx) goto done;
 
     root = RootWindow( gdi_display, vis->screen );
+    lock_xid_alloc( gdi_display );
     if (vis->visual != DefaultVisual( gdi_display, vis->screen ))
         attr.colormap = XCreateColormap( gdi_display, root, vis->visual, AllocNone );
-    if ((win = XCreateWindow( gdi_display, root, -1, -1, 1, 1, 0, vis->depth, InputOutput,
-                              vis->visual, CWBorderPixel | CWOverrideRedirect | CWColormap, &attr )))
+    win = XCreateWindow( gdi_display, root, -1, -1, 1, 1, 0, vis->depth, InputOutput,
+                         vis->visual, CWBorderPixel | CWOverrideRedirect | CWColormap, &attr );
+    unlock_xid_alloc( gdi_display );
+    if (win)
         XMapWindow( gdi_display, win );
     else
         win = root;

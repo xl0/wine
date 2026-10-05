@@ -2386,6 +2386,7 @@ Window get_dummy_parent(void)
         attrib.border_pixel = 0;
         attrib.colormap = default_colormap;
 
+        lock_xid_alloc( gdi_display );
 #ifdef HAVE_LIBXSHAPE
         {
             static XRectangle empty_rect;
@@ -2406,6 +2407,7 @@ Window get_dummy_parent(void)
         XChangeProperty( gdi_display, dummy_parent, x11drv_atom(_NET_WM_WINDOW_OPACITY),
                          XA_CARDINAL, 32, PropModeReplace, (unsigned char *)&opacity, 1 );
         XMapWindow( gdi_display, dummy_parent );
+        unlock_xid_alloc( gdi_display );
     }
     return dummy_parent;
 }
@@ -2514,11 +2516,13 @@ Window create_client_window( HWND hwnd, RECT client_rect, const XVisualInfo *vis
     cy = min( max( 1, client_rect.bottom - client_rect.top ), 65535 );
 
     XSync( gdi_display, False ); /* make sure whole_window is known from gdi_display */
+    lock_xid_alloc( gdi_display );
     ret = data->client_window = XCreateWindow( gdi_display,
                                                data->whole_window ? data->whole_window : get_dummy_parent(),
                                                x, y, cx, cy, 0, visual->depth, InputOutput,
                                                visual->visual, CWBitGravity | CWWinGravity |
                                                CWBackingStore | CWColormap | CWBorderPixel, &attr );
+    unlock_xid_alloc( gdi_display );
     if (data->client_window)
     {
         XMapWindow( gdi_display, data->client_window );
@@ -2560,7 +2564,11 @@ static void create_whole_window( struct x11drv_win_data *data )
     data->shaped = (win_rgn != 0);
 
     if (data->vis.visualid != default_visual.visualid)
+    {
+        lock_xid_alloc( data->display );
         data->whole_colormap = XCreateColormap( data->display, root_window, data->vis.visual, AllocNone );
+        unlock_xid_alloc( data->display );
+    }
 
     data->managed = is_window_managed( data->hwnd, SWP_NOACTIVATE, FALSE );
     mask = get_window_attributes( data, &attr ) | CWOverrideRedirect;
@@ -2572,9 +2580,11 @@ static void create_whole_window( struct x11drv_win_data *data )
     else if (cy > 65535) cy = 65535;
 
     pos = virtual_screen_to_root( data->rects.visible.left, data->rects.visible.top );
+    lock_xid_alloc( data->display );
     data->whole_window = XCreateWindow( data->display, root_window, pos.x, pos.y,
                                         cx, cy, 0, data->vis.depth, InputOutput,
                                         data->vis.visual, mask, &attr );
+    unlock_xid_alloc( data->display );
     if (!data->whole_window) goto done;
     SetRect( &data->current_state.rect, pos.x, pos.y, pos.x + cx, pos.y + cy );
     data->pending_state.rect = data->current_state.rect;
